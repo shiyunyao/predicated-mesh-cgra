@@ -1,0 +1,362 @@
+// SPDX-License-Identifier: MIT
+`timescale 1ns/1ps
+
+function automatic logic [1023:0] cgra_default_lsu_mask(input int rows, input int cols);
+  logic [1023:0] mask;
+  begin
+    mask = '0;
+    for (int r = 0; r < rows; r++) begin
+      mask[r * cols] = 1'b1;
+    end
+    cgra_default_lsu_mask = mask;
+  end
+endfunction
+
+module cgra_top #(
+  parameter int ROWS = cgra_pkg::ARRAY_ROWS,
+  parameter int COLS = cgra_pkg::ARRAY_COLS,
+  parameter int DATA_WIDTH = cgra_pkg::DATA_WIDTH,
+  parameter int TILES = ROWS * COLS,
+  parameter int CONTROL_WIDTH = cgra_pkg::CONTROL_WORD_PHYSICAL_WIDTH,
+  parameter logic [TILES-1:0] HAS_LSU_MASK = TILES'(cgra_default_lsu_mask(ROWS, COLS))
+) (
+  input  logic                         clk,
+  input  logic                         rst_n,
+
+  input  logic                         cfg_valid,
+  output logic                         cfg_ready,
+  input  logic                         cfg_we,
+  input  logic [1:0]                   cfg_mem_type,
+  input  logic [cgra_pkg::CTRL_PC_WIDTH-1:0] cfg_tile_row,
+  input  logic [cgra_pkg::CTRL_PC_WIDTH-1:0] cfg_tile_col,
+  input  logic [cgra_pkg::SCRATCH_ADDR_WIDTH-1:0] cfg_addr,
+  input  logic [1:0]                   cfg_word_idx,
+  input  logic [31:0]                  cfg_wdata,
+
+  input  logic                         start,
+  input  logic [cgra_pkg::CTRL_PC_WIDTH-1:0] run_cycles,
+  output logic                         busy,
+  output logic                         done,
+  output logic [cgra_pkg::CTRL_PC_WIDTH-1:0] kernel_pc,
+
+  output logic [TILES-1:0]             north_data_we,
+  output logic [TILES*DATA_WIDTH-1:0]  north_data_out,
+  output logic [TILES-1:0]             south_data_we,
+  output logic [TILES*DATA_WIDTH-1:0]  south_data_out,
+  output logic [TILES-1:0]             east_data_we,
+  output logic [TILES*DATA_WIDTH-1:0]  east_data_out,
+  output logic [TILES-1:0]             west_data_we,
+  output logic [TILES*DATA_WIDTH-1:0]  west_data_out
+);
+  localparam logic [1:0] CFG_MEM_CONTROL = 2'd0;
+  localparam logic [1:0] CFG_MEM_CONST = 2'd1;
+  localparam logic [1:0] CFG_MEM_SCRATCH = 2'd2;
+
+  typedef enum logic [1:0] {
+    STATE_CONFIG = 2'd0,
+    STATE_RUN    = 2'd1,
+    STATE_DONE   = 2'd2
+  } state_e;
+
+  state_e state;
+  logic [cgra_pkg::CTRL_PC_WIDTH-1:0] cycles_left;
+  logic [TILES*CONTROL_WIDTH-1:0] mesh_control_words;
+  cgra_pkg::control_word_bits_t control_mem [TILES][cgra_pkg::CTRL_MEM_DEPTH];
+  logic [TILES-1:0] const_cfg_we;
+  logic [TILES*cgra_pkg::CONST_ADDR_WIDTH-1:0] const_cfg_addr;
+  logic [TILES*DATA_WIDTH-1:0] const_cfg_wdata;
+  logic [TILES-1:0] scratch_cfg_we;
+  logic [TILES*cgra_pkg::SCRATCH_ADDR_WIDTH-1:0] scratch_cfg_addr;
+  logic [TILES*DATA_WIDTH-1:0] scratch_cfg_wdata;
+  logic [TILES-1:0] north_pred_we_unused;
+  logic [TILES*cgra_pkg::PRED_WIDTH-1:0] north_pred_out_unused;
+  logic [TILES-1:0] south_pred_we_unused;
+  logic [TILES*cgra_pkg::PRED_WIDTH-1:0] south_pred_out_unused;
+  logic [TILES-1:0] east_pred_we_unused;
+  logic [TILES*cgra_pkg::PRED_WIDTH-1:0] east_pred_out_unused;
+  logic [TILES-1:0] west_pred_we_unused;
+  logic [TILES*cgra_pkg::PRED_WIDTH-1:0] west_pred_out_unused;
+  logic unused_pred_outputs;
+  logic unused_cfg_tile_idx_upper;
+
+  logic cfg_accept;
+  logic cfg_in_bounds;
+  logic [31:0] cfg_tile_idx_full;
+  logic [$clog2(TILES)-1:0] cfg_tile_idx;
+  logic [CONTROL_WIDTH-1:0] cfg_word_mask;
+  logic [CONTROL_WIDTH-1:0] cfg_word_shifted;
+  logic [cgra_pkg::CTRL_PC_WIDTH-1:0] cfg_ctrl_addr;
+
+  assign cfg_tile_idx_full = (32'(cfg_tile_row) * 32'(COLS)) + 32'(cfg_tile_col);
+  assign cfg_tile_idx = cfg_tile_idx_full[$clog2(TILES)-1:0];
+  assign cfg_in_bounds = (32'(cfg_tile_row) < 32'(ROWS)) && (32'(cfg_tile_col) < 32'(COLS));
+  assign cfg_ctrl_addr = cfg_addr[cgra_pkg::CTRL_PC_WIDTH-1:0];
+  assign cfg_ready = (state != STATE_RUN);
+  assign cfg_accept = cfg_valid && cfg_ready && cfg_we && cfg_in_bounds;
+  assign busy = (state == STATE_RUN);
+  assign done = (state == STATE_DONE);
+  assign cfg_word_mask = CONTROL_WIDTH'({32{1'b1}}) << (cfg_word_idx * 32);
+  assign cfg_word_shifted = CONTROL_WIDTH'(cfg_wdata) << (cfg_word_idx * 32);
+  assign unused_cfg_tile_idx_upper = ^cfg_tile_idx_full[31:$clog2(TILES)];
+  assign unused_pred_outputs = (|north_pred_we_unused)
+                               ^ (^north_pred_out_unused)
+                               ^ (|south_pred_we_unused)
+                               ^ (^south_pred_out_unused)
+                               ^ (|east_pred_we_unused)
+                               ^ (^east_pred_out_unused)
+                               ^ (|west_pred_we_unused)
+                               ^ (^west_pred_out_unused);
+
+  always_comb begin
+    const_cfg_we = '0;
+    const_cfg_addr = '0;
+    const_cfg_wdata = '0;
+    scratch_cfg_we = '0;
+    scratch_cfg_addr = '0;
+    scratch_cfg_wdata = '0;
+    for (int i = 0; i < TILES; i++) begin
+      if (state == STATE_RUN) begin
+        mesh_control_words[i*CONTROL_WIDTH +: CONTROL_WIDTH] = control_mem[i][kernel_pc];
+      end else begin
+        mesh_control_words[i*CONTROL_WIDTH +: CONTROL_WIDTH] = '0;
+      end
+    end
+
+    if (cfg_accept && (cfg_mem_type == CFG_MEM_CONST)) begin
+      const_cfg_we[cfg_tile_idx] = 1'b1;
+      const_cfg_addr[cfg_tile_idx*cgra_pkg::CONST_ADDR_WIDTH +: cgra_pkg::CONST_ADDR_WIDTH] = cfg_addr[cgra_pkg::CONST_ADDR_WIDTH-1:0];
+      const_cfg_wdata[cfg_tile_idx*DATA_WIDTH +: DATA_WIDTH] = cfg_wdata;
+    end
+
+    if (cfg_accept && (cfg_mem_type == CFG_MEM_SCRATCH)) begin
+      scratch_cfg_we[cfg_tile_idx] = 1'b1;
+      scratch_cfg_addr[cfg_tile_idx*cgra_pkg::SCRATCH_ADDR_WIDTH +: cgra_pkg::SCRATCH_ADDR_WIDTH] = cfg_addr[cgra_pkg::SCRATCH_ADDR_WIDTH-1:0];
+      scratch_cfg_wdata[cfg_tile_idx*DATA_WIDTH +: DATA_WIDTH] = cfg_wdata;
+    end
+
+    if (unused_pred_outputs || unused_cfg_tile_idx_upper) begin
+    end
+  end
+
+  mesh #(
+    .ROWS(ROWS),
+    .COLS(COLS),
+    .DATA_WIDTH(DATA_WIDTH),
+    .HAS_LSU_MASK(HAS_LSU_MASK)
+  ) mesh_i (
+    .clk(clk),
+    .rst_n(rst_n),
+    .control_words(mesh_control_words),
+    .const_cfg_we(const_cfg_we),
+    .const_cfg_addr(const_cfg_addr),
+    .const_cfg_wdata(const_cfg_wdata),
+    .scratch_cfg_we(scratch_cfg_we),
+    .scratch_cfg_addr(scratch_cfg_addr),
+    .scratch_cfg_wdata(scratch_cfg_wdata),
+    .north_data_we(north_data_we),
+    .north_data_out(north_data_out),
+    .south_data_we(south_data_we),
+    .south_data_out(south_data_out),
+    .east_data_we(east_data_we),
+    .east_data_out(east_data_out),
+    .west_data_we(west_data_we),
+    .west_data_out(west_data_out),
+    .north_pred_we(north_pred_we_unused),
+    .north_pred_out(north_pred_out_unused),
+    .south_pred_we(south_pred_we_unused),
+    .south_pred_out(south_pred_out_unused),
+    .east_pred_we(east_pred_we_unused),
+    .east_pred_out(east_pred_out_unused),
+    .west_pred_we(west_pred_we_unused),
+    .west_pred_out(west_pred_out_unused)
+  );
+
+`ifndef SYNTHESIS
+  integer trace_fd;
+  logic trace_enabled;
+  int trace_cycle;
+  string trace_path;
+
+  initial begin
+    trace_fd = 0;
+    trace_enabled = ($test$plusargs("CGRA_TRACE") != 0);
+    trace_cycle = 0;
+    trace_path = "sim/build/trace_tb/trace.csv";
+    if (trace_enabled) begin
+      if (!$value$plusargs("CGRA_TRACE_FILE=%s", trace_path)) begin
+        trace_path = "sim/build/trace_tb/trace.csv";
+      end
+      trace_fd = $fopen(trace_path, "w");
+      if (trace_fd == 0) begin
+        $fatal(1, "Unable to open CGRA trace file: %s", trace_path);
+      end
+      $fwrite(trace_fd, "cycle,kernel_pc,tile_row,tile_col,op,");
+      $fwrite(trace_fd, "src_a_valid,src_a_value,src_b_valid,src_b_value,");
+      $fwrite(trace_fd, "src_p0_valid,src_p0_value,src_p1_valid,src_p1_value,");
+      $fwrite(trace_fd, "fu_data_valid,fu_data_result,fu_pred_valid,fu_pred_result,");
+      $fwrite(trace_fd, "data_w0_we,data_w0_addr,data_w0_data,");
+      $fwrite(trace_fd, "data_w1_we,data_w1_addr,data_w1_data,");
+      $fwrite(trace_fd, "pred_w0_we,pred_w0_addr,pred_w0_data,");
+      $fwrite(trace_fd, "pred_w1_we,pred_w1_addr,pred_w1_data,");
+      $fwrite(trace_fd, "data_out_n_valid,data_out_n_value,");
+      $fwrite(trace_fd, "data_out_s_valid,data_out_s_value,");
+      $fwrite(trace_fd, "data_out_e_valid,data_out_e_value,");
+      $fwrite(trace_fd, "data_out_w_valid,data_out_w_value,");
+      $fwrite(trace_fd, "pred_out_n_valid,pred_out_n_value,");
+      $fwrite(trace_fd, "pred_out_s_valid,pred_out_s_value,");
+      $fwrite(trace_fd, "pred_out_e_valid,pred_out_e_value,");
+      $fwrite(trace_fd, "pred_out_w_valid,pred_out_w_value,");
+      $fwrite(trace_fd, "lsu_op,lsu_addr,lsu_store_data,lsu_store_commit,");
+      $fwrite(trace_fd, "lsu_load_resp_valid,lsu_load_resp_data\n");
+    end
+  end
+
+  final begin
+    if (trace_fd != 0) begin
+      $fclose(trace_fd);
+    end
+  end
+
+  always_ff @(posedge clk) begin
+    if (!rst_n || (state != STATE_RUN)) begin
+      trace_cycle <= 0;
+    end else if (trace_enabled) begin
+      trace_cycle <= trace_cycle + 1;
+    end
+  end
+
+  genvar trace_row;
+  genvar trace_col;
+  generate
+    for (trace_row = 0; trace_row < ROWS; trace_row = trace_row + 1) begin : trace_row_gen
+      for (trace_col = 0; trace_col < COLS; trace_col = trace_col + 1) begin : trace_col_gen
+        localparam int TRACE_ROW = trace_row;
+        localparam int TRACE_COL = trace_col;
+        always_ff @(posedge clk) begin
+          if (rst_n && trace_enabled && (state == STATE_RUN)) begin
+            $fwrite(trace_fd,
+                    "%0d,%0d,%0d,%0d,%0d,%0d,%0h,%0d,%0h,%0d,%0h,%0d,%0h,%0d,%0h,%0d,%0h,%0d,%0d,%0h,%0d,%0d,%0h,%0d,%0d,%0h,%0d,%0d,%0h,%0d,%0h,%0d,%0h,%0d,%0h,%0d,%0h,%0d,%0h,%0d,%0h,%0d,%0h,%0d,%0h,%0d,%0h,%0d,%0h,%0d,%0h\n",
+                    trace_cycle,
+                    kernel_pc,
+                    TRACE_ROW,
+                    TRACE_COL,
+                    mesh_i.row_gen[TRACE_ROW].col_gen[TRACE_COL].tile_i.ctrl.exec_ctrl.op,
+                    mesh_i.row_gen[TRACE_ROW].col_gen[TRACE_COL].tile_i.op_uses_data_a
+                      && mesh_i.row_gen[TRACE_ROW].col_gen[TRACE_COL].tile_i.data_src_a_valid_unused,
+                    mesh_i.row_gen[TRACE_ROW].col_gen[TRACE_COL].tile_i.op_uses_data_a
+                      ? mesh_i.row_gen[TRACE_ROW].col_gen[TRACE_COL].tile_i.data_src_a : DATA_WIDTH'(0),
+                    mesh_i.row_gen[TRACE_ROW].col_gen[TRACE_COL].tile_i.op_uses_data_b
+                      && mesh_i.row_gen[TRACE_ROW].col_gen[TRACE_COL].tile_i.data_src_b_valid_unused,
+                    mesh_i.row_gen[TRACE_ROW].col_gen[TRACE_COL].tile_i.op_uses_data_b
+                      ? mesh_i.row_gen[TRACE_ROW].col_gen[TRACE_COL].tile_i.data_src_b : DATA_WIDTH'(0),
+                    mesh_i.row_gen[TRACE_ROW].col_gen[TRACE_COL].tile_i.op_uses_pred_p0
+                      && mesh_i.row_gen[TRACE_ROW].col_gen[TRACE_COL].tile_i.pred_src_p0_valid_unused,
+                    mesh_i.row_gen[TRACE_ROW].col_gen[TRACE_COL].tile_i.op_uses_pred_p0
+                      ? mesh_i.row_gen[TRACE_ROW].col_gen[TRACE_COL].tile_i.pred_src_p0 : 1'b0,
+                    mesh_i.row_gen[TRACE_ROW].col_gen[TRACE_COL].tile_i.op_uses_pred_p1
+                      && mesh_i.row_gen[TRACE_ROW].col_gen[TRACE_COL].tile_i.pred_src_p1_valid_unused,
+                    mesh_i.row_gen[TRACE_ROW].col_gen[TRACE_COL].tile_i.op_uses_pred_p1
+                      ? mesh_i.row_gen[TRACE_ROW].col_gen[TRACE_COL].tile_i.pred_src_p1 : 1'b0,
+                    mesh_i.row_gen[TRACE_ROW].col_gen[TRACE_COL].tile_i.fu_data_result_valid,
+                    mesh_i.row_gen[TRACE_ROW].col_gen[TRACE_COL].tile_i.fu_data_result,
+                    mesh_i.row_gen[TRACE_ROW].col_gen[TRACE_COL].tile_i.fu_pred_result_valid,
+                    mesh_i.row_gen[TRACE_ROW].col_gen[TRACE_COL].tile_i.fu_pred_result,
+                    mesh_i.row_gen[TRACE_ROW].col_gen[TRACE_COL].tile_i.ctrl.data_rf_ctrl.data_w0_we,
+                    mesh_i.row_gen[TRACE_ROW].col_gen[TRACE_COL].tile_i.ctrl.data_rf_ctrl.data_w0_addr,
+                    mesh_i.row_gen[TRACE_ROW].col_gen[TRACE_COL].tile_i.fu_data_result,
+                    mesh_i.row_gen[TRACE_ROW].col_gen[TRACE_COL].tile_i.ctrl.data_rf_ctrl.data_w1_we,
+                    mesh_i.row_gen[TRACE_ROW].col_gen[TRACE_COL].tile_i.ctrl.data_rf_ctrl.data_w1_addr,
+                    mesh_i.row_gen[TRACE_ROW].col_gen[TRACE_COL].tile_i.ctrl.data_rf_ctrl.data_w1_we
+                      ? mesh_i.row_gen[TRACE_ROW].col_gen[TRACE_COL].tile_i.data_w1_data : DATA_WIDTH'(0),
+                    mesh_i.row_gen[TRACE_ROW].col_gen[TRACE_COL].tile_i.ctrl.pred_rf_ctrl.pred_w0_we,
+                    mesh_i.row_gen[TRACE_ROW].col_gen[TRACE_COL].tile_i.ctrl.pred_rf_ctrl.pred_w0_addr,
+                    mesh_i.row_gen[TRACE_ROW].col_gen[TRACE_COL].tile_i.fu_pred_result,
+                    mesh_i.row_gen[TRACE_ROW].col_gen[TRACE_COL].tile_i.ctrl.pred_rf_ctrl.pred_w1_we,
+                    mesh_i.row_gen[TRACE_ROW].col_gen[TRACE_COL].tile_i.ctrl.pred_rf_ctrl.pred_w1_addr,
+                    mesh_i.row_gen[TRACE_ROW].col_gen[TRACE_COL].tile_i.ctrl.pred_rf_ctrl.pred_w1_we
+                      ? mesh_i.row_gen[TRACE_ROW].col_gen[TRACE_COL].tile_i.pred_w1_data : 1'b0,
+                    mesh_i.row_gen[TRACE_ROW].col_gen[TRACE_COL].tile_i.route_north_data_we,
+                    mesh_i.row_gen[TRACE_ROW].col_gen[TRACE_COL].tile_i.route_north_data_out,
+                    mesh_i.row_gen[TRACE_ROW].col_gen[TRACE_COL].tile_i.route_south_data_we,
+                    mesh_i.row_gen[TRACE_ROW].col_gen[TRACE_COL].tile_i.route_south_data_out,
+                    mesh_i.row_gen[TRACE_ROW].col_gen[TRACE_COL].tile_i.route_east_data_we,
+                    mesh_i.row_gen[TRACE_ROW].col_gen[TRACE_COL].tile_i.route_east_data_out,
+                    mesh_i.row_gen[TRACE_ROW].col_gen[TRACE_COL].tile_i.route_west_data_we,
+                    mesh_i.row_gen[TRACE_ROW].col_gen[TRACE_COL].tile_i.route_west_data_out,
+                    mesh_i.row_gen[TRACE_ROW].col_gen[TRACE_COL].tile_i.route_north_pred_we,
+                    mesh_i.row_gen[TRACE_ROW].col_gen[TRACE_COL].tile_i.route_north_pred_out,
+                    mesh_i.row_gen[TRACE_ROW].col_gen[TRACE_COL].tile_i.route_south_pred_we,
+                    mesh_i.row_gen[TRACE_ROW].col_gen[TRACE_COL].tile_i.route_south_pred_out,
+                    mesh_i.row_gen[TRACE_ROW].col_gen[TRACE_COL].tile_i.route_east_pred_we,
+                    mesh_i.row_gen[TRACE_ROW].col_gen[TRACE_COL].tile_i.route_east_pred_out,
+                    mesh_i.row_gen[TRACE_ROW].col_gen[TRACE_COL].tile_i.route_west_pred_we,
+                    mesh_i.row_gen[TRACE_ROW].col_gen[TRACE_COL].tile_i.route_west_pred_out,
+                    mesh_i.row_gen[TRACE_ROW].col_gen[TRACE_COL].tile_i.ctrl.lsu_ctrl.lsu_op,
+                    ((mesh_i.row_gen[TRACE_ROW].col_gen[TRACE_COL].tile_i.ctrl.lsu_ctrl.lsu_op == cgra_pkg::LSU_OP_LOAD)
+                     || (mesh_i.row_gen[TRACE_ROW].col_gen[TRACE_COL].tile_i.ctrl.lsu_ctrl.lsu_op == cgra_pkg::LSU_OP_STORE))
+                      ? mesh_i.row_gen[TRACE_ROW].col_gen[TRACE_COL].tile_i.lsu_i.addr_data : DATA_WIDTH'(0),
+                    (mesh_i.row_gen[TRACE_ROW].col_gen[TRACE_COL].tile_i.ctrl.lsu_ctrl.lsu_op == cgra_pkg::LSU_OP_STORE)
+                      ? mesh_i.row_gen[TRACE_ROW].col_gen[TRACE_COL].tile_i.lsu_i.store_data : DATA_WIDTH'(0),
+                    mesh_i.row_gen[TRACE_ROW].col_gen[TRACE_COL].tile_i.lsu_i.store_commit,
+                    mesh_i.row_gen[TRACE_ROW].col_gen[TRACE_COL].tile_i.tile_lsu_load_valid,
+                    mesh_i.row_gen[TRACE_ROW].col_gen[TRACE_COL].tile_i.tile_lsu_load_data);
+          end
+        end
+      end
+    end
+  endgenerate
+
+  always_comb begin
+    if (cfg_valid && cfg_ready && cfg_we && !cfg_in_bounds) begin
+      $fatal(1, "Configuration target tile out of range: row=%0d col=%0d", cfg_tile_row, cfg_tile_col);
+    end
+    if (cfg_valid && cfg_ready && cfg_we && (cfg_mem_type == CFG_MEM_CONTROL)
+        && (32'(cfg_word_idx) >= 32'(cgra_pkg::CONTROL_WORD_CHUNKS))) begin
+      $fatal(1, "Configuration control word index out of range: idx=%0d", cfg_word_idx);
+    end
+  end
+`endif
+
+  always_ff @(posedge clk) begin
+    if (!rst_n) begin
+      state <= STATE_CONFIG;
+      kernel_pc <= '0;
+      cycles_left <= '0;
+    end else begin
+      unique case (state)
+        STATE_CONFIG: begin
+          kernel_pc <= '0;
+          cycles_left <= '0;
+          if (cfg_accept && (cfg_mem_type == CFG_MEM_CONTROL)) begin
+            control_mem[cfg_tile_idx][cfg_ctrl_addr] <= (control_mem[cfg_tile_idx][cfg_ctrl_addr] & ~cfg_word_mask)
+                                                   | cfg_word_shifted;
+          end
+          if (start) begin
+            state <= STATE_RUN;
+            kernel_pc <= '0;
+            cycles_left <= run_cycles;
+          end
+        end
+        STATE_RUN: begin
+          if (cycles_left <= 1) begin
+            state <= STATE_DONE;
+            cycles_left <= '0;
+          end else begin
+            cycles_left <= cycles_left - 1'b1;
+            kernel_pc <= kernel_pc + 1'b1;
+          end
+        end
+        STATE_DONE: begin
+          state <= STATE_CONFIG;
+          kernel_pc <= '0;
+          cycles_left <= '0;
+        end
+        default: begin
+          state <= STATE_CONFIG;
+          kernel_pc <= '0;
+          cycles_left <= '0;
+        end
+      endcase
+    end
+  end
+endmodule : cgra_top
