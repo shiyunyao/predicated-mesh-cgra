@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 `timescale 1ns/1ps
+`include "rtl/control_mem_bank.sv"
 
 function automatic logic [1023:0] cgra_default_lsu_mask(input int rows, input int cols);
   logic [1023:0] mask;
@@ -51,6 +52,8 @@ module cgra_top #(
   localparam logic [1:0] CFG_MEM_CONTROL = 2'd0;
   localparam logic [1:0] CFG_MEM_CONST = 2'd1;
   localparam logic [1:0] CFG_MEM_SCRATCH = 2'd2;
+  localparam int RUN_CONTROL_SLICE_WIDTH = 16;
+  localparam int RUN_CONTROL_REPLICAS = CONTROL_WIDTH / RUN_CONTROL_SLICE_WIDTH;
 
   typedef enum logic [1:0] {
     STATE_CONFIG = 2'd0,
@@ -61,7 +64,8 @@ module cgra_top #(
   state_e state;
   logic [cgra_pkg::CTRL_PC_WIDTH-1:0] cycles_left;
   logic [TILES*CONTROL_WIDTH-1:0] mesh_control_words;
-  cgra_pkg::control_word_bits_t control_mem [TILES][cgra_pkg::CTRL_MEM_DEPTH];
+  logic [TILES*CONTROL_WIDTH-1:0] control_mem_read_data;
+  logic [TILES-1:0] control_cfg_we;
   logic [TILES-1:0] const_cfg_we;
   logic [TILES*cgra_pkg::CONST_ADDR_WIDTH-1:0] const_cfg_addr;
   logic [TILES*DATA_WIDTH-1:0] const_cfg_wdata;
@@ -81,10 +85,9 @@ module cgra_top #(
 
   logic cfg_accept;
   logic cfg_in_bounds;
+  logic next_run_active;
   logic [31:0] cfg_tile_idx_full;
   logic [$clog2(TILES)-1:0] cfg_tile_idx;
-  logic [CONTROL_WIDTH-1:0] cfg_word_mask;
-  logic [CONTROL_WIDTH-1:0] cfg_word_shifted;
   logic [cgra_pkg::CTRL_PC_WIDTH-1:0] cfg_ctrl_addr;
 
   assign cfg_tile_idx_full = (32'(cfg_tile_row) * 32'(COLS)) + 32'(cfg_tile_col);
@@ -95,8 +98,6 @@ module cgra_top #(
   assign cfg_accept = cfg_valid && cfg_ready && cfg_we && cfg_in_bounds;
   assign busy = (state == STATE_RUN);
   assign done = (state == STATE_DONE);
-  assign cfg_word_mask = CONTROL_WIDTH'({32{1'b1}}) << (cfg_word_idx * 32);
-  assign cfg_word_shifted = CONTROL_WIDTH'(cfg_wdata) << (cfg_word_idx * 32);
   assign unused_cfg_tile_idx_upper = ^cfg_tile_idx_full[31:$clog2(TILES)];
   assign unused_pred_outputs = (|north_pred_we_unused)
                                ^ (^north_pred_out_unused)
@@ -108,18 +109,34 @@ module cgra_top #(
                                ^ (^west_pred_out_unused);
 
   always_comb begin
+    next_run_active = 1'b0;
+    unique case (state)
+      STATE_CONFIG: begin
+        if (start) begin
+          next_run_active = 1'b1;
+        end
+      end
+      STATE_RUN: begin
+        next_run_active = 1'b1;
+        if (cycles_left <= 1) begin
+          next_run_active = 1'b0;
+        end
+      end
+      default: begin
+      end
+    endcase
+  end
+
+  always_comb begin
+    control_cfg_we = '0;
     const_cfg_we = '0;
     const_cfg_addr = '0;
     const_cfg_wdata = '0;
     scratch_cfg_we = '0;
     scratch_cfg_addr = '0;
     scratch_cfg_wdata = '0;
-    for (int i = 0; i < TILES; i++) begin
-      if (state == STATE_RUN) begin
-        mesh_control_words[i*CONTROL_WIDTH +: CONTROL_WIDTH] = control_mem[i][kernel_pc];
-      end else begin
-        mesh_control_words[i*CONTROL_WIDTH +: CONTROL_WIDTH] = '0;
-      end
+    if ((state == STATE_CONFIG) && cfg_accept && (cfg_mem_type == CFG_MEM_CONTROL)) begin
+      control_cfg_we[cfg_tile_idx] = 1'b1;
     end
 
     if (cfg_accept && (cfg_mem_type == CFG_MEM_CONST)) begin
@@ -137,6 +154,65 @@ module cgra_top #(
     if (unused_pred_outputs || unused_cfg_tile_idx_upper) begin
     end
   end
+
+  genvar control_mem_idx;
+  generate
+    for (control_mem_idx = 0; control_mem_idx < TILES; control_mem_idx = control_mem_idx + 1) begin : control_mem_bank_gen
+      for (genvar run_replica_idx = 0;
+           run_replica_idx < RUN_CONTROL_REPLICAS;
+           run_replica_idx = run_replica_idx + 1) begin : run_gate_gen
+        (* keep = "true" *) logic run_active;
+        logic [RUN_CONTROL_SLICE_WIDTH-1:0] gated_control_slice;
+
+        (* keep = "true" *) always_ff @(posedge clk) begin
+          if (!rst_n) begin
+            run_active <= 1'b0;
+          end else begin
+            run_active <= next_run_active;
+          end
+        end
+
+        always_comb begin
+          if (run_active) begin
+            gated_control_slice = control_mem_read_data[
+              control_mem_idx*CONTROL_WIDTH + run_replica_idx*RUN_CONTROL_SLICE_WIDTH
+              +: RUN_CONTROL_SLICE_WIDTH
+            ];
+          end else begin
+            gated_control_slice = '0;
+          end
+        end
+
+`ifndef SYNTHESIS
+        always_ff @(posedge clk) begin
+          if (rst_n && (run_active !== (state == STATE_RUN))) begin
+            $fatal(1, "RUN replica diverged from architectural state: tile=%0d replica=%0d",
+                   control_mem_idx, run_replica_idx);
+          end
+        end
+`endif
+
+        assign mesh_control_words[
+          control_mem_idx*CONTROL_WIDTH + run_replica_idx*RUN_CONTROL_SLICE_WIDTH
+          +: RUN_CONTROL_SLICE_WIDTH
+        ] = gated_control_slice;
+      end
+
+      control_mem_bank #(
+        .WIDTH(CONTROL_WIDTH),
+        .DEPTH(cgra_pkg::CTRL_MEM_DEPTH),
+        .ADDR_WIDTH(cgra_pkg::CTRL_PC_WIDTH)
+      ) control_mem_i (
+        .clk(clk),
+        .cfg_write_en(control_cfg_we[control_mem_idx]),
+        .cfg_write_addr(cfg_ctrl_addr),
+        .cfg_write_word_idx(cfg_word_idx),
+        .cfg_write_data(cfg_wdata),
+        .read_addr(kernel_pc),
+        .read_data(control_mem_read_data[control_mem_idx*CONTROL_WIDTH +: CONTROL_WIDTH])
+      );
+    end
+  endgenerate
 
   mesh #(
     .ROWS(ROWS),
@@ -327,10 +403,6 @@ module cgra_top #(
         STATE_CONFIG: begin
           kernel_pc <= '0;
           cycles_left <= '0;
-          if (cfg_accept && (cfg_mem_type == CFG_MEM_CONTROL)) begin
-            control_mem[cfg_tile_idx][cfg_ctrl_addr] <= (control_mem[cfg_tile_idx][cfg_ctrl_addr] & ~cfg_word_mask)
-                                                   | cfg_word_shifted;
-          end
           if (start) begin
             state <= STATE_RUN;
             kernel_pc <= '0;
