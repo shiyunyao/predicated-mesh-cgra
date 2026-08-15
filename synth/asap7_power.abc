@@ -1,0 +1,16 @@
+# T037 reuses the T036S mapping recipe before ABC's unannotated power probe.
+strash
+&get -n
+&fraig -x
+&put
+scorr
+dc2
+dretime
+strash
+&get -n
+&dch -f
+&nf -D 10000
+&put
+topo
+stime -X 10 -p
+power -F 64 -P 16

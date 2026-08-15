@@ -1,6 +1,4 @@
 // SPDX-License-Identifier: MIT
-`ifndef CONTROL_MEM_BANK_SV
-`define CONTROL_MEM_BANK_SV
 `timescale 1ns/1ps
 
 module control_mem_bank #(
@@ -27,5 +25,3 @@ module control_mem_bank #(
     end
   end
 endmodule : control_mem_bank
-
-`endif

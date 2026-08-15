@@ -1,0 +1,14 @@
+rtl/cgra_pkg.sv
+rtl/data_rf.sv
+rtl/pred_rf.sv
+rtl/data_src_mux.sv
+rtl/pred_src_mux.sv
+rtl/fu.sv
+rtl/data_switchbox.sv
+rtl/pred_switchbox.sv
+rtl/scratchpad_bank.sv
+rtl/lsu.sv
+rtl/tile.sv
+rtl/mesh.sv
+rtl/control_mem_bank.sv
+rtl/cgra_top.sv

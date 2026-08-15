@@ -3,4 +3,11 @@
 *.vcd
 *.fst
 *.log
+__pycache__/
 *~
+
+# Generated synthesis dependencies and reports
+/synth/asap7/v28/
+/reports/synthesis/
+/sim/synthesis/*
+!/sim/synthesis/power_trace_main.cpp

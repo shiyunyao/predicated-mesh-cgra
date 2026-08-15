@@ -57,7 +57,9 @@ are defined in `rtl/cgra_pkg.sv`.
 |-- rtl/       # SystemVerilog RTL
 |-- tb/        # Unit and integration testbenches
 |-- sim/       # Verilator C++ harnesses
-|-- Makefile   # Build, test, and lint targets
+|-- scripts/   # Synthesis runners and report checks
+|-- synth/     # RTL filelist and ASAP7/ABC inputs
+|-- Makefile   # Build, test, lint, and synthesis targets
 `-- .gitignore
 ```
 
@@ -123,6 +125,33 @@ make clean
 ```
 
 to remove generated files. Build artifacts are written under `build/`.
+
+## Synthesis
+
+The current ASAP7 RVT/TT synthesis results are:
+
+| Result | 2 x 2 | 4 x 4 |
+| --- | ---: | ---: |
+| Mapped cell area | 2922.1965 (memory excluded) | 11507.60034 (memory excluded) |
+| Combinational delay | 9642.85 ps (memory excluded) | 9553.48 ps (memory excluded) |
+| Margin at 100 MHz | 357.15 ps (memory excluded) | 446.52 ps (memory excluded) |
+| ABC total power | 1.52088e+06 raw units (memory excluded) | not run |
+
+The synthesis flow requires Python 3, oss-cad-suite Yosys with the
+`yosys-slang` plugin, Verilator, `yosys-abc`, and a 7z-compatible extractor for
+the first ASAP7 download. Source the tool environment and run the desired
+target:
+
+```bash
+source ../oss-cad-suite/environment
+make synth-area
+make synth-timing
+make synth-power
+```
+
+Set `ASAP7_7Z=/absolute/path/to/7z` when the extractor is not available as
+`7z` on `PATH`. Summaries and raw synthesis artifacts are generated under
+`reports/synthesis/` and `sim/synthesis/`.
 
 ## Configuration and Execution
 

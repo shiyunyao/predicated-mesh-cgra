@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: MIT
 `timescale 1ns/1ps
-`include "rtl/control_mem_bank.sv"
 
 function automatic logic [1023:0] cgra_default_lsu_mask(input int rows, input int cols);
   logic [1023:0] mask;

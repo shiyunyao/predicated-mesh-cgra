@@ -1,0 +1,15 @@
+# T036S uses Yosys/ABC's full delay-driven Liberty mapping sequence.
+strash
+&get -n
+&fraig -x
+&put
+scorr
+dc2
+dretime
+strash
+&get -n
+&dch -f
+&nf -D 10000
+&put
+topo
+stime -X 10 -p

@@ -3,6 +3,7 @@
 VERILATOR ?= verilator
 TEST ?= cgra_4x4_smoke_tb
 BUILD_DIR ?= build
+ASAP7_7Z ?= 7z
 
 RTL_SRCS := \
 	rtl/cgra_pkg.sv \
@@ -17,6 +18,7 @@ RTL_SRCS := \
 	rtl/lsu.sv \
 	rtl/tile.sv \
 	rtl/mesh.sv \
+	rtl/control_mem_bank.sv \
 	rtl/cgra_top.sv
 
 TESTS := \
@@ -51,12 +53,15 @@ TRACE_FILE := $(TEST_BUILD_DIR)/trace.csv
 RUN_ARGS := $(if $(filter $(TEST),trace_tb trace_extended_tb),+CGRA_TRACE +CGRA_TRACE_FILE=$(TRACE_FILE))
 VERILATOR_FLAGS ?= -Wall --cc --exe --build
 
-.PHONY: help check-test lint build test regression clean
+.PHONY: help check-test lint build test regression synth-fetch-asap7 synth-memory-shape synth-area synth-timing synth-power synth-power-feasibility clean
 
 help:
 	@echo "make test TEST=<name>  Build and run one testbench"
 	@echo "make lint TEST=<name>  Lint RTL with one testbench"
 	@echo "make regression         Run all retained testbenches"
+	@echo "make synth-area         Map 2x2/4x4 logic and report ASAP7 cell area"
+	@echo "make synth-timing       Estimate 2x2/4x4 logic timing at 100 MHz"
+	@echo "make synth-power        Capture SAIF and run the ABC power probe"
 	@echo "Available tests: $(TESTS)"
 
 check-test:
@@ -79,6 +84,28 @@ regression:
 		echo "==> $$test_name"; \
 		$(MAKE) --no-print-directory test TEST=$$test_name; \
 	done
+
+synth-fetch-asap7:
+	python3 scripts/fetch_asap7.py --seven-zip $(ASAP7_7Z)
+
+synth-memory-shape:
+	python3 scripts/check_control_memory_shape.py --target all
+
+synth-area: synth-fetch-asap7 synth-memory-shape
+	python3 scripts/run_synth_area.py --target all
+	python3 scripts/summarize_synth_reports.py reports/synthesis/
+
+synth-timing: synth-fetch-asap7 synth-memory-shape
+	python3 scripts/run_synth_timing.py --target all
+	python3 scripts/summarize_timing.py reports/synthesis/
+
+synth-power: synth-fetch-asap7
+	python3 scripts/run_power_feasibility.py --self-test
+	python3 scripts/run_power_feasibility.py
+	python3 scripts/check_power_feasibility.py --self-test
+	python3 scripts/check_power_feasibility.py
+
+synth-power-feasibility: synth-power
 
 clean:
 	rm -rf -- "$(BUILD_DIR)"
