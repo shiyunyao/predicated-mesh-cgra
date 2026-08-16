@@ -1,0 +1,68 @@
+{
+  "schema": "cgra.storage_inventory.v1",
+  "technology": "ASAP7",
+  "source": "synth/fn_cacti/cgra_target.json and RTL module declarations",
+  "classes": [
+    {
+      "name": "control_mem",
+      "module": "control_mem_bank",
+      "depth": 256,
+      "width_bits": 128,
+      "read_ports": 1,
+      "write_ports": 1,
+      "read_mode": "asynchronous",
+      "write_mode": "synchronous",
+      "instances": {"small": 4, "default": 16}
+    },
+    {
+      "name": "data_rf",
+      "module": "data_rf",
+      "depth": 16,
+      "width_bits": 32,
+      "read_ports": 2,
+      "write_ports": 2,
+      "read_mode": "asynchronous",
+      "write_mode": "synchronous",
+      "instances": {"small": 4, "default": 16}
+    },
+    {
+      "name": "predicate_rf",
+      "module": "pred_rf",
+      "depth": 16,
+      "width_bits": 1,
+      "read_ports": 2,
+      "write_ports": 2,
+      "read_mode": "asynchronous",
+      "write_mode": "synchronous",
+      "instances": {"small": 4, "default": 16}
+    },
+    {
+      "name": "const_mem",
+      "module": "tile.const_mem",
+      "depth": 16,
+      "width_bits": 32,
+      "read_ports": 1,
+      "write_ports": 1,
+      "read_mode": "asynchronous",
+      "write_mode": "synchronous",
+      "instances": {"small": 4, "default": 16}
+    },
+    {
+      "name": "scratchpad",
+      "module": "scratchpad_bank",
+      "depth": 1024,
+      "width_bits": 32,
+      "read_ports": 1,
+      "write_ports": 2,
+      "read_mode": "asynchronous",
+      "write_mode": "synchronous",
+      "instances": {"small": 2, "default": 4}
+    }
+  ],
+  "excluded": [
+    "data_rf.initialized",
+    "pred_rf.initialized",
+    "logic DFF state already included in T036S mapped standard-cell results"
+  ],
+  "coverage_policy": "Exactly one FN-CACTI model per architectural storage instance; missing classes and duplicate accounting fail closed."
+}

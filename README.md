@@ -59,6 +59,7 @@ are defined in `rtl/cgra_pkg.sv`.
 |-- sim/       # Verilator C++ harnesses
 |-- scripts/   # Synthesis runners and report checks
 |-- synth/     # RTL filelist and ASAP7/ABC inputs
+|-- third_party/fncacti/ # Bundled FN-CACTI executable and upstream notes
 |-- Makefile   # Build, test, lint, and synthesis targets
 `-- .gitignore
 ```
@@ -128,30 +129,61 @@ to remove generated files. Build artifacts are written under `build/`.
 
 ## Synthesis
 
-The current ASAP7 RVT/TT synthesis results are:
+The current area breakdown is:
+
+| Area component | Model basis | 2 x 2 (um^2) | 4 x 4 (um^2) |
+| --- | --- | ---: | ---: |
+| Mapped logic | ASAP7 7 nm, memory excluded | 2922.1965 | 11507.60034 |
+| Control memories | FN-CACTI | 13347.760 | 53391.040 |
+| Data register files | FN-CACTI | 1341.096 | 5364.384 |
+| Predicate register files | FN-CACTI | 751.220 | 3004.880 |
+| Constant memories | FN-CACTI | 486.152 | 1944.608 |
+| Scratchpad banks | FN-CACTI | 8558.500 | 17117.000 |
+| FN-CACTI storage subtotal | 14 nm devices, 7 nm wires | 24484.728 | 80821.912 |
+| Arithmetic breakdown total | Mixed-node proxy | 27406.9245 | 92329.51234 |
+
+FN-CACTI supports 14 nm FinFET devices and 7 nm ASAP7 wires in this flow; it
+cannot produce a 7 nm device model. The arithmetic total above is therefore a
+paper-style component sum of ASAP7 7 nm logic and a 14 nm-device/7 nm-wire
+storage proxy. It is not a node-normalized 7 nm physical area, and no area
+scaling has been applied.
+
+The remaining timing and power results are:
 
 | Result | 2 x 2 | 4 x 4 |
 | --- | ---: | ---: |
-| Mapped cell area | 2922.1965 (memory excluded) | 11507.60034 (memory excluded) |
 | Combinational delay | 9642.85 ps (memory excluded) | 9553.48 ps (memory excluded) |
 | Margin at 100 MHz | 357.15 ps (memory excluded) | 446.52 ps (memory excluded) |
-| ABC total power | 1.52088e+06 raw units (memory excluded) | not run |
+| ABC total power | 1.52088e+06 raw units (memory excluded) | 6.03186e+06 raw units (memory excluded) |
+| FN-CACTI storage leakage | 0.269045708 mW | 0.878528432 mW |
+| FN-CACTI storage power, all declared ports active at 100 MHz | 1.141073828 mW | 3.981238112 mW |
+
+The ABC rows use internally generated switching frames rather than the captured
+RTL SAIF, so they are uncalibrated feasibility values rather than workload
+power. The FN-CACTI rows are analytical storage-only scenarios and are not
+added to ABC because the results do not share a compatible SI-unit and activity
+basis.
 
 The synthesis flow requires Python 3, oss-cad-suite Yosys with the
 `yosys-slang` plugin, Verilator, `yosys-abc`, and a 7z-compatible extractor for
-the first ASAP7 download. Source the tool environment and run the desired
-target:
+the first ASAP7 download. The bundled FN-CACTI executable also requires an x86
+Linux environment capable of running its 32-bit binary. Source the tool
+environment and run the desired target:
 
 ```bash
 source ../oss-cad-suite/environment
 make synth-area
 make synth-timing
 make synth-power
+make synth-fn-cacti
 ```
 
 Set `ASAP7_7Z=/absolute/path/to/7z` when the extractor is not available as
 `7z` on `PATH`. Summaries and raw synthesis artifacts are generated under
-`reports/synthesis/` and `sim/synthesis/`.
+`reports/synthesis/` and `sim/synthesis/`. `make synth-fn-cacti` models the
+control memories, data and predicate register files, constant memories, and
+scratchpad banks, reruns the logic-area measurement, creates canonical and
+replay evidence under `reports/synthesis/fn_cacti/`, and validates both runs.
 
 ## Configuration and Execution
 

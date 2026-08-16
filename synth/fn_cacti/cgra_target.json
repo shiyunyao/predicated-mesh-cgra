@@ -1,0 +1,22 @@
+{
+  "schema": "cgra.fn_cacti_target.v1",
+  "source": "rtl/cgra_pkg.sv and the default rtl/cgra_top.sv parameters",
+  "parameters": {
+    "data_width": 32,
+    "pred_width": 1,
+    "data_rf_depth": 16,
+    "pred_rf_depth": 16,
+    "const_mem_depth": 16,
+    "ctrl_mem_depth": 256,
+    "scratch_bank_depth": 1024,
+    "physical_control_word_width_bits": 128
+  },
+  "lsu": {
+    "enabled_tiles": [
+      {"row": 0, "col": 0, "bank_id": 0},
+      {"row": 1, "col": 0, "bank_id": 1},
+      {"row": 2, "col": 0, "bank_id": 2},
+      {"row": 3, "col": 0, "bank_id": 3}
+    ]
+  }
+}

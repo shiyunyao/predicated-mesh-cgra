@@ -16,24 +16,36 @@ import run_yosys_slang as sanity
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 DEFAULT_METADATA = REPO_ROOT / "reports/synthesis/raw/asap7_power_small.json"
-REQUIRED_ARTIFACT_PATHS = {
-    "activity_build_log": "sim/synthesis/power_activity_build.log",
-    "activity_run_log": "sim/synthesis/power_activity_run.log",
-    "activity_replay_log": "sim/synthesis/power_activity_replay.log",
-    "capability_verilator_log": "sim/synthesis/power_capability_verilator.log",
-    "capability_yosys_log": "sim/synthesis/power_capability_yosys.log",
-    "capability_abc_log": "sim/synthesis/power_capability_abc.log",
-    "power_script": "reports/synthesis/raw/asap7_power_small.ys",
-    "power_log": "reports/synthesis/raw/asap7_power_small.log",
-    "power_stat": "reports/synthesis/raw/asap7_power_small_stat.json",
-    "power_replay_script": "reports/synthesis/raw/asap7_power_small_replay.ys",
-    "power_replay_log": "reports/synthesis/raw/asap7_power_small_replay.log",
-    "power_replay_stat": "reports/synthesis/raw/asap7_power_small_replay_stat.json",
-}
-REQUIRED_ACTIVITY_PATHS = {
-    "canonical": "reports/synthesis/raw/asap7_power_activity_small.saif",
-    "replay": "reports/synthesis/raw/asap7_power_activity_small_replay.saif",
-}
+
+
+def metadata_path(target: str) -> pathlib.Path:
+    return power_flow.target_paths(target)["metadata"]
+
+
+def required_artifact_paths(target: str) -> dict[str, str]:
+    paths = power_flow.target_paths(target)
+    return {
+        "activity_build_log": power_flow.relative(paths["activity_build_log"]),
+        "activity_run_log": power_flow.relative(paths["activity_run_log"]),
+        "activity_replay_log": power_flow.relative(paths["activity_replay_log"]),
+        "capability_verilator_log": "sim/synthesis/power_capability_verilator.log",
+        "capability_yosys_log": "sim/synthesis/power_capability_yosys.log",
+        "capability_abc_log": "sim/synthesis/power_capability_abc.log",
+        "power_script": power_flow.relative(paths["power_script"]),
+        "power_log": power_flow.relative(paths["power_log"]),
+        "power_stat": power_flow.relative(paths["power_stat"]),
+        "power_replay_script": power_flow.relative(paths["power_replay_script"]),
+        "power_replay_log": power_flow.relative(paths["power_replay_log"]),
+        "power_replay_stat": power_flow.relative(paths["power_replay_stat"]),
+    }
+
+
+def required_activity_paths(target: str) -> dict[str, str]:
+    paths = power_flow.target_paths(target)
+    return {
+        "canonical": power_flow.relative(paths["canonical_saif"]),
+        "replay": power_flow.relative(paths["replay_saif"]),
+    }
 
 
 def resolve_artifact(record: dict[str, object]) -> pathlib.Path:
@@ -48,8 +60,12 @@ def resolve_artifact(record: dict[str, object]) -> pathlib.Path:
     return resolved
 
 
-def validate(metadata_path: pathlib.Path) -> list[str]:
+def validate(metadata_path: pathlib.Path, target: str) -> list[str]:
     errors = []
+    if target not in power_flow.POWER_TARGETS:
+        return [f"unsupported expected target: {target}"]
+    artifact_paths = required_artifact_paths(target)
+    activity_paths = required_activity_paths(target)
     try:
         record = json.loads(metadata_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
@@ -60,11 +76,11 @@ def validate(metadata_path: pathlib.Path) -> list[str]:
         errors.append("unexpected metadata schema")
     if record.get("status") != "PROTOTYPE_AVAILABLE_UNCALIBRATED":
         errors.append("power feasibility status is not the accepted uncalibrated status")
-    if record.get("target") != power_flow.TARGET:
-        errors.append("target is not the canonical small target")
+    if record.get("target") != target:
+        errors.append("target does not match the required evidence target")
     if record.get("clock_period_ps") != power_flow.CLOCK_PERIOD_PS:
         errors.append("clock period is not 10,000 ps")
-    target_config = sanity.TARGETS[power_flow.TARGET]
+    target_config = sanity.TARGETS[target]
     if record.get("top") != target_config["top"]:
         errors.append("top does not match the canonical target")
     if record.get("parameters") != target_config["parameters"]:
@@ -73,7 +89,7 @@ def validate(metadata_path: pathlib.Path) -> list[str]:
     rtl_files = []
     try:
         rtl_files = sanity.read_filelist(sanity.FILELIST)
-        if record.get("input_snapshot") != power_flow.input_snapshot(rtl_files):
+        if record.get("input_snapshot") != power_flow.input_snapshot(rtl_files, target):
             errors.append("durable input snapshot is stale")
     except (OSError, ValueError) as error:
         errors.append(f"cannot reconstruct input snapshot: {error}")
@@ -86,9 +102,9 @@ def validate(metadata_path: pathlib.Path) -> list[str]:
         replay_record = activity["replay"]
         canonical_path = resolve_artifact(canonical_record)
         replay_path = resolve_artifact(replay_record)
-        if canonical_record.get("path") != REQUIRED_ACTIVITY_PATHS["canonical"]:
+        if canonical_record.get("path") != activity_paths["canonical"]:
             errors.append("canonical SAIF path is not canonical")
-        if replay_record.get("path") != REQUIRED_ACTIVITY_PATHS["replay"]:
+        if replay_record.get("path") != activity_paths["replay"]:
             errors.append("replay SAIF path is not canonical")
         if canonical_path == replay_path:
             errors.append("canonical and replay SAIF paths are not distinct")
@@ -110,7 +126,9 @@ def validate(metadata_path: pathlib.Path) -> list[str]:
             for field in ("duration", "timescale", "activity_records", "total_toggle_count"):
                 if activity.get(field) != parsed_activity[field]:
                     errors.append(f"SAIF {field} does not match metadata")
-        if activity.get("source") != "Verilator RTL SAIF from tb/cgra_top_tb.sv":
+        testbench = power_flow.target_config(target)["testbench"]
+        assert isinstance(testbench, pathlib.Path)
+        if activity.get("source") != f"Verilator RTL SAIF from {power_flow.relative(testbench)}":
             errors.append("RTL activity source is not canonical")
         if activity.get("power_annotation_status") != power_flow.ANNOTATION_STATUS:
             errors.append("RTL activity annotation status is unsafe")
@@ -122,7 +140,7 @@ def validate(metadata_path: pathlib.Path) -> list[str]:
     artifacts = record.get("artifacts")
     if not isinstance(artifacts, dict):
         return errors + ["artifact manifest is missing"]
-    required_artifacts = set(REQUIRED_ARTIFACT_PATHS)
+    required_artifacts = set(artifact_paths)
     missing_artifacts = sorted(required_artifacts - artifacts.keys())
     if missing_artifacts:
         errors.append(f"artifact manifest is missing required keys: {missing_artifacts}")
@@ -136,7 +154,7 @@ def validate(metadata_path: pathlib.Path) -> list[str]:
             continue
         try:
             path = resolve_artifact(artifact_record)
-            expected_path = REQUIRED_ARTIFACT_PATHS.get(name)
+            expected_path = artifact_paths.get(name)
             if expected_path is not None and artifact_record.get("path") != expected_path:
                 errors.append(f"artifact path is not canonical: {name}")
             if not path.is_file() or path.stat().st_size == 0:
@@ -152,10 +170,10 @@ def validate(metadata_path: pathlib.Path) -> list[str]:
 
     generated_scripts = {
         "power_script": power_flow.yosys_script(
-            rtl_files, REPO_ROOT / REQUIRED_ARTIFACT_PATHS["power_stat"]
+            target, rtl_files, REPO_ROOT / artifact_paths["power_stat"]
         ),
         "power_replay_script": power_flow.yosys_script(
-            rtl_files, REPO_ROOT / REQUIRED_ARTIFACT_PATHS["power_replay_stat"]
+            target, rtl_files, REPO_ROOT / artifact_paths["power_replay_stat"]
         ),
     }
     for name, expected_text in generated_scripts.items():
@@ -208,7 +226,7 @@ def validate(metadata_path: pathlib.Path) -> list[str]:
             resolved["power_replay_stat"]
         ):
             errors.append("canonical and replay stat JSON hashes differ")
-        resource = area.stat_summary(resolved["power_stat"], sanity.TARGETS[power_flow.TARGET]["top"])
+        resource = area.stat_summary(resolved["power_stat"], sanity.TARGETS[target]["top"])
         if isinstance(mapping, dict):
             expected_mapping = {
                 "mapped_cells": resource["mapped_cells"],
@@ -292,12 +310,12 @@ def validate(metadata_path: pathlib.Path) -> list[str]:
             if tools != expected_tools:
                 errors.append("tool provenance does not match the selected environment")
         expected_power_commands = {
-            "command": [yosys, "-Q", "-s", "reports/synthesis/raw/asap7_power_small.ys"],
+            "command": [yosys, "-Q", "-s", artifact_paths["power_script"]],
             "replay_command": [
                 yosys,
                 "-Q",
                 "-s",
-                "reports/synthesis/raw/asap7_power_small_replay.ys",
+                artifact_paths["power_replay_script"],
             ],
         }
         if isinstance(probe, dict):
@@ -315,18 +333,18 @@ def validate(metadata_path: pathlib.Path) -> list[str]:
             "--trace-depth",
             "4",
             "--Mdir",
-            power_flow.relative(power_flow.BUILD_DIR),
+            power_flow.relative(power_flow.target_paths(target)["build_dir"]),
             "--prefix",
             "Vtop",
             *rtl_files,
-            power_flow.relative(power_flow.TESTBENCH),
+            power_flow.relative(power_flow.target_config(target)["testbench"]),
             power_flow.relative(power_flow.TRACE_MAIN),
             "--top-module",
-            "cgra_top_tb",
+            power_flow.target_config(target)["top_module"],
         ]
         expected_activity_run = [
-            power_flow.relative(power_flow.BUILD_DIR / "Vtop"),
-            "+CGRA_POWER_SAIF=reports/synthesis/raw/asap7_power_activity_small.saif",
+            power_flow.relative(power_flow.target_paths(target)["build_dir"] / "Vtop"),
+            f"+CGRA_POWER_SAIF={activity_paths['canonical']}",
         ]
         if activity.get("build_command") != expected_activity_build:
             errors.append("RTL activity build command is not canonical")
@@ -354,19 +372,41 @@ def validate(metadata_path: pathlib.Path) -> list[str]:
     liberty = record.get("liberty_power_data")
     if liberty != power_flow.liberty_summary():
         errors.append("Liberty power-data summary is stale")
-    report_path = power_flow.REPORT
+    return errors
+
+
+def validate_stable_report(records: list[dict[str, object]]) -> list[str]:
     try:
-        report_text = report_path.read_text(encoding="utf-8")
+        report_text = power_flow.REPORT.read_text(encoding="utf-8")
     except OSError as error:
-        errors.append(f"cannot read stable report: {error}")
-    else:
+        return [f"cannot read stable report: {error}"]
+    try:
+        expected_report = power_flow.render_report(records)
+    except (KeyError, TypeError, ValueError) as error:
+        return [f"cannot render stable report from metadata: {error}"]
+    return [] if report_text == expected_report else ["stable report does not exactly match validated metadata"]
+
+
+def validate_all() -> list[str]:
+    errors: list[str] = []
+    records: list[dict[str, object]] = []
+    for target in power_flow.POWER_TARGETS:
+        path = metadata_path(target)
+        target_errors = validate(path, target)
+        errors.extend(f"{target}: {error}" for error in target_errors)
         try:
-            expected_report = power_flow.render_report(record)
-        except (KeyError, TypeError, ValueError) as error:
-            errors.append(f"cannot render stable report from metadata: {error}")
+            record = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            errors.append(f"{target}: cannot read metadata for report validation: {error}")
+            continue
+        if isinstance(record, dict):
+            records.append(record)
         else:
-            if report_text != expected_report:
-                errors.append("stable report does not exactly match validated metadata")
+            errors.append(f"{target}: metadata root must be an object for report validation")
+    if len(records) == len(power_flow.POWER_TARGETS):
+        errors.extend(validate_stable_report(records))
+    else:
+        errors.append("stable report requires both target metadata records")
     return errors
 
 
@@ -389,7 +429,7 @@ def self_test() -> None:
     with tempfile.TemporaryDirectory(prefix="t037-power-check-") as directory:
         path = pathlib.Path(directory) / "missing-artifacts.json"
         path.write_text(json.dumps(record), encoding="utf-8")
-        errors = validate(path)
+        errors = validate(path, "small")
     assert any("missing required keys" in error for error in errors)
     assert any("activity source is unsafe" in error for error in errors)
     assert any("annotation status is unsafe" in error for error in errors)
@@ -398,7 +438,6 @@ def self_test() -> None:
     assert any("technology provenance" in error for error in errors)
     assert any("tool provenance" in error for error in errors)
     assert any("limitations" in error for error in errors)
-    assert any("stable report does not exactly match" in error for error in errors)
 
     substituted = json.loads(json.dumps(canonical_record))
     substituted["artifacts"]["power_script"] = substituted["artifacts"][
@@ -407,7 +446,7 @@ def self_test() -> None:
     with tempfile.TemporaryDirectory(prefix="t037-power-path-check-") as directory:
         path = pathlib.Path(directory) / "substituted-artifact.json"
         path.write_text(json.dumps(substituted), encoding="utf-8")
-        errors = validate(path)
+        errors = validate(path, "small")
     assert any("artifact path is not canonical: power_script" in error for error in errors)
 
     substituted = json.loads(json.dumps(canonical_record))
@@ -415,22 +454,30 @@ def self_test() -> None:
     with tempfile.TemporaryDirectory(prefix="t037-power-saif-path-check-") as directory:
         path = pathlib.Path(directory) / "substituted-saif.json"
         path.write_text(json.dumps(substituted), encoding="utf-8")
-        errors = validate(path)
+        errors = validate(path, "small")
     assert any("replay SAIF path is not canonical" in error for error in errors)
     assert any("SAIF paths are not distinct" in error for error in errors)
 
 
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("metadata", nargs="?", type=pathlib.Path, default=DEFAULT_METADATA)
+    parser.add_argument("metadata", nargs="?", type=pathlib.Path)
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args(argv)
     if args.self_test:
         self_test()
         print("T037_POWER_FEASIBILITY_CHECKER_SELF_TEST_PASS")
         return 0
-    metadata = args.metadata if args.metadata.is_absolute() else REPO_ROOT / args.metadata
-    errors = validate(metadata)
+    if args.metadata is None:
+        errors = validate_all()
+    else:
+        metadata = args.metadata if args.metadata.is_absolute() else REPO_ROOT / args.metadata
+        try:
+            record = json.loads(metadata.read_text(encoding="utf-8"))
+            target = record.get("target") if isinstance(record, dict) else None
+        except (OSError, json.JSONDecodeError):
+            target = None
+        errors = ["metadata has no supported target"] if target not in power_flow.POWER_TARGETS else validate(metadata, target)
     if errors:
         for error in errors:
             print(f"ERROR: {error}", file=sys.stderr)

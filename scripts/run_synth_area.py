@@ -124,12 +124,12 @@ def yosys_script(target: str, rtl_files: list[str], paths: dict[str, pathlib.Pat
     )
 
 
-def record_missing_prerequisite(target: str, finding: str) -> int:
-    RAW_DIR.mkdir(parents=True, exist_ok=True)
+def record_missing_prerequisite(target: str, finding: str, raw_dir: pathlib.Path) -> int:
+    raw_dir.mkdir(parents=True, exist_ok=True)
     basename = f"asap7_area_{target}"
     for suffix in (".log", ".ys", "_stat.json"):
-        (RAW_DIR / f"{basename}{suffix}").unlink(missing_ok=True)
-    record_path = RAW_DIR / f"asap7_area_{target}.json"
+        (raw_dir / f"{basename}{suffix}").unlink(missing_ok=True)
+    record_path = raw_dir / f"{basename}.json"
     record_path.write_text(
         json.dumps(
             {
@@ -147,34 +147,36 @@ def record_missing_prerequisite(target: str, finding: str) -> int:
     return 1
 
 
-def run_target(target: str) -> int:
+def run_target(target: str, report_dir: pathlib.Path = REPORT_DIR) -> int:
+    raw_dir = report_dir / "raw"
     if not ASAP7_LIBERTY.exists() or not ASAP7_MANIFEST.exists():
         return record_missing_prerequisite(
             target,
             "ASAP7 cache is missing; run make synth-fetch-asap7 with a 7z-compatible extractor.",
+            raw_dir,
         )
     yosys = shutil.which("yosys")
     if yosys is None:
         return record_missing_prerequisite(
-            target, "yosys is missing; source ../oss-cad-suite/environment and retry."
+            target, "yosys is missing; source ../oss-cad-suite/environment and retry.", raw_dir
         )
     try:
         rtl_files = sanity.read_filelist(sanity.FILELIST)
     except ValueError as error:
-        return record_missing_prerequisite(target, str(error))
+        return record_missing_prerequisite(target, str(error), raw_dir)
 
-    RAW_DIR.mkdir(parents=True, exist_ok=True)
+    raw_dir.mkdir(parents=True, exist_ok=True)
     basename = f"asap7_area_{target}"
     paths = {
         "liberty": ASAP7_LIBERTY,
-        "script": RAW_DIR / f"{basename}.ys",
-        "stat": RAW_DIR / f"{basename}_stat.json",
+        "script": raw_dir / f"{basename}.ys",
+        "stat": raw_dir / f"{basename}_stat.json",
     }
     paths["stat"].unlink(missing_ok=True)
     script = yosys_script(target, rtl_files, paths)
     paths["script"].write_text(script, encoding="utf-8")
     command = [yosys, "-Q", "-s", paths["script"].relative_to(REPO_ROOT).as_posix()]
-    log_path = RAW_DIR / f"{basename}.log"
+    log_path = raw_dir / f"{basename}.log"
     returncode = run_command_to_log(command, log_path)
 
     summary = stat_summary(paths["stat"], sanity.TARGETS[target]["top"])
@@ -252,7 +254,7 @@ def run_target(target: str) -> int:
         "repair_finding": finding,
         "summary": summary,
     }
-    (RAW_DIR / f"{basename}.json").write_text(
+    (raw_dir / f"{basename}.json").write_text(
         json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
     print(f"{target}: {status}")
@@ -262,9 +264,16 @@ def run_target(target: str) -> int:
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--target", choices=("small", "default", "all"), default="all")
+    parser.add_argument(
+        "--report-dir",
+        type=pathlib.Path,
+        default=REPORT_DIR,
+        help="write raw area artifacts under this report root instead of reports/synthesis",
+    )
     args = parser.parse_args(argv)
     targets = ("small", "default") if args.target == "all" else (args.target,)
-    results = [run_target(target) for target in targets]
+    report_dir = args.report_dir if args.report_dir.is_absolute() else REPO_ROOT / args.report_dir
+    results = [run_target(target, report_dir) for target in targets]
     return 0 if not any(results) else 1
 
 

@@ -1,0 +1,23 @@
+How to use FN-CACTI?
+====================
+cd <fncacti folder>
+make clean
+make
+
+-> for FinFET,
+	run the "cacti" binary: "./cacti -infile configs/2MB_fin.xml > fncacti_detailed_report.txt"
+-> for NC-FinFET,
+	run the "cacti" binary: "./cacti -infile xmls/2MB_nc.xml > fncacti_detailed_report.txt"
+
+Detailed simulation report will be written in "./fncacti_detailed_report.txt".
+
+List of features:
+===============================
+The following is the list of features supported by the tool.
+
+* Supports FinFET and NC-FinFET transistor types
+* Tool supports 14nm technology node
+* Provides support for CAM structures
+* Compatible with FN-McPAT
+* Provides DVS support for voltages ranging from 0.3V-0.8V. (Set DVS true in config file and provide start and end voltage range)
+* Provides forcing cache configuration for Tag array aswell. This feature helps to set same cache array configuration for FinFET and NC-FinFET caches for fair comparison.

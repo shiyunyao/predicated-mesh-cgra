@@ -53,7 +53,7 @@ TRACE_FILE := $(TEST_BUILD_DIR)/trace.csv
 RUN_ARGS := $(if $(filter $(TEST),trace_tb trace_extended_tb),+CGRA_TRACE +CGRA_TRACE_FILE=$(TRACE_FILE))
 VERILATOR_FLAGS ?= -Wall --cc --exe --build
 
-.PHONY: help check-test lint build test regression synth-fetch-asap7 synth-memory-shape synth-area synth-timing synth-power synth-power-feasibility clean
+.PHONY: help check-test lint build test regression synth-fetch-asap7 synth-memory-shape synth-area synth-timing synth-power synth-power-feasibility synth-fn-cacti clean
 
 help:
 	@echo "make test TEST=<name>  Build and run one testbench"
@@ -61,7 +61,8 @@ help:
 	@echo "make regression         Run all retained testbenches"
 	@echo "make synth-area         Map 2x2/4x4 logic and report ASAP7 cell area"
 	@echo "make synth-timing       Estimate 2x2/4x4 logic timing at 100 MHz"
-	@echo "make synth-power        Capture SAIF and run the ABC power probe"
+	@echo "make synth-power        Capture SAIF and probe 2x2/4x4 ABC power"
+	@echo "make synth-fn-cacti     Model all architectural storage with FN-CACTI"
 	@echo "Available tests: $(TESTS)"
 
 check-test:
@@ -106,6 +107,11 @@ synth-power: synth-fetch-asap7
 	python3 scripts/check_power_feasibility.py
 
 synth-power-feasibility: synth-power
+
+synth-fn-cacti: synth-fetch-asap7 synth-memory-shape
+	python3 scripts/run_fn_cacti.py --target all
+	python3 scripts/run_fn_cacti.py --target all --replay
+	python3 scripts/check_fn_cacti.py reports/synthesis/fn_cacti/
 
 clean:
 	rm -rf -- "$(BUILD_DIR)"
