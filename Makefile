@@ -53,12 +53,24 @@ TRACE_FILE := $(TEST_BUILD_DIR)/trace.csv
 RUN_ARGS := $(if $(filter $(TEST),trace_tb trace_extended_tb),+CGRA_TRACE +CGRA_TRACE_FILE=$(TRACE_FILE))
 VERILATOR_FLAGS ?= -Wall --cc --exe --build
 
-.PHONY: help check-test lint build test regression synth-fetch-asap7 synth-memory-shape synth-area synth-timing synth-power synth-power-feasibility synth-fn-cacti clean
+GENERATED_PROGRAM ?= examples/dfg/add_chain.json
+GENERATED_PROGRAM_NAME := $(basename $(notdir $(GENERATED_PROGRAM)))
+GENERATED_PROGRAM_DIR := $(BUILD_DIR)/generated_program/$(GENERATED_PROGRAM_NAME)
+GENERATED_PROGRAM_OBJ_DIR := $(GENERATED_PROGRAM_DIR)/obj
+GENERATED_PROGRAM_TB := $(GENERATED_PROGRAM_DIR)/generated_program_tb.sv
+GENERATED_PROGRAM_RTL_TRACE := $(GENERATED_PROGRAM_DIR)/rtl_trace.csv
+GENERATED_PROGRAM_GOLDEN_TRACE := $(GENERATED_PROGRAM_DIR)/golden_trace.csv
+GENERATED_PROGRAM_CONFIG := $(GENERATED_PROGRAM_DIR)/config_stream.json
+GENERATED_PROGRAM_DFG := $(GENERATED_PROGRAM_DIR)/input.dfg.json
+GENERATED_PROGRAM_CPP := $(abspath sim/data_rf_main.cpp)
+
+.PHONY: help check-test lint build test regression generated-program generated-program-prepare generated-program-build generated-program-run generated-program-check synth-fetch-asap7 synth-memory-shape synth-area synth-timing synth-power synth-power-feasibility synth-fn-cacti clean
 
 help:
 	@echo "make test TEST=<name>  Build and run one testbench"
 	@echo "make lint TEST=<name>  Lint RTL with one testbench"
 	@echo "make regression         Run all retained testbenches"
+	@echo "make generated-program  Compile a DFG, generate its testbench, and compare RTL/golden traces"
 	@echo "make synth-area         Map 2x2/4x4 logic and report ASAP7 cell area"
 	@echo "make synth-timing       Estimate 2x2/4x4 logic timing at 100 MHz"
 	@echo "make synth-power        Capture SAIF and probe 2x2/4x4 ABC power"
@@ -85,6 +97,35 @@ regression:
 		echo "==> $$test_name"; \
 		$(MAKE) --no-print-directory test TEST=$$test_name; \
 	done
+
+generated-program: generated-program-check
+
+generated-program-prepare:
+	@test -f "$(GENERATED_PROGRAM)" || { echo "Missing generated-program input: $(GENERATED_PROGRAM)"; exit 2; }
+	mkdir -p "$(GENERATED_PROGRAM_DIR)"
+	python3 tools/generated_program_runner.py --prepare "$(GENERATED_PROGRAM)" --out-dir "$(GENERATED_PROGRAM_DIR)"
+
+generated-program-build: generated-program-prepare
+	mkdir -p "$(GENERATED_PROGRAM_OBJ_DIR)"
+	$(VERILATOR) $(VERILATOR_FLAGS) --Mdir "$(GENERATED_PROGRAM_OBJ_DIR)" --prefix Vtop \
+		$(RTL_SRCS) "$(GENERATED_PROGRAM_TB)" "$(GENERATED_PROGRAM_CPP)" \
+		--top-module generated_program_tb
+
+generated-program-run: generated-program-build
+	"$(GENERATED_PROGRAM_OBJ_DIR)/Vtop" \
+		+CGRA_TRACE +CGRA_TRACE_FILE="$(abspath $(GENERATED_PROGRAM_RTL_TRACE))" \
+		> "$(GENERATED_PROGRAM_DIR)/rtl_simulation.log" 2>&1
+	cat "$(GENERATED_PROGRAM_DIR)/rtl_simulation.log"
+	@test -s "$(GENERATED_PROGRAM_RTL_TRACE)"
+
+generated-program-check: generated-program-run
+	python3 tools/generated_program_runner.py --compare \
+		--dfg "$(GENERATED_PROGRAM_DFG)" \
+		--config "$(GENERATED_PROGRAM_CONFIG)" \
+		--golden "$(GENERATED_PROGRAM_GOLDEN_TRACE)" \
+		--rtl "$(GENERATED_PROGRAM_RTL_TRACE)" \
+		> "$(GENERATED_PROGRAM_DIR)/compare.log" 2>&1
+	cat "$(GENERATED_PROGRAM_DIR)/compare.log"
 
 synth-fetch-asap7:
 	python3 scripts/fetch_asap7.py --seven-zip $(ASAP7_7Z)

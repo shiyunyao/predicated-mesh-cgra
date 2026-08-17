@@ -1,0 +1,131 @@
+{
+  "schema": "cgra.target.v1",
+  "name": "cgra_v1_default",
+  "version": 1,
+  "role": "tooling_target_description",
+  "authority": {
+    "mode": "validates_existing_rtl_package",
+    "rtl_package": "rtl/cgra_pkg.sv",
+    "notes": "This target description validates the existing RTL package; it does not generate or modify RTL."
+  },
+  "parameters": {
+    "array_rows": 4,
+    "array_cols": 4,
+    "data_width": 32,
+    "pred_width": 1,
+    "data_rf_depth": 16,
+    "pred_rf_depth": 16,
+    "const_mem_depth": 16,
+    "ctrl_mem_depth": 256,
+    "scratch_bank_depth": 1024,
+    "mesh_hop_latency": 1,
+    "load_latency": 2,
+    "control_word_align_bits": 32,
+    "raw_control_word_width_bits": 126,
+    "physical_control_word_width_bits": 128,
+    "control_word_chunks": 4
+  },
+  "derived_widths": {
+    "data_rf_addr_width": 4,
+    "pred_rf_addr_width": 4,
+    "const_addr_width": 4,
+    "ctrl_pc_width": 8,
+    "scratch_addr_width": 10,
+    "cfg_word_idx_width_current_rtl": 2
+  },
+  "lsu": {
+    "default_enable_policy": "left_column",
+    "enabled_tiles": [
+      {"row": 0, "col": 0, "bank_id": 0},
+      {"row": 1, "col": 0, "bank_id": 1},
+      {"row": 2, "col": 0, "bank_id": 2},
+      {"row": 3, "col": 0, "bank_id": 3}
+    ]
+  },
+  "latencies": {
+    "fu_ops": {
+      "NOP": 1,
+      "PASS": 1,
+      "ADD": 1,
+      "SUB": 1,
+      "MUL": 1,
+      "AND": 1,
+      "OR": 1,
+      "XOR": 1,
+      "SHL": 1,
+      "LSHR": 1,
+      "SELECT": 1,
+      "CMP_EQ": 1,
+      "CMP_NE": 1,
+      "CMP_ULT": 1,
+      "CMP_ULE": 1,
+      "PPASS": 1,
+      "PNOT": 1,
+      "PAND": 1,
+      "POR": 1
+    },
+    "mesh_hop": 1,
+    "load_response": 2
+  },
+  "ops": {
+    "data": ["NOP", "PASS", "ADD", "SUB", "MUL", "AND", "OR", "XOR", "SHL", "LSHR", "SELECT"],
+    "compare": ["CMP_EQ", "CMP_NE", "CMP_ULT", "CMP_ULE"],
+    "predicate": ["PPASS", "PNOT", "PAND", "POR"]
+  },
+  "enums": {
+    "data_sources": [
+      "ZERO",
+      "DATA_RF_A",
+      "DATA_RF_B",
+      "NORTH_DATA_IN",
+      "SOUTH_DATA_IN",
+      "EAST_DATA_IN",
+      "WEST_DATA_IN",
+      "CONST_DATA",
+      "LSU_LOAD_DATA"
+    ],
+    "predicate_sources": [
+      "CONST_FALSE",
+      "CONST_TRUE",
+      "PRED_RF_A",
+      "PRED_RF_B",
+      "NORTH_PRED_IN",
+      "SOUTH_PRED_IN",
+      "EAST_PRED_IN",
+      "WEST_PRED_IN"
+    ],
+    "data_route_sources": [
+      "NONE",
+      "NORTH_DATA_IN",
+      "SOUTH_DATA_IN",
+      "EAST_DATA_IN",
+      "WEST_DATA_IN",
+      "FU_DATA_RESULT",
+      "DATA_RF_A",
+      "DATA_RF_B",
+      "CONST_DATA",
+      "LSU_LOAD_DATA",
+      "ZERO"
+    ],
+    "predicate_route_sources": [
+      "NONE",
+      "NORTH_PRED_IN",
+      "SOUTH_PRED_IN",
+      "EAST_PRED_IN",
+      "WEST_PRED_IN",
+      "FU_PRED_RESULT",
+      "PRED_RF_A",
+      "PRED_RF_B",
+      "CONST_TRUE",
+      "CONST_FALSE"
+    ],
+    "lsu_ops": ["NONE", "LOAD", "STORE"]
+  },
+  "control_schema": {
+    "encoding": "lsb_first_fixed_field_order",
+    "alignment_bits": 32,
+    "raw_width_bits": 126,
+    "physical_width_bits": 128,
+    "chunks": 4
+  }
+}

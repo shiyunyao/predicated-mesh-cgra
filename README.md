@@ -57,6 +57,10 @@ are defined in `rtl/cgra_pkg.sv`.
 |-- rtl/       # SystemVerilog RTL
 |-- tb/        # Unit and integration testbenches
 |-- sim/       # Verilator C++ harnesses
+|-- examples/  # Minimal input DFGs for generated-program replay
+|-- model/     # Cycle-level golden execution model
+|-- target/    # Tooling description of the RTL target
+|-- tools/     # DFG scheduling, config emission, and trace comparison
 |-- scripts/   # Synthesis runners and report checks
 |-- synth/     # RTL filelist and ASAP7/ABC inputs
 |-- third_party/fncacti/ # Bundled FN-CACTI executable and upstream notes
@@ -81,6 +85,7 @@ Requirements:
 
 * Verilator
 * GNU Make
+* Python 3
 * a C++ compiler supported by Verilator
 
 Run the default 4x4 test:
@@ -112,6 +117,39 @@ make lint TEST=cgra_top_tb
 The test suite includes unit tests for the FU, register files, source muxes,
 routing, control-word packing, and LSU behavior, together with tile, mesh, and
 full-array integration tests.
+
+## Generated Program Replay
+
+The retained compiler path accepts a small `cgra.dfg.v1` input, emits and
+validates its scheduled program manifest and configuration stream, generates a
+SystemVerilog testbench from those configuration writes, and runs that
+testbench against the RTL. The resulting cycle-level RTL trace is compared
+field by field with the golden-model trace.
+
+Run the default single-tile add chain or the included 1x2 routing and predicate
+example with:
+
+```bash
+make generated-program
+make generated-program GENERATED_PROGRAM=examples/dfg/select_1x2.json
+```
+
+The retained examples have been verified against the unchanged 4x4 RTL:
+
+| Input DFG | Active schedule | Trace records | Result |
+| --- | --- | ---: | --- |
+| `add_chain.json` | Single tile, 4 cycles | 64 | RTL/golden match |
+| `select_1x2.json` | Two tiles, 6 cycles, one-hop route and predicate select | 96 | RTL/golden match |
+
+A successful run ends with `GENERATED_PROGRAM_TRACE_MATCH`. Reproducible inputs,
+the scheduled manifest, configuration stream, generated testbench, both CSV
+traces, provenance hashes, and logs are written under
+`build/generated_program/<dfg-name>/`.
+
+This retained compiler is deliberately small: it supports constant-input,
+topologically ordered, single-output programs on one tile or the included 1x2
+one-hop data-transfer pattern. It is a reproducible schedule-to-RTL simulation
+path, not a general CGRA mapper.
 
 Use:
 
