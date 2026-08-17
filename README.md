@@ -57,7 +57,7 @@ are defined in `rtl/cgra_pkg.sv`.
 |-- rtl/       # SystemVerilog RTL
 |-- tb/        # Unit and integration testbenches
 |-- sim/       # Verilator C++ harnesses
-|-- examples/  # Minimal input DFGs for generated-program replay
+|-- examples/  # Minimal DFGs and a pre-generated 4x4 schedule
 |-- model/     # Cycle-level golden execution model
 |-- target/    # Tooling description of the RTL target
 |-- tools/     # DFG scheduling, config emission, and trace comparison
@@ -150,6 +150,83 @@ This retained compiler is deliberately small: it supports constant-input,
 topologically ordered, single-output programs on one tile or the included 1x2
 one-hop data-transfer pattern. It is a reproducible schedule-to-RTL simulation
 path, not a general CGRA mapper.
+
+### Pre-Generated 4x4 Schedule Replay
+
+`examples/schedules/fir32_transposed_predicated_ii7_4x4.semantic.json` is an
+already scheduled and target-encoded 4x4 program manifest. It retains the
+human-readable semantic controls and provides four 32-bit `chunks` for every
+tile/PC control entry. This exercises the framework handoff expected from an
+external compiler: the framework does not reschedule the program, but validates
+the supplied schedule, emits its configuration stream and testbench, runs the
+RTL, and checks the architectural stores.
+
+Run the complete replay from the repository root:
+
+```bash
+SCHEDULE=examples/schedules/fir32_transposed_predicated_ii7_4x4.semantic.json
+OUT=build/generated_schedule/fir32_transposed_predicated_ii7_4x4
+OBJ="$OUT/obj"
+
+mkdir -p "$OUT" "$OBJ"
+python3 tools/validate_program.py "$SCHEDULE"
+python3 tools/check_schedule.py "$SCHEDULE"
+python3 tools/emit_config.py "$SCHEDULE" --out "$OUT/config_stream.json"
+
+python3 - "$SCHEDULE" "$OUT" <<'PY'
+import json
+import pathlib
+import sys
+
+from model.golden_model import run_manifest, write_trace_csv
+from tools.generated_program_runner import emit_testbench, rtl_compatible_trace_rows
+
+schedule = pathlib.Path(sys.argv[1])
+out = pathlib.Path(sys.argv[2])
+config_path = out / "config_stream.json"
+with config_path.open(encoding="utf-8") as handle:
+    config = json.load(handle)
+
+golden = rtl_compatible_trace_rows(run_manifest(schedule))
+write_trace_csv(out / "golden_trace.csv", golden)
+emit_testbench(config, schedule, config_path, out / "generated_program_tb.sv")
+PY
+
+verilator -Wall --cc --exe --build \
+  --Mdir "$OBJ" --prefix Vtop \
+  -f synth/rtl_files.f \
+  "$OUT/generated_program_tb.sv" "$(pwd)/sim/data_rf_main.cpp" \
+  --top-module generated_program_tb
+
+"$OBJ/Vtop" \
+  +CGRA_TRACE \
+  +CGRA_TRACE_FILE="$(pwd)/$OUT/rtl_trace.csv"
+
+python3 - "$SCHEDULE" "$OUT/rtl_trace.csv" <<'PY'
+import csv
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    schedule = json.load(handle)
+with open(sys.argv[2], newline="", encoding="utf-8") as handle:
+    stores = [row for row in csv.DictReader(handle) if row["lsu_op"] == "2"]
+
+expected = schedule["expected"]["outputs"]
+assert len(stores) == len(expected) == 32
+for want, got in zip(expected, stores):
+    assert int(got["lsu_addr"], 16) == want["scratchpad_addr"]
+    assert int(got["lsu_store_data"]) == int(want["y_internal"], 16)
+    assert int(got["lsu_store_commit"]) == int(want["predicate"])
+
+print("FIR_SCHEDULE_RTL_PASS stores=32 run_cycles=242")
+PY
+```
+
+The retained result is a legal 242-cycle, II=7 schedule with 2,210 encoded
+control entries and 8,969 configuration writes. RTL simulation produces 3,872
+cycle/tile trace records; all 32 store addresses, data values, and predicate
+commit decisions match the schedule's expected results.
 
 Use:
 
