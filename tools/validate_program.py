@@ -100,7 +100,11 @@ def validate_program(manifest):
         run_cycles = run.get("run_cycles")
         require(isinstance(run_cycles, int), "run.run_cycles must be an integer", errors)
         if isinstance(run_cycles, int):
-            require(run_cycles > 0, "run.run_cycles must be positive", errors)
+            require(
+                0 < run_cycles < ctrl_depth,
+                f"run.run_cycles must be in [1, {ctrl_depth - 1}]",
+                errors,
+            )
         observation = run.get("result_observation")
         require(isinstance(observation, dict), "run.result_observation must be an object", errors)
         if isinstance(observation, dict):

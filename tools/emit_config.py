@@ -5,8 +5,12 @@
 The emitted document remains a ``cgra.program_manifest.v1`` object so the
 existing program and schedule validators can consume it. It adds one
 derived ``config_stream`` section describing the ordered configuration-bus
-writes and the subsequent START command.  It is intentionally a static
-loader artifact: no host readback, runtime retry, or RTL protocol is implied.
+writes and the subsequent START command. Sparse compiler images are expanded
+here: every target tile and every PC in the run window receives a deterministic
+control write, with omitted entries represented by the all-zero NOP image. This
+keeps the loader contract deterministic even when the RTL memory has no reset
+value. It is intentionally a static loader artifact: no host readback, runtime
+retry, or RTL protocol is implied.
 """
 
 from __future__ import annotations
@@ -81,23 +85,41 @@ def expected_writes(manifest: dict[str, Any], target: dict[str, Any] | None = No
 
     Ordering is deliberately independent of JSON-list order: tile coordinates,
     memory addresses, and control PCs are each sorted before emitting writes.
+    The target's complete tile/PC control image is emitted so omitted compiler
+    entries cannot leave an implementation-dependent value in control memory.
     """
 
     target = target or _target_for(manifest)
-    tiles = manifest["program"]["tiles"]
+    params = target["parameters"]
+    tile_images = {
+        (tile["row"], tile["col"]): tile for tile in manifest["program"]["tiles"]
+    }
+    nop_chunks = ["0x00000000"] * params["control_word_chunks"]
+    run_cycles = manifest["run"]["run_cycles"]
     writes: list[dict[str, Any]] = []
 
-    for tile in sorted(tiles, key=lambda image: (image["row"], image["col"])):
-        row = tile["row"]
-        col = tile["col"]
-        for entry in sorted(tile["const_memory"], key=lambda image: image["addr"]):
-            writes.append(_write(len(writes), "CONST_MEM", row, col, entry["addr"], 0, entry["value"]))
-        for entry in sorted(tile["scratchpad_preload"], key=lambda image: image["addr"]):
-            writes.append(_write(len(writes), "SCRATCHPAD_BANK", row, col, entry["addr"], 0, entry["value"]))
-        for entry in sorted(tile["control"], key=lambda image: image["pc"]):
-            chunks = _round_trip_chunks(entry["chunks"], target, f"tile=({row},{col}) pc={entry['pc']}")
-            for word_idx, chunk in enumerate(chunks):
-                writes.append(_write(len(writes), "CONTROL_MEM", row, col, entry["pc"], word_idx, chunk))
+    for row in range(params["array_rows"]):
+        for col in range(params["array_cols"]):
+            tile = tile_images.get((row, col))
+            if tile is not None:
+                for entry in sorted(tile["const_memory"], key=lambda image: image["addr"]):
+                    writes.append(_write(len(writes), "CONST_MEM", row, col, entry["addr"], 0, entry["value"]))
+                for entry in sorted(tile["scratchpad_preload"], key=lambda image: image["addr"]):
+                    writes.append(_write(len(writes), "SCRATCHPAD_BANK", row, col, entry["addr"], 0, entry["value"]))
+
+            explicit_controls = {} if tile is None else {
+                entry["pc"]: entry for entry in tile["control"]
+            }
+            # Preserve explicitly supplied PCs outside the run window while
+            # initializing every PC that START can execute.
+            pcs = sorted(set(range(run_cycles)) | set(explicit_controls))
+            for pc in pcs:
+                entry = explicit_controls.get(pc)
+                chunks = nop_chunks if entry is None else _round_trip_chunks(
+                    entry["chunks"], target, f"tile=({row},{col}) pc={pc}"
+                )
+                for word_idx, chunk in enumerate(chunks):
+                    writes.append(_write(len(writes), "CONTROL_MEM", row, col, pc, word_idx, chunk))
     return writes
 
 

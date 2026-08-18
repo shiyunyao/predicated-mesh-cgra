@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT
-"""Prepare and compare compiler-generated RTL simulations.
+"""Run external compiler program manifests through the RTL replay flow.
 
-The harness deliberately keeps the executable source of truth in the normal
-DFG -> program-manifest -> config-stream chain.  It materializes a small
-testbench from the emitted writes only, then compares the RTL's existing CSV
-trace against a golden-model trace for that same manifest.
+The executable source of truth is a target-encoded
+``cgra.program_manifest.v1``. This module validates the supplied image,
+materializes its configuration stream and testbench, and compares the RTL
+trace with the cycle-level golden model.
 """
 
 from __future__ import annotations
@@ -16,6 +16,7 @@ import hashlib
 import json
 import pathlib
 import shutil
+import subprocess
 import sys
 from typing import Any
 
@@ -25,10 +26,9 @@ if str(REPO_ROOT) not in sys.path:
 
 from model.golden_model import run_manifest, write_trace_csv
 from tools.check_schedule import check_manifest
-from tools.dfg_to_schedule import compile_dfg_path, write_manifest
 from tools.emit_config import emit_config_manifest, validate_config_manifest, write_config_manifest
 from tools.trace_compare import compare_trace_paths
-from tools.validate_program import validate_program
+from tools.validate_program import load_json, validate_program
 
 
 TRACE_HEX_FIELDS = {
@@ -46,8 +46,8 @@ TRACE_HEX_FIELDS = {
 }
 
 
-class GeneratedProgramError(ValueError):
-    """Raised when a generated-program artifact cannot be prepared safely."""
+class ProgramRunnerError(ValueError):
+    """Raised when a program manifest cannot be replayed safely."""
 
 
 def _sha256(path: pathlib.Path) -> str:
@@ -97,7 +97,12 @@ def _lsu_mask(target: dict[str, Any]) -> tuple[int, str]:
     return tiles, f"{tiles}'h{mask:0{digits}x}"
 
 
-def emit_testbench(config: dict[str, Any], dfg_path: pathlib.Path, config_path: pathlib.Path, path: pathlib.Path) -> None:
+def emit_testbench(
+    config: dict[str, Any],
+    manifest_path: pathlib.Path,
+    config_path: pathlib.Path,
+    path: pathlib.Path,
+) -> None:
     """Emit one testbench whose only configuration values come from *config*."""
 
     target_path = REPO_ROOT / config["target"]["path"]
@@ -132,7 +137,7 @@ module generated_program_tb(input logic clk);
   localparam int WRITE_COUNT = {len(writes)};
   localparam int RUN_CYCLES = {run_cycles};
   localparam int START_CYCLE = 1 + WRITE_COUNT;
-  localparam string INPUT_DFG = {_sv_path(dfg_path)};
+  localparam string INPUT_MANIFEST = {_sv_path(manifest_path)};
   localparam string CONFIG_STREAM = {_sv_path(config_path)};
 
   logic rst_n;
@@ -238,7 +243,7 @@ module generated_program_tb(input logic clk);
     begin
       unique case (index)
 {case_text}
-        default: $fatal(1, "Generated config stream index out of range dfg=%s config=%s write=%0d", INPUT_DFG, CONFIG_STREAM, index);
+        default: $fatal(1, "Generated config stream index out of range manifest=%s config=%s write=%0d", INPUT_MANIFEST, CONFIG_STREAM, index);
       endcase
     end
   endtask
@@ -263,34 +268,34 @@ module generated_program_tb(input logic clk);
       rst_n <= 1'b0;
     end else if ((cycle >= 1) && (cycle < START_CYCLE)) begin
       if (!cfg_ready) begin
-        $fatal(1, "Generated config stream stalled dfg=%s config=%s seed=none cycle=%0d write=%0d", INPUT_DFG, CONFIG_STREAM, cycle, cycle - 1);
+        $fatal(1, "Generated config stream stalled manifest=%s config=%s seed=none cycle=%0d write=%0d", INPUT_MANIFEST, CONFIG_STREAM, cycle, cycle - 1);
       end
       drive_stream_write(cycle - 1);
     end else if (cycle == START_CYCLE) begin
       if (!cfg_ready) begin
-        $fatal(1, "Generated start rejected dfg=%s config=%s seed=none cycle=%0d", INPUT_DFG, CONFIG_STREAM, cycle);
+        $fatal(1, "Generated start rejected manifest=%s config=%s seed=none cycle=%0d", INPUT_MANIFEST, CONFIG_STREAM, cycle);
       end
       run_cycles <= CTRL_PC_WIDTH'(RUN_CYCLES);
       start <= 1'b1;
     end else if ((cycle >= START_CYCLE + 1) && (cycle <= START_CYCLE + RUN_CYCLES)) begin
       if (!busy) begin
-        $fatal(1, "Generated run ended early dfg=%s config=%s seed=none cycle=%0d", INPUT_DFG, CONFIG_STREAM, cycle);
+        $fatal(1, "Generated run ended early manifest=%s config=%s seed=none cycle=%0d", INPUT_MANIFEST, CONFIG_STREAM, cycle);
       end
       if (kernel_pc !== CTRL_PC_WIDTH'(cycle - START_CYCLE - 1)) begin
-        $fatal(1, "Generated pc mismatch dfg=%s config=%s seed=none cycle=%0d expected_pc=%0d actual_pc=%0d", INPUT_DFG, CONFIG_STREAM, cycle, cycle - START_CYCLE - 1, kernel_pc);
+        $fatal(1, "Generated pc mismatch manifest=%s config=%s seed=none cycle=%0d expected_pc=%0d actual_pc=%0d", INPUT_MANIFEST, CONFIG_STREAM, cycle, cycle - START_CYCLE - 1, kernel_pc);
       end
     end else if (cycle == START_CYCLE + RUN_CYCLES + 1) begin
       if (!done) begin
-        $fatal(1, "Generated done pulse missing dfg=%s config=%s seed=none cycle=%0d", INPUT_DFG, CONFIG_STREAM, cycle);
+        $fatal(1, "Generated done pulse missing manifest=%s config=%s seed=none cycle=%0d", INPUT_MANIFEST, CONFIG_STREAM, cycle);
       end
     end else if (cycle == START_CYCLE + RUN_CYCLES + 2) begin
       if (done) begin
-        $fatal(1, "Generated done pulse did not clear dfg=%s config=%s seed=none cycle=%0d", INPUT_DFG, CONFIG_STREAM, cycle);
+        $fatal(1, "Generated done pulse did not clear manifest=%s config=%s seed=none cycle=%0d", INPUT_MANIFEST, CONFIG_STREAM, cycle);
       end
-      $display("GENERATED_PROGRAM_RTL_PASS dfg=%s config=%s seed=none run_cycles=%0d", INPUT_DFG, CONFIG_STREAM, RUN_CYCLES);
+      $display("PROGRAM_RTL_PASS manifest=%s config=%s seed=none run_cycles=%0d", INPUT_MANIFEST, CONFIG_STREAM, RUN_CYCLES);
       $finish;
     end else if (cycle > START_CYCLE + RUN_CYCLES + 4) begin
-      $fatal(1, "Generated program timed out dfg=%s config=%s seed=none cycle=%0d", INPUT_DFG, CONFIG_STREAM, cycle);
+      $fatal(1, "Generated program timed out manifest=%s config=%s seed=none cycle=%0d", INPUT_MANIFEST, CONFIG_STREAM, cycle);
     end
   end
 /* verilator lint_on BLKSEQ */
@@ -300,53 +305,54 @@ endmodule : generated_program_tb
     path.write_text(content, encoding="utf-8")
 
 
-def prepare_generated_program(dfg: str | pathlib.Path, out_dir: str | pathlib.Path) -> dict[str, pathlib.Path]:
-    """Materialize all static artifacts needed for one generated RTL run."""
+def prepare_program_manifest(
+    manifest_path: str | pathlib.Path,
+    out_dir: str | pathlib.Path,
+) -> dict[str, pathlib.Path]:
+    """Materialize artifacts needed to replay one external program manifest."""
 
-    dfg_path = pathlib.Path(dfg)
-    if not dfg_path.is_absolute():
-        dfg_path = REPO_ROOT / dfg_path
-    if not dfg_path.is_file():
-        raise GeneratedProgramError(f"DFG input does not exist: {dfg_path}")
+    source_path = pathlib.Path(manifest_path)
+    if not source_path.is_absolute():
+        source_path = REPO_ROOT / source_path
+    if not source_path.is_file():
+        raise ProgramRunnerError(f"program manifest does not exist: {source_path}")
     output = pathlib.Path(out_dir)
     if not output.is_absolute():
         output = REPO_ROOT / output
     output.mkdir(parents=True, exist_ok=True)
 
     artifacts = {
-        "input_dfg": output / "input.dfg.json",
         "program_manifest": output / "program_manifest.json",
         "config_stream": output / "config_stream.json",
         "golden_trace": output / "golden_trace.csv",
         "testbench": output / "generated_program_tb.sv",
         "metadata": output / "artifacts.json",
     }
-    shutil.copyfile(dfg_path, artifacts["input_dfg"])
-    manifest = compile_dfg_path(dfg_path)
+    shutil.copyfile(source_path, artifacts["program_manifest"])
+    manifest = load_json(artifacts["program_manifest"])
     manifest_errors = validate_program(manifest)
     if manifest_errors:
-        raise GeneratedProgramError("generated manifest is invalid: " + "; ".join(manifest_errors))
-    write_manifest(manifest, artifacts["program_manifest"])
+        raise ProgramRunnerError("program manifest is invalid: " + "; ".join(manifest_errors))
     schedule_errors = check_manifest(artifacts["program_manifest"])
     if schedule_errors:
-        raise GeneratedProgramError(f"schedule checker rejected generated manifest: {schedule_errors[0]}")
+        raise ProgramRunnerError(f"schedule checker rejected program manifest: {schedule_errors[0]}")
 
     config = emit_config_manifest(manifest)
     config_errors = validate_config_manifest(config)
     if config_errors:
-        raise GeneratedProgramError("generated config stream is invalid: " + "; ".join(config_errors))
+        raise ProgramRunnerError("config stream is invalid: " + "; ".join(config_errors))
     write_config_manifest(config, artifacts["config_stream"])
     config_schedule_errors = check_manifest(artifacts["config_stream"])
     if config_schedule_errors:
-        raise GeneratedProgramError(f"schedule checker rejected generated config stream: {config_schedule_errors[0]}")
+        raise ProgramRunnerError(f"schedule checker rejected config stream: {config_schedule_errors[0]}")
 
     golden_rows = rtl_compatible_trace_rows(run_manifest(artifacts["program_manifest"]))
     write_trace_csv(artifacts["golden_trace"], golden_rows)
-    emit_testbench(config, artifacts["input_dfg"], artifacts["config_stream"], artifacts["testbench"])
+    emit_testbench(config, artifacts["program_manifest"], artifacts["config_stream"], artifacts["testbench"])
     metadata = {
-        "schema": "cgra.generated_program_rtl.v1",
+        "schema": "cgra.program_rtl.v1",
         "version": 1,
-        "source_dfg": {"path": str(dfg), "sha256": _sha256(dfg_path)},
+        "source_manifest": {"path": str(manifest_path), "sha256": _sha256(source_path)},
         "seed": None,
         "artifacts": {
             key: {"path": value.name, "sha256": _sha256(value)}
@@ -358,33 +364,96 @@ def prepare_generated_program(dfg: str | pathlib.Path, out_dir: str | pathlib.Pa
     return artifacts
 
 
-def compare_generated_traces(
+def compare_program_traces(
     *,
-    dfg: str | pathlib.Path,
+    manifest: str | pathlib.Path,
     config: str | pathlib.Path,
     golden: str | pathlib.Path,
     rtl: str | pathlib.Path,
 ) -> list[str]:
-    """Decorate shared trace diagnostics with generated-program provenance."""
+    """Decorate shared trace diagnostics with program-manifest provenance."""
 
-    context = f"dfg={dfg} config={config} seed=none"
+    context = f"manifest={manifest} config={config} seed=none"
     try:
         diagnostics = compare_trace_paths(golden, rtl)
     except (OSError, ValueError) as exc:
         return [
-            "GENERATED_PROGRAM_TRACE_MISMATCH "
+            "PROGRAM_TRACE_MISMATCH "
             f"{context} cycle=unknown tile=(unknown,unknown) field=trace_format: {exc}"
         ]
-    return [f"GENERATED_PROGRAM_TRACE_MISMATCH {context} {diagnostic}" for diagnostic in diagnostics]
+    return [f"PROGRAM_TRACE_MISMATCH {context} {diagnostic}" for diagnostic in diagnostics]
+
+
+def run_program(
+    manifest: str | pathlib.Path,
+    out_dir: str | pathlib.Path,
+    *,
+    verilator: str = "verilator",
+) -> dict[str, pathlib.Path]:
+    """Prepare, build, run, and compare one external program manifest."""
+
+    artifacts = prepare_program_manifest(manifest, out_dir)
+    output = artifacts["metadata"].parent
+    obj_dir = output / "obj"
+    obj_dir.mkdir(parents=True, exist_ok=True)
+    verilator_cmd = [
+        verilator,
+        "-Wall",
+        "--cc",
+        "--exe",
+        "--build",
+        "--Mdir",
+        str(obj_dir),
+        "--prefix",
+        "Vtop",
+        "-f",
+        str(REPO_ROOT / "synth" / "rtl_files.f"),
+        str(artifacts["testbench"]),
+        str(REPO_ROOT / "sim" / "data_rf_main.cpp"),
+        "--top-module",
+        "generated_program_tb",
+    ]
+    subprocess.run(verilator_cmd, cwd=REPO_ROOT, check=True)
+    rtl_trace = output / "rtl_trace.csv"
+    artifacts["rtl_trace"] = rtl_trace
+    simulation_log = output / "rtl_simulation.log"
+    with simulation_log.open("w", encoding="utf-8") as log:
+        subprocess.run(
+            [
+                str(obj_dir / "Vtop"),
+                "+CGRA_TRACE",
+                f"+CGRA_TRACE_FILE={rtl_trace}",
+            ],
+            cwd=REPO_ROOT,
+            check=True,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+        )
+    diagnostics = compare_program_traces(
+        manifest=artifacts["program_manifest"],
+        config=artifacts["config_stream"],
+        golden=artifacts["golden_trace"],
+        rtl=rtl_trace,
+    )
+    if diagnostics:
+        raise ProgramRunnerError("\n".join(diagnostics))
+    print(
+        "PROGRAM_TRACE_MATCH "
+        f"manifest={artifacts['program_manifest']} config={artifacts['config_stream']} "
+        f"artifacts={output}"
+    )
+    return artifacts
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     mode = parser.add_mutually_exclusive_group(required=True)
-    mode.add_argument("--prepare", metavar="DFG", help="Compile and archive one cgra.dfg.v1 input")
+    mode.add_argument("--prepare", metavar="MANIFEST", help="Prepare one cgra.program_manifest.v1 input")
+    mode.add_argument("--run", metavar="MANIFEST", help="Prepare, run, and compare one program manifest")
     mode.add_argument("--compare", action="store_true", help="Compare prepared golden and RTL traces")
-    parser.add_argument("--out-dir", help="Artifact directory for --prepare")
-    parser.add_argument("--dfg", help="Archived source DFG for --compare")
+    parser.add_argument("--out-dir", help="Artifact directory for --prepare or --run")
+    parser.add_argument("--verilator", default="verilator", help="Verilator executable for --run")
+    parser.add_argument("--manifest", help="Archived program manifest for --compare")
     parser.add_argument("--config", help="Emitted config stream for --compare")
     parser.add_argument("--golden", help="Golden CSV trace for --compare")
     parser.add_argument("--rtl", help="RTL CSV trace for --compare")
@@ -394,27 +463,43 @@ def main() -> int:
         if args.prepare:
             if not args.out_dir:
                 parser.error("--out-dir is required with --prepare")
-            artifacts = prepare_generated_program(args.prepare, args.out_dir)
+            artifacts = prepare_program_manifest(args.prepare, args.out_dir)
             print(
-                "GENERATED_PROGRAM_PREPARED "
-                f"dfg={args.prepare} config={artifacts['config_stream']} seed=none "
+                "PROGRAM_PREPARED "
+                f"manifest={args.prepare} config={artifacts['config_stream']} seed=none "
                 f"artifacts={artifacts['metadata'].parent}"
             )
             return 0
 
-        required = {"--dfg": args.dfg, "--config": args.config, "--golden": args.golden, "--rtl": args.rtl}
+        if args.run:
+            if not args.out_dir:
+                parser.error("--out-dir is required with --run")
+            run_program(args.run, args.out_dir, verilator=args.verilator)
+            return 0
+
+        required = {
+            "--manifest": args.manifest,
+            "--config": args.config,
+            "--golden": args.golden,
+            "--rtl": args.rtl,
+        }
         missing = [flag for flag, value in required.items() if not value]
         if missing:
             parser.error("--compare requires " + ", ".join(missing))
-        diagnostics = compare_generated_traces(dfg=args.dfg, config=args.config, golden=args.golden, rtl=args.rtl)
+        diagnostics = compare_program_traces(
+            manifest=args.manifest,
+            config=args.config,
+            golden=args.golden,
+            rtl=args.rtl,
+        )
         if diagnostics:
             for diagnostic in diagnostics:
                 print(diagnostic, file=sys.stderr)
             return 1
-        print(f"GENERATED_PROGRAM_TRACE_MATCH dfg={args.dfg} config={args.config} seed=none")
+        print(f"PROGRAM_TRACE_MATCH manifest={args.manifest} config={args.config} seed=none")
         return 0
-    except (GeneratedProgramError, OSError, json.JSONDecodeError, ValueError) as exc:
-        print(f"GENERATED_PROGRAM_ERROR: {exc}", file=sys.stderr)
+    except (ProgramRunnerError, subprocess.CalledProcessError, OSError, json.JSONDecodeError, ValueError) as exc:
+        print(f"PROGRAM_RUN_ERROR: {exc}", file=sys.stderr)
         return 1
 
 

@@ -57,10 +57,10 @@ are defined in `rtl/cgra_pkg.sv`.
 |-- rtl/       # SystemVerilog RTL
 |-- tb/        # Unit and integration testbenches
 |-- sim/       # Verilator C++ harnesses
-|-- examples/  # Minimal DFGs and a pre-generated 4x4 schedule
+|-- examples/  # Pre-generated target-encoded schedules
 |-- model/     # Cycle-level golden execution model
 |-- target/    # Tooling description of the RTL target
-|-- tools/     # DFG scheduling, config emission, and trace comparison
+|-- tools/     # Manifest validation, replay, config emission, and comparison
 |-- scripts/   # Synthesis runners and report checks
 |-- synth/     # RTL filelist and ASAP7/ABC inputs
 |-- third_party/fncacti/ # Bundled FN-CACTI executable and upstream notes
@@ -118,115 +118,52 @@ The test suite includes unit tests for the FU, register files, source muxes,
 routing, control-word packing, and LSU behavior, together with tile, mesh, and
 full-array integration tests.
 
-## Generated Program Replay
+## External Program Replay
 
-The retained compiler path accepts a small `cgra.dfg.v1` input, emits and
-validates its scheduled program manifest and configuration stream, generates a
-SystemVerilog testbench from those configuration writes, and runs that
-testbench against the RTL. The resulting cycle-level RTL trace is compared
-field by field with the golden-model trace.
-
-Run the default single-tile add chain or the included 1x2 routing and predicate
-example with:
-
-```bash
-make generated-program
-make generated-program GENERATED_PROGRAM=examples/dfg/select_1x2.json
-```
-
-The retained examples have been verified against the unchanged 4x4 RTL:
-
-| Input DFG | Active schedule | Trace records | Result |
-| --- | --- | ---: | --- |
-| `add_chain.json` | Single tile, 4 cycles | 64 | RTL/golden match |
-| `select_1x2.json` | Two tiles, 6 cycles, one-hop route and predicate select | 96 | RTL/golden match |
-
-A successful run ends with `GENERATED_PROGRAM_TRACE_MATCH`. Reproducible inputs,
-the scheduled manifest, configuration stream, generated testbench, both CSV
-traces, provenance hashes, and logs are written under
-`build/generated_program/<dfg-name>/`.
-
-This retained compiler is deliberately small: it supports constant-input,
-topologically ordered, single-output programs on one tile or the included 1x2
-one-hop data-transfer pattern. It is a reproducible schedule-to-RTL simulation
-path, not a general CGRA mapper.
-
-### Pre-Generated 4x4 Schedule Replay
+The compiler/framework handoff is a scheduled and target-encoded
+`cgra.program_manifest.v1` JSON file. The external compiler owns placement,
+scheduling, register allocation, routing, and control-word encoding. The RTL
+framework validates the supplied image without rescheduling it, emits the
+configuration writes and protocol testbench, runs the golden model and
+Verilator, and compares both cycle-level traces field by field.
 
 `examples/schedules/fir32_transposed_predicated_ii7_4x4.semantic.json` is an
 already scheduled and target-encoded 4x4 program manifest. It retains the
 human-readable semantic controls and provides four 32-bit `chunks` for every
-tile/PC control entry. This exercises the framework handoff expected from an
-external compiler: the framework does not reschedule the program, but validates
-the supplied schedule, emits its configuration stream and testbench, runs the
-RTL, and checks the architectural stores.
+tile/PC control entry. It is the retained example of the artifact an external
+compiler must emit.
 
-Run the complete replay from the repository root:
+Replay the default manifest through the complete flow:
 
 ```bash
-SCHEDULE=examples/schedules/fir32_transposed_predicated_ii7_4x4.semantic.json
-OUT=build/generated_schedule/fir32_transposed_predicated_ii7_4x4
-OBJ="$OUT/obj"
-
-mkdir -p "$OUT" "$OBJ"
-python3 tools/validate_program.py "$SCHEDULE"
-python3 tools/check_schedule.py "$SCHEDULE"
-python3 tools/emit_config.py "$SCHEDULE" --out "$OUT/config_stream.json"
-
-python3 - "$SCHEDULE" "$OUT" <<'PY'
-import json
-import pathlib
-import sys
-
-from model.golden_model import run_manifest, write_trace_csv
-from tools.generated_program_runner import emit_testbench, rtl_compatible_trace_rows
-
-schedule = pathlib.Path(sys.argv[1])
-out = pathlib.Path(sys.argv[2])
-config_path = out / "config_stream.json"
-with config_path.open(encoding="utf-8") as handle:
-    config = json.load(handle)
-
-golden = rtl_compatible_trace_rows(run_manifest(schedule))
-write_trace_csv(out / "golden_trace.csv", golden)
-emit_testbench(config, schedule, config_path, out / "generated_program_tb.sv")
-PY
-
-verilator -Wall --cc --exe --build \
-  --Mdir "$OBJ" --prefix Vtop \
-  -f synth/rtl_files.f \
-  "$OUT/generated_program_tb.sv" "$(pwd)/sim/data_rf_main.cpp" \
-  --top-module generated_program_tb
-
-"$OBJ/Vtop" \
-  +CGRA_TRACE \
-  +CGRA_TRACE_FILE="$(pwd)/$OUT/rtl_trace.csv"
-
-python3 - "$SCHEDULE" "$OUT/rtl_trace.csv" <<'PY'
-import csv
-import json
-import sys
-
-with open(sys.argv[1], encoding="utf-8") as handle:
-    schedule = json.load(handle)
-with open(sys.argv[2], newline="", encoding="utf-8") as handle:
-    stores = [row for row in csv.DictReader(handle) if row["lsu_op"] == "2"]
-
-expected = schedule["expected"]["outputs"]
-assert len(stores) == len(expected) == 32
-for want, got in zip(expected, stores):
-    assert int(got["lsu_addr"], 16) == want["scratchpad_addr"]
-    assert int(got["lsu_store_data"]) == int(want["y_internal"], 16)
-    assert int(got["lsu_store_commit"]) == int(want["predicate"])
-
-print("FIR_SCHEDULE_RTL_PASS stores=32 run_cycles=242")
-PY
+make program
 ```
 
-The retained result is a legal 242-cycle, II=7 schedule with 2,210 encoded
-control entries and 8,969 configuration writes. RTL simulation produces 3,872
-cycle/tile trace records; all 32 store addresses, data values, and predicate
-commit decisions match the schedule's expected results.
+Pass another compiler output with `PROGRAM_MANIFEST`:
+
+```bash
+make program PROGRAM_MANIFEST=path/to/program_manifest.json
+```
+
+The individual `program-prepare`, `program-build`, `program-run`, and
+`program-check` targets expose each stage. For a standalone one-command runner,
+use:
+
+```bash
+python3 tools/program_runner.py \
+  --run path/to/program_manifest.json \
+  --out-dir build/program/my_program
+```
+
+A successful run ends with `PROGRAM_TRACE_MATCH`. The archived manifest,
+configuration stream, generated SystemVerilog testbench, golden and RTL CSV
+traces, and logs are written below `build/program/`; `artifacts.json` records
+the input and preparation-artifact hashes.
+
+The retained FIR manifest is a legal 242-cycle, II=7 schedule with 2,210
+encoded control entries. The replay loader materializes the complete 4x4
+control image, filling omitted tile/PC entries with NOP writes. Its RTL
+simulation produces 3,872 cycle/tile trace records.
 
 Use:
 
