@@ -16,7 +16,7 @@ module runtime_corner_tb(input logic clk);
   logic [1:0] cfg_mem_type;
   logic [CTRL_PC_WIDTH-1:0] cfg_tile_row;
   logic [CTRL_PC_WIDTH-1:0] cfg_tile_col;
-  logic [SCRATCH_ADDR_WIDTH-1:0] cfg_addr;
+  logic [SCRATCHPAD_ADDR_WIDTH-1:0] cfg_addr;
   logic [1:0] cfg_word_idx;
   logic [31:0] cfg_wdata;
   logic start;
@@ -109,7 +109,7 @@ module runtime_corner_tb(input logic clk);
   task automatic drive_cfg(input logic [1:0] mem_type,
                            input logic [CTRL_PC_WIDTH-1:0] row,
                            input logic [CTRL_PC_WIDTH-1:0] col,
-                           input logic [SCRATCH_ADDR_WIDTH-1:0] addr,
+                           input logic [SCRATCHPAD_ADDR_WIDTH-1:0] addr,
                            input logic [1:0] word_idx,
                            input logic [31:0] data);
     begin
@@ -124,7 +124,7 @@ module runtime_corner_tb(input logic clk);
     end
   endtask
 
-  task automatic drive_control_chunk(input logic [SCRATCH_ADDR_WIDTH-1:0] addr,
+  task automatic drive_control_chunk(input logic [SCRATCHPAD_ADDR_WIDTH-1:0] addr,
                                      input logic [1:0] word_idx);
     begin
       drive_cfg(2'd0, 8'd0, 8'd0, addr, word_idx, packed_ctrl[word_idx * 32 +: 32]);
@@ -191,9 +191,9 @@ module runtime_corner_tb(input logic clk);
       1: begin
         expect_bit("config ready after reset", cfg_ready, 1'b1);
         if (out_of_range_tile_mode) begin
-          drive_cfg(2'd1, 8'(ROWS), 8'd0, 10'd0, 2'd0, 32'h1111_2222);
+          drive_cfg(2'd1, 8'(ROWS), 8'd0, 12'd0, 2'd0, 32'h1111_2222);
         end else begin
-          drive_cfg(2'd1, 8'd0, 8'd0, 10'd0, 2'd0, 32'hcafe_0001);
+          drive_cfg(2'd1, 8'd0, 8'd0, 12'd0, 2'd0, 32'hcafe_0001);
         end
       end
       2: begin
@@ -205,16 +205,16 @@ module runtime_corner_tb(input logic clk);
         next_ctrl.data_route_ctrl.north.we = 1'b1;
         next_ctrl.data_route_ctrl.north.src = DATA_ROUTE_SRC_CONST_DATA;
         packed_ctrl = pack_tile_control_word(next_ctrl);
-        drive_control_chunk(10'd0, 2'd0);
+        drive_control_chunk(12'd0, 2'd0);
       end
       3: begin
-        drive_control_chunk(10'd0, 2'd1);
+        drive_control_chunk(12'd0, 2'd1);
       end
       4: begin
-        drive_control_chunk(10'd0, 2'd2);
+        drive_control_chunk(12'd0, 2'd2);
       end
       5: begin
-        drive_control_chunk(10'd0, 2'd3);
+        drive_control_chunk(12'd0, 2'd3);
       end
       6: begin
         run_cycles <= zero_cycles_unresolved_mode ? 8'd0 : 8'd1;
@@ -227,7 +227,7 @@ module runtime_corner_tb(input logic clk);
         expect_bit("busy during first positive-cycle run", busy, 1'b1);
         expect_bit("cfg_ready low during RUN", cfg_ready, 1'b0);
         expect_pc("kernel_pc during first run", kernel_pc, 8'd0);
-        drive_cfg(2'd1, 8'd0, 8'd0, 10'd0, 2'd0, 32'hdead_0002);
+        drive_cfg(2'd1, 8'd0, 8'd0, 12'd0, 2'd0, 32'hdead_0002);
       end
       8: begin
         expect_bit("done after first one-cycle run", done, 1'b1);

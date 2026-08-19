@@ -14,7 +14,7 @@ RTL_SRCS := \
 	rtl/fu.sv \
 	rtl/data_switchbox.sv \
 	rtl/pred_switchbox.sv \
-	rtl/scratchpad_bank.sv \
+	rtl/shared_scratchpad.sv \
 	rtl/lsu.sv \
 	rtl/tile.sv \
 	rtl/mesh.sv \
@@ -33,6 +33,7 @@ TESTS := \
 	pred_switchbox_tb \
 	fu_tb \
 	lsu_tb \
+	shared_scratchpad_tb \
 	tile_tb \
 	tile_lsu_tb \
 	mesh_link_tb \
@@ -80,7 +81,7 @@ PROGRAM_CONFIG := $(PROGRAM_DIR)/config_stream.json
 PROGRAM_IMAGE := $(PROGRAM_DIR)/program_manifest.json
 PROGRAM_CPP := $(abspath sim/data_rf_main.cpp)
 
-.PHONY: help check-test lint build test regression program program-prepare program-build program-run program-check modulo-loop modulo-loop-prepare modulo-loop-check modulo-loop-tripcount-tests modulo-loop-zero-boundary-test modulo-loop-reuse-test modulo-loop-assert-tests synth-fetch-asap7 synth-memory-shape synth-area synth-timing synth-power synth-power-feasibility synth-fn-cacti clean
+.PHONY: help check-test lint build test regression shared-scratchpad-tests shared-scratchpad-negative-tests program program-prepare program-build program-run program-check modulo-loop modulo-loop-prepare modulo-loop-check modulo-loop-tripcount-tests modulo-loop-zero-boundary-test modulo-loop-reuse-test modulo-loop-assert-tests synth-fetch-asap7 synth-memory-shape synth-area synth-timing synth-power synth-power-feasibility synth-fn-cacti clean
 
 help:
 	@echo "make test TEST=<name>  Build and run one testbench"
@@ -98,7 +99,7 @@ check-test:
 	@test -f "$(TB_SRC)" || { echo "Unknown test: $(TEST)"; exit 2; }
 
 lint: check-test
-	$(VERILATOR) --lint-only -Wall $(RTL_SRCS) $(TB_SRC) --top-module $(TEST)
+	$(VERILATOR) --lint-only -Wall $(RTL_SRCS) $(TB_SRC) --top-module $(TOP_MODULE)
 
 build: check-test
 	mkdir -p "$(TEST_BUILD_DIR)"
@@ -114,7 +115,16 @@ regression:
 	@set -e; for test_name in $(TESTS); do \
 		echo "==> $$test_name"; \
 		$(MAKE) --no-print-directory test TEST=$$test_name; \
-	done
+	 done
+
+shared-scratchpad-tests:
+	$(MAKE) --no-print-directory test TEST=shared_scratchpad_tb
+	$(MAKE) --no-print-directory shared-scratchpad-negative-tests
+
+shared-scratchpad-negative-tests:
+	$(MAKE) --no-print-directory build TEST=shared_scratchpad_tb
+	@set +e; "build/shared_scratchpad_tb/Vtop" +CONFLICT_STORE_LOAD >/dev/null 2>&1; status=$$?; test $$status -ne 0
+	@set +e; "build/shared_scratchpad_tb/Vtop" +CONFLICT_STORE_STORE >/dev/null 2>&1; status=$$?; test $$status -ne 0
 
 program: program-check
 

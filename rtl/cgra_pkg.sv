@@ -34,7 +34,8 @@ package cgra_pkg;
   localparam int CONST_MEM_DEPTH = 16;
   localparam int CTRL_MEM_DEPTH = 256;
 
-  localparam int SCRATCH_BANK_DEPTH = 1024;
+  localparam int SCRATCHPAD_DEPTH = 4096;
+  localparam int SHARED_MEM_PORTS = 4;
 
   localparam int MESH_HOP_LATENCY = 1;
   localparam int LOAD_LATENCY = 2;
@@ -45,7 +46,7 @@ package cgra_pkg;
   localparam int PRED_RF_ADDR_WIDTH = log2ceil(PRED_RF_DEPTH);
   localparam int CONST_ADDR_WIDTH = log2ceil(CONST_MEM_DEPTH);
   localparam int CTRL_PC_WIDTH = log2ceil(CTRL_MEM_DEPTH);
-  localparam int SCRATCH_ADDR_WIDTH = log2ceil(SCRATCH_BANK_DEPTH);
+  localparam int SCRATCHPAD_ADDR_WIDTH = log2ceil(SCRATCHPAD_DEPTH);
 
   localparam int OP_WIDTH = 6;
   localparam int DATA_SRC_WIDTH = 4;

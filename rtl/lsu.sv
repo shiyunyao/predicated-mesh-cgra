@@ -4,16 +4,12 @@
 module lsu #(
   parameter int DATA_WIDTH = cgra_pkg::DATA_WIDTH,
   parameter int PRED_WIDTH = cgra_pkg::PRED_WIDTH,
-  parameter int DEPTH = cgra_pkg::SCRATCH_BANK_DEPTH,
-  parameter int ADDR_WIDTH = cgra_pkg::SCRATCH_ADDR_WIDTH
+  parameter int DEPTH = cgra_pkg::SCRATCHPAD_DEPTH,
+  parameter int ADDR_WIDTH = cgra_pkg::SCRATCHPAD_ADDR_WIDTH
 ) (
   input  logic                 clk,
   input  logic                 rst_n,
   input  logic                 has_lsu,
-
-  input  logic                 scratch_cfg_we,
-  input  logic [ADDR_WIDTH-1:0] scratch_cfg_addr,
-  input  logic [DATA_WIDTH-1:0] scratch_cfg_wdata,
 
   input  cgra_pkg::lsu_op_e    lsu_op,
   input  cgra_pkg::data_src_e  lsu_addr_src,
@@ -48,7 +44,13 @@ module lsu #(
   input  logic                  west_pred_valid,
 
   output logic                  load_resp_valid,
-  output logic [DATA_WIDTH-1:0] load_resp_data
+  output logic [DATA_WIDTH-1:0] load_resp_data,
+
+  output logic                  mem_req_valid,
+  output logic                  mem_req_write,
+  output logic [ADDR_WIDTH-1:0] mem_req_addr,
+  output logic [DATA_WIDTH-1:0] mem_req_wdata,
+  input  logic [DATA_WIDTH-1:0] mem_read_data
 );
   logic addr_consume;
   logic store_data_consume;
@@ -62,7 +64,6 @@ module lsu #(
   logic commit_allow;
   logic store_commit;
   logic issue_load;
-  logic [DATA_WIDTH-1:0] scratch_read_data;
   logic load_valid_q0;
   logic [DATA_WIDTH-1:0] load_data_q0;
 
@@ -142,22 +143,10 @@ module lsu #(
                         && (!lsu_commit_pred_enable || commit_pred_valid)
                         && commit_allow;
   assign issue_load = has_lsu && (lsu_op == cgra_pkg::LSU_OP_LOAD) && addr_valid;
-
-  scratchpad_bank #(
-    .DATA_WIDTH(DATA_WIDTH),
-    .DEPTH(DEPTH),
-    .ADDR_WIDTH(ADDR_WIDTH)
-  ) bank (
-    .clk(clk),
-    .write_en(store_commit),
-    .write_addr(addr_data[ADDR_WIDTH-1:0]),
-    .write_data(store_data),
-    .cfg_write_en(scratch_cfg_we && has_lsu),
-    .cfg_write_addr(scratch_cfg_addr),
-    .cfg_write_data(scratch_cfg_wdata),
-    .read_addr(addr_data[ADDR_WIDTH-1:0]),
-    .read_data(scratch_read_data)
-  );
+  assign mem_req_valid = issue_load || store_commit;
+  assign mem_req_write = store_commit;
+  assign mem_req_addr = addr_data[ADDR_WIDTH-1:0];
+  assign mem_req_wdata = store_data;
 
 `ifndef SYNTHESIS
   always_comb begin
@@ -186,7 +175,7 @@ module lsu #(
       load_resp_valid <= load_valid_q0;
       load_resp_data <= load_data_q0;
       load_valid_q0 <= issue_load;
-      load_data_q0 <= scratch_read_data;
+      load_data_q0 <= mem_read_data;
     end
   end
 endmodule : lsu

@@ -16,7 +16,7 @@ module cgra_top_tb(input logic clk);
   logic [1:0] cfg_mem_type;
   logic [CTRL_PC_WIDTH-1:0] cfg_tile_row;
   logic [CTRL_PC_WIDTH-1:0] cfg_tile_col;
-  logic [SCRATCH_ADDR_WIDTH-1:0] cfg_addr;
+  logic [SCRATCHPAD_ADDR_WIDTH-1:0] cfg_addr;
   logic [1:0] cfg_word_idx;
   logic [31:0] cfg_wdata;
   logic start;
@@ -94,7 +94,7 @@ module cgra_top_tb(input logic clk);
   task automatic drive_cfg(input logic [1:0] mem_type,
                            input logic [CTRL_PC_WIDTH-1:0] row,
                            input logic [CTRL_PC_WIDTH-1:0] col,
-                           input logic [SCRATCH_ADDR_WIDTH-1:0] addr,
+                           input logic [SCRATCHPAD_ADDR_WIDTH-1:0] addr,
                            input logic [1:0] word_idx,
                            input logic [31:0] data);
     begin
@@ -179,10 +179,10 @@ module cgra_top_tb(input logic clk);
       end
       1: begin
         expect_bit("config ready after reset", cfg_ready, 1'b1);
-        drive_cfg(2'd1, 8'd0, 8'd0, 10'd0, 2'd0, 32'haaaa_0001);
+        drive_cfg(2'd1, 8'd0, 8'd0, 12'd0, 2'd0, 32'haaaa_0001);
       end
       2: begin
-        drive_cfg(2'd2, 8'd0, 8'd0, 10'd0, 2'd0, 32'hbbbb_0002);
+        drive_cfg(2'd2, 8'd0, 8'd0, 12'd0, 2'd0, 32'hbbbb_0002);
       end
       3: begin
         clear_next_ctrl();
@@ -190,16 +190,16 @@ module cgra_top_tb(input logic clk);
         next_ctrl.data_route_ctrl.north.we = 1'b1;
         next_ctrl.data_route_ctrl.north.src = DATA_ROUTE_SRC_CONST_DATA;
         packed_ctrl = pack_tile_control_word(next_ctrl);
-        drive_cfg(2'd0, 8'd0, 8'd0, 10'd0, 2'd0, packed_ctrl[31:0]);
+        drive_cfg(2'd0, 8'd0, 8'd0, 12'd0, 2'd0, packed_ctrl[31:0]);
       end
       4: begin
-        drive_cfg(2'd0, 8'd0, 8'd0, 10'd0, 2'd1, packed_ctrl[63:32]);
+        drive_cfg(2'd0, 8'd0, 8'd0, 12'd0, 2'd1, packed_ctrl[63:32]);
       end
       5: begin
-        drive_cfg(2'd0, 8'd0, 8'd0, 10'd0, 2'd2, packed_ctrl[95:64]);
+        drive_cfg(2'd0, 8'd0, 8'd0, 12'd0, 2'd2, packed_ctrl[95:64]);
       end
       6: begin
-        drive_cfg(2'd0, 8'd0, 8'd0, 10'd0, 2'd3, packed_ctrl[127:96]);
+        drive_cfg(2'd0, 8'd0, 8'd0, 12'd0, 2'd3, packed_ctrl[127:96]);
       end
       7: begin
         clear_next_ctrl();
@@ -207,46 +207,46 @@ module cgra_top_tb(input logic clk);
         next_ctrl.lsu_ctrl.lsu_addr_src = DATA_SRC_ZERO;
         next_ctrl.const_ctrl.const_addr = 4'h0;
         packed_ctrl = pack_tile_control_word(next_ctrl);
-        drive_cfg(2'd0, 8'd0, 8'd0, 10'd1, 2'd0, packed_ctrl[31:0]);
+        drive_cfg(2'd0, 8'd0, 8'd0, 12'd1, 2'd0, packed_ctrl[31:0]);
       end
       8: begin
-        drive_cfg(2'd0, 8'd0, 8'd0, 10'd1, 2'd1, packed_ctrl[63:32]);
+        drive_cfg(2'd0, 8'd0, 8'd0, 12'd1, 2'd1, packed_ctrl[63:32]);
       end
       9: begin
-        drive_cfg(2'd0, 8'd0, 8'd0, 10'd1, 2'd2, packed_ctrl[95:64]);
+        drive_cfg(2'd0, 8'd0, 8'd0, 12'd1, 2'd2, packed_ctrl[95:64]);
       end
       10: begin
-        drive_cfg(2'd0, 8'd0, 8'd0, 10'd1, 2'd3, packed_ctrl[127:96]);
+        drive_cfg(2'd0, 8'd0, 8'd0, 12'd1, 2'd3, packed_ctrl[127:96]);
       end
       11: begin
         clear_next_ctrl();
         packed_ctrl = pack_tile_control_word(next_ctrl);
-        drive_cfg(2'd0, 8'd0, 8'd0, 10'd2, 2'd0, packed_ctrl[31:0]);
+        drive_cfg(2'd0, 8'd0, 8'd0, 12'd2, 2'd0, packed_ctrl[31:0]);
       end
       12: begin
-        drive_cfg(2'd0, 8'd0, 8'd0, 10'd2, 2'd1, packed_ctrl[63:32]);
+        drive_cfg(2'd0, 8'd0, 8'd0, 12'd2, 2'd1, packed_ctrl[63:32]);
       end
       13: begin
-        drive_cfg(2'd0, 8'd0, 8'd0, 10'd2, 2'd2, packed_ctrl[95:64]);
+        drive_cfg(2'd0, 8'd0, 8'd0, 12'd2, 2'd2, packed_ctrl[95:64]);
       end
       14: begin
-        drive_cfg(2'd0, 8'd0, 8'd0, 10'd2, 2'd3, packed_ctrl[127:96]);
+        drive_cfg(2'd0, 8'd0, 8'd0, 12'd2, 2'd3, packed_ctrl[127:96]);
       end
       15: begin
         clear_next_ctrl();
         next_ctrl.data_route_ctrl.north.we = 1'b1;
         next_ctrl.data_route_ctrl.north.src = DATA_ROUTE_SRC_LSU_LOAD_DATA;
         packed_ctrl = pack_tile_control_word(next_ctrl);
-        drive_cfg(2'd0, 8'd0, 8'd0, 10'd3, 2'd0, packed_ctrl[31:0]);
+        drive_cfg(2'd0, 8'd0, 8'd0, 12'd3, 2'd0, packed_ctrl[31:0]);
       end
       16: begin
-        drive_cfg(2'd0, 8'd0, 8'd0, 10'd3, 2'd1, packed_ctrl[63:32]);
+        drive_cfg(2'd0, 8'd0, 8'd0, 12'd3, 2'd1, packed_ctrl[63:32]);
       end
       17: begin
-        drive_cfg(2'd0, 8'd0, 8'd0, 10'd3, 2'd2, packed_ctrl[95:64]);
+        drive_cfg(2'd0, 8'd0, 8'd0, 12'd3, 2'd2, packed_ctrl[95:64]);
       end
       18: begin
-        drive_cfg(2'd0, 8'd0, 8'd0, 10'd3, 2'd3, packed_ctrl[127:96]);
+        drive_cfg(2'd0, 8'd0, 8'd0, 12'd3, 2'd3, packed_ctrl[127:96]);
       end
       19: begin
         run_cycles <= 8'd4;
@@ -256,7 +256,7 @@ module cgra_top_tb(input logic clk);
         expect_bit("busy cycle 0", busy, 1'b1);
         expect_bit("cfg_ready during run", cfg_ready, 1'b0);
         expect_pc("kernel_pc cycle 0", kernel_pc, 8'd0);
-        drive_cfg(2'd1, 8'd0, 8'd0, 10'd0, 2'd0, 32'h1111_1111);
+        drive_cfg(2'd1, 8'd0, 8'd0, 12'd0, 2'd0, 32'h1111_1111);
       end
       21: begin
         expect_bit("busy cycle 1", busy, 1'b1);

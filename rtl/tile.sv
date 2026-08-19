@@ -13,9 +13,11 @@ module tile #(
   input  logic                         const_cfg_we,
   input  logic [cgra_pkg::CONST_ADDR_WIDTH-1:0] const_cfg_addr,
   input  logic [DATA_WIDTH-1:0]        const_cfg_wdata,
-  input  logic                         scratch_cfg_we,
-  input  logic [cgra_pkg::SCRATCH_ADDR_WIDTH-1:0] scratch_cfg_addr,
-  input  logic [DATA_WIDTH-1:0]        scratch_cfg_wdata,
+  input  logic [DATA_WIDTH-1:0]        mem_read_data,
+  output logic                         mem_req_valid,
+  output logic                         mem_req_write,
+  output logic [cgra_pkg::SCRATCHPAD_ADDR_WIDTH-1:0] mem_req_addr,
+  output logic [DATA_WIDTH-1:0]        mem_req_wdata,
 
   input  logic [DATA_WIDTH-1:0]        north_data_in,
   input  logic                         north_data_valid,
@@ -88,6 +90,10 @@ module tile #(
 
   logic [DATA_WIDTH-1:0] lsu_resp_data;
   logic lsu_resp_valid;
+  logic lsu_mem_req_valid;
+  logic lsu_mem_req_write;
+  logic [cgra_pkg::SCRATCHPAD_ADDR_WIDTH-1:0] lsu_mem_req_addr;
+  logic [DATA_WIDTH-1:0] lsu_mem_req_wdata;
   logic [DATA_WIDTH-1:0] tile_lsu_load_data;
   logic tile_lsu_load_valid;
 
@@ -115,6 +121,10 @@ module tile #(
   logic unused_valids;
 
   assign ctrl = cgra_pkg::unpack_tile_control_word(control_word);
+  assign mem_req_valid = lsu_mem_req_valid;
+  assign mem_req_write = lsu_mem_req_write;
+  assign mem_req_addr = lsu_mem_req_addr;
+  assign mem_req_wdata = lsu_mem_req_wdata;
   assign tile_lsu_load_data = HAS_LSU ? lsu_resp_data : lsu_load_data;
   assign tile_lsu_load_valid = HAS_LSU ? lsu_resp_valid : lsu_load_valid;
   assign unused_valids = data_src_a_valid_unused
@@ -383,9 +393,6 @@ module tile #(
     .clk(clk),
     .rst_n(rst_n),
     .has_lsu(HAS_LSU),
-    .scratch_cfg_we(scratch_cfg_we),
-    .scratch_cfg_addr(scratch_cfg_addr),
-    .scratch_cfg_wdata(scratch_cfg_wdata),
     .lsu_op(ctrl.lsu_ctrl.lsu_op),
     .lsu_addr_src(ctrl.lsu_ctrl.lsu_addr_src),
     .lsu_store_data_src(ctrl.lsu_ctrl.lsu_store_data_src),
@@ -416,7 +423,12 @@ module tile #(
     .west_pred_in(west_pred_in),
     .west_pred_valid(west_pred_valid),
     .load_resp_valid(lsu_resp_valid),
-    .load_resp_data(lsu_resp_data)
+    .load_resp_data(lsu_resp_data),
+    .mem_req_valid(lsu_mem_req_valid),
+    .mem_req_write(lsu_mem_req_write),
+    .mem_req_addr(lsu_mem_req_addr),
+    .mem_req_wdata(lsu_mem_req_wdata),
+    .mem_read_data(mem_read_data)
   );
 
   data_switchbox data_switchbox_i (

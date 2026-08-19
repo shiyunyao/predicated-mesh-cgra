@@ -18,6 +18,7 @@ module cgra_top #(
   parameter int DATA_WIDTH = cgra_pkg::DATA_WIDTH,
   parameter int TILES = ROWS * COLS,
   parameter int CONTROL_WIDTH = cgra_pkg::CONTROL_WORD_PHYSICAL_WIDTH,
+  parameter int SHARED_MEM_PORTS = cgra_pkg::SHARED_MEM_PORTS,
   parameter logic [TILES-1:0] HAS_LSU_MASK = TILES'(cgra_default_lsu_mask(ROWS, COLS))
 ) (
   input  logic                         clk,
@@ -29,7 +30,7 @@ module cgra_top #(
   input  logic [1:0]                   cfg_mem_type,
   input  logic [cgra_pkg::CTRL_PC_WIDTH-1:0] cfg_tile_row,
   input  logic [cgra_pkg::CTRL_PC_WIDTH-1:0] cfg_tile_col,
-  input  logic [cgra_pkg::SCRATCH_ADDR_WIDTH-1:0] cfg_addr,
+  input  logic [cgra_pkg::SCRATCHPAD_ADDR_WIDTH-1:0] cfg_addr,
   input  logic [1:0]                   cfg_word_idx,
   input  logic [31:0]                  cfg_wdata,
 
@@ -72,6 +73,7 @@ module cgra_top #(
   logic [31:0] loop_ii_shadow;
   logic [31:0] loop_trip_count_shadow;
   logic [31:0] loop_epilogue_shadow;
+  logic [3:0] loop_shadow_valid;
   logic [31:0] loop_prologue_cycles;
   logic [31:0] loop_ii_cycles;
   logic [31:0] loop_trip_count;
@@ -89,9 +91,12 @@ module cgra_top #(
   logic [TILES-1:0] const_cfg_we;
   logic [TILES*cgra_pkg::CONST_ADDR_WIDTH-1:0] const_cfg_addr;
   logic [TILES*DATA_WIDTH-1:0] const_cfg_wdata;
-  logic [TILES-1:0] scratch_cfg_we;
-  logic [TILES*cgra_pkg::SCRATCH_ADDR_WIDTH-1:0] scratch_cfg_addr;
-  logic [TILES*DATA_WIDTH-1:0] scratch_cfg_wdata;
+  logic [SHARED_MEM_PORTS-1:0] mem_req_valid;
+  logic [SHARED_MEM_PORTS-1:0] mem_req_write;
+  logic [SHARED_MEM_PORTS*cgra_pkg::SCRATCHPAD_ADDR_WIDTH-1:0] mem_req_addr;
+  logic [SHARED_MEM_PORTS*DATA_WIDTH-1:0] mem_req_wdata;
+  logic [SHARED_MEM_PORTS*DATA_WIDTH-1:0] mem_read_data;
+  logic shared_cfg_write_en;
   logic [TILES-1:0] north_pred_we_unused;
   logic [TILES*cgra_pkg::PRED_WIDTH-1:0] north_pred_out_unused;
   logic [TILES-1:0] south_pred_we_unused;
@@ -105,6 +110,7 @@ module cgra_top #(
 
   logic cfg_accept;
   logic loop_desc_cfg_accept;
+  logic scratch_cfg_accept;
   logic cfg_in_bounds;
   logic next_run_active;
   logic [31:0] cfg_tile_idx_full;
@@ -140,7 +146,14 @@ module cgra_top #(
                                 && (cfg_tile_row == '0)
                                 && (cfg_tile_col == '0)
                                 && (cfg_word_idx == 2'd0)
-                                && (cfg_addr <= 10'd4);
+                                && (cfg_addr <= cgra_pkg::SCRATCHPAD_ADDR_WIDTH'(4));
+  assign scratch_cfg_accept = (state == STATE_CONFIG)
+                              && cfg_accept
+                              && (cfg_mem_type == CFG_MEM_SCRATCH)
+                              && (cfg_tile_row == '0)
+                              && (cfg_tile_col == '0)
+                              && (cfg_word_idx == 2'd0);
+  assign shared_cfg_write_en = scratch_cfg_accept;
   assign busy = (state == STATE_RUN);
   assign done = (state == STATE_DONE);
   always_comb begin
@@ -194,9 +207,6 @@ module cgra_top #(
     const_cfg_we = '0;
     const_cfg_addr = '0;
     const_cfg_wdata = '0;
-    scratch_cfg_we = '0;
-    scratch_cfg_addr = '0;
-    scratch_cfg_wdata = '0;
     if ((state == STATE_CONFIG) && cfg_accept && (cfg_mem_type == CFG_MEM_CONTROL)) begin
       control_cfg_we[cfg_tile_idx] = 1'b1;
     end
@@ -205,12 +215,6 @@ module cgra_top #(
       const_cfg_we[cfg_tile_idx] = 1'b1;
       const_cfg_addr[cfg_tile_idx*cgra_pkg::CONST_ADDR_WIDTH +: cgra_pkg::CONST_ADDR_WIDTH] = cfg_addr[cgra_pkg::CONST_ADDR_WIDTH-1:0];
       const_cfg_wdata[cfg_tile_idx*DATA_WIDTH +: DATA_WIDTH] = cfg_wdata;
-    end
-
-    if (cfg_accept && (cfg_mem_type == CFG_MEM_SCRATCH)) begin
-      scratch_cfg_we[cfg_tile_idx] = 1'b1;
-      scratch_cfg_addr[cfg_tile_idx*cgra_pkg::SCRATCH_ADDR_WIDTH +: cgra_pkg::SCRATCH_ADDR_WIDTH] = cfg_addr[cgra_pkg::SCRATCH_ADDR_WIDTH-1:0];
-      scratch_cfg_wdata[cfg_tile_idx*DATA_WIDTH +: DATA_WIDTH] = cfg_wdata;
     end
 
     if (unused_pred_outputs || unused_cfg_tile_idx_upper) begin
@@ -280,6 +284,7 @@ module cgra_top #(
     .ROWS(ROWS),
     .COLS(COLS),
     .DATA_WIDTH(DATA_WIDTH),
+    .SHARED_MEM_PORTS(SHARED_MEM_PORTS),
     .HAS_LSU_MASK(HAS_LSU_MASK)
   ) mesh_i (
     .clk(clk),
@@ -288,9 +293,11 @@ module cgra_top #(
     .const_cfg_we(const_cfg_we),
     .const_cfg_addr(const_cfg_addr),
     .const_cfg_wdata(const_cfg_wdata),
-    .scratch_cfg_we(scratch_cfg_we),
-    .scratch_cfg_addr(scratch_cfg_addr),
-    .scratch_cfg_wdata(scratch_cfg_wdata),
+    .mem_req_valid(mem_req_valid),
+    .mem_req_write(mem_req_write),
+    .mem_req_addr(mem_req_addr),
+    .mem_req_wdata(mem_req_wdata),
+    .mem_read_data(mem_read_data),
     .north_data_we(north_data_we),
     .north_data_out(north_data_out),
     .south_data_we(south_data_we),
@@ -307,6 +314,23 @@ module cgra_top #(
     .east_pred_out(east_pred_out_unused),
     .west_pred_we(west_pred_we_unused),
     .west_pred_out(west_pred_out_unused)
+  );
+
+  shared_scratchpad #(
+    .DATA_WIDTH(DATA_WIDTH),
+    .DEPTH(cgra_pkg::SCRATCHPAD_DEPTH),
+    .ADDR_WIDTH(cgra_pkg::SCRATCHPAD_ADDR_WIDTH),
+    .PORTS(SHARED_MEM_PORTS)
+  ) shared_scratchpad_i (
+    .clk(clk),
+    .req_valid(mem_req_valid),
+    .req_write(mem_req_write),
+    .req_addr(mem_req_addr),
+    .req_wdata(mem_req_wdata),
+    .read_data(mem_read_data),
+    .cfg_write_en(shared_cfg_write_en),
+    .cfg_write_addr(cfg_addr),
+    .cfg_write_data(cfg_wdata)
   );
 
 `ifndef SYNTHESIS
@@ -475,11 +499,22 @@ module cgra_top #(
       if (cfg_word_idx != 2'd0) begin
         $fatal(1, "Loop descriptor requires cfg_word_idx=0");
       end
-      if (cfg_addr > 10'd4) begin
+      if (cfg_addr > cgra_pkg::SCRATCHPAD_ADDR_WIDTH'(4)) begin
         $fatal(1, "Loop descriptor address out of range: addr=%0d", cfg_addr);
       end
-      if ((cfg_addr == 10'd4) && (cfg_wdata > 32'd1)) begin
+      if ((cfg_addr == cgra_pkg::SCRATCHPAD_ADDR_WIDTH'(4)) && (cfg_wdata > 32'd1)) begin
         $fatal(1, "LOOP_COMMIT data must be 0 or 1: data=%0d", cfg_wdata);
+      end
+    end
+    if (cfg_valid && cfg_we && (cfg_mem_type == CFG_MEM_SCRATCH)) begin
+      if (state != STATE_CONFIG) begin
+        $fatal(1, "Shared scratchpad configuration writes are legal only in CONFIG");
+      end
+      if ((cfg_tile_row != '0) || (cfg_tile_col != '0)) begin
+        $fatal(1, "Shared scratchpad is global and requires tile row=0 col=0");
+      end
+      if (cfg_word_idx != 2'd0) begin
+        $fatal(1, "Shared scratchpad configuration requires cfg_word_idx=0");
       end
     end
   end
@@ -494,6 +529,7 @@ module cgra_top #(
       loop_ii_shadow <= '0;
       loop_trip_count_shadow <= '0;
       loop_epilogue_shadow <= '0;
+      loop_shadow_valid <= '0;
       loop_prologue_cycles <= '0;
       loop_ii_cycles <= '0;
       loop_trip_count <= '0;
@@ -507,13 +543,30 @@ module cgra_top #(
     end else begin
       if (loop_desc_cfg_accept) begin
         unique case (cfg_addr)
-          10'd0: loop_prologue_shadow <= cfg_wdata;
-          10'd1: loop_ii_shadow <= cfg_wdata;
-          10'd2: loop_trip_count_shadow <= cfg_wdata;
-          10'd3: loop_epilogue_shadow <= cfg_wdata;
-          10'd4: begin
+          cgra_pkg::SCRATCHPAD_ADDR_WIDTH'(0): begin
+            loop_prologue_shadow <= cfg_wdata;
+            loop_shadow_valid[0] <= 1'b1;
+          end
+          cgra_pkg::SCRATCHPAD_ADDR_WIDTH'(1): begin
+            loop_ii_shadow <= cfg_wdata;
+            loop_shadow_valid[1] <= 1'b1;
+          end
+          cgra_pkg::SCRATCHPAD_ADDR_WIDTH'(2): begin
+            loop_trip_count_shadow <= cfg_wdata;
+            loop_shadow_valid[2] <= 1'b1;
+          end
+          cgra_pkg::SCRATCHPAD_ADDR_WIDTH'(3): begin
+            loop_epilogue_shadow <= cfg_wdata;
+            loop_shadow_valid[3] <= 1'b1;
+          end
+          cgra_pkg::SCRATCHPAD_ADDR_WIDTH'(4): begin
             if (cfg_wdata == 0) begin
               loop_committed <= 1'b0;
+            end else if (loop_shadow_valid != 4'b1111) begin
+              loop_committed <= 1'b0;
+`ifndef SYNTHESIS
+              $fatal(1, "Incomplete loop descriptor commit: written_mask=0x%0h", loop_shadow_valid);
+`endif
             end else if (loop_descriptor_valid(loop_prologue_shadow,
                                                loop_ii_shadow,
                                                loop_trip_count_shadow,

@@ -14,7 +14,7 @@ module modulo_loop_reuse_tb(input logic clk);
   logic rst_n, cfg_valid, cfg_ready, cfg_we, start, busy, done;
   logic [1:0] cfg_mem_type, cfg_word_idx;
   logic [CTRL_PC_WIDTH-1:0] cfg_tile_row, cfg_tile_col, kernel_pc;
-  logic [SCRATCH_ADDR_WIDTH-1:0] cfg_addr;
+  logic [SCRATCHPAD_ADDR_WIDTH-1:0] cfg_addr;
   logic [31:0] cfg_wdata;
   logic [TILES-1:0] north_data_we, south_data_we, east_data_we, west_data_we;
   logic [TILES*DATA_WIDTH-1:0] north_data_out, south_data_out, east_data_out, west_data_out;
@@ -48,7 +48,7 @@ module modulo_loop_reuse_tb(input logic clk);
   task automatic drive_cfg(input logic [1:0] mem_type,
                            input logic [CTRL_PC_WIDTH-1:0] row,
                            input logic [CTRL_PC_WIDTH-1:0] col,
-                           input logic [SCRATCH_ADDR_WIDTH-1:0] addr,
+                           input logic [SCRATCHPAD_ADDR_WIDTH-1:0] addr,
                            input logic [1:0] word_idx, input logic [31:0] data);
     begin
       cfg_valid = 1'b1; cfg_we = 1'b1; cfg_mem_type = mem_type;

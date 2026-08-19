@@ -14,9 +14,11 @@ module mesh_2x2_tb(input logic clk);
   logic [TILES-1:0] const_cfg_we;
   logic [TILES*CONST_ADDR_WIDTH-1:0] const_cfg_addr;
   logic [TILES*DATA_WIDTH-1:0] const_cfg_wdata;
-  logic [TILES-1:0] scratch_cfg_we;
-  logic [TILES*SCRATCH_ADDR_WIDTH-1:0] scratch_cfg_addr;
-  logic [TILES*DATA_WIDTH-1:0] scratch_cfg_wdata;
+  logic [SHARED_MEM_PORTS-1:0] mem_req_valid;
+  logic [SHARED_MEM_PORTS-1:0] mem_req_write;
+  logic [SHARED_MEM_PORTS*SCRATCHPAD_ADDR_WIDTH-1:0] mem_req_addr;
+  logic [SHARED_MEM_PORTS*DATA_WIDTH-1:0] mem_req_wdata;
+  logic [SHARED_MEM_PORTS*DATA_WIDTH-1:0] mem_read_data;
   logic [TILES-1:0] north_data_we;
   logic [TILES*DATA_WIDTH-1:0] north_data_out;
   logic [TILES-1:0] south_data_we;
@@ -49,9 +51,11 @@ module mesh_2x2_tb(input logic clk);
     .const_cfg_we(const_cfg_we),
     .const_cfg_addr(const_cfg_addr),
     .const_cfg_wdata(const_cfg_wdata),
-    .scratch_cfg_we(scratch_cfg_we),
-    .scratch_cfg_addr(scratch_cfg_addr),
-    .scratch_cfg_wdata(scratch_cfg_wdata),
+    .mem_req_valid(mem_req_valid),
+    .mem_req_write(mem_req_write),
+    .mem_req_addr(mem_req_addr),
+    .mem_req_wdata(mem_req_wdata),
+    .mem_read_data(mem_read_data),
     .north_data_we(north_data_we),
     .north_data_out(north_data_out),
     .south_data_we(south_data_we),
@@ -68,6 +72,18 @@ module mesh_2x2_tb(input logic clk);
     .east_pred_out(east_pred_out),
     .west_pred_we(west_pred_we),
     .west_pred_out(west_pred_out)
+  );
+
+  shared_scratchpad memory_i (
+    .clk(clk),
+    .req_valid(mem_req_valid),
+    .req_write(mem_req_write),
+    .req_addr(mem_req_addr),
+    .req_wdata(mem_req_wdata),
+    .read_data(mem_read_data),
+    .cfg_write_en(1'b0),
+    .cfg_write_addr('0),
+    .cfg_write_data('0)
   );
 
   assign unused_outputs = (|north_data_we)
@@ -147,9 +163,6 @@ module mesh_2x2_tb(input logic clk);
     const_cfg_we = '0;
     const_cfg_addr = '0;
     const_cfg_wdata = '0;
-    scratch_cfg_we = '0;
-    scratch_cfg_addr = '0;
-    scratch_cfg_wdata = '0;
     non_lsu_mode = ($test$plusargs("NON_LSU_RIGHT") != 0);
   end
 
@@ -158,9 +171,6 @@ module mesh_2x2_tb(input logic clk);
     cycle <= cycle + 1;
     rst_n <= 1'b1;
     const_cfg_we <= '0;
-    scratch_cfg_we <= '0;
-    scratch_cfg_addr <= '0;
-    scratch_cfg_wdata <= '0;
 
     unique case (cycle)
       0: begin
@@ -192,6 +202,14 @@ module mesh_2x2_tb(input logic clk);
         if (non_lsu_mode) begin
           $fatal(1, "NON_LSU_RIGHT scenario did not trip mesh LSU mask assertion");
         end
+        expect_bit("port 0 load request", mem_req_valid[0], 1'b1);
+        expect_bit("port 1 load request", mem_req_valid[1], 1'b1);
+        expect_bit("unused port 2 inactive", mem_req_valid[2], 1'b0);
+        expect_bit("unused port 3 inactive", mem_req_valid[3], 1'b0);
+        expect_bit("port 0 read operation", mem_req_write[0], 1'b0);
+        expect_bit("port 1 read operation", mem_req_write[1], 1'b0);
+        expect_data("port 0 row-major address", DATA_WIDTH'(mem_req_addr[0 +: SCRATCHPAD_ADDR_WIDTH]), '0);
+        expect_data("port 1 row-major address", DATA_WIDTH'(mem_req_addr[SCRATCHPAD_ADDR_WIDTH +: SCRATCHPAD_ADDR_WIDTH]), '0);
         clear_ctrl();
         ctrl.const_ctrl.const_addr = 4'h0;
         ctrl.data_route_ctrl.east.we = 1'b1;

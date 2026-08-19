@@ -6,7 +6,7 @@ rtl/pred_src_mux.sv
 rtl/fu.sv
 rtl/data_switchbox.sv
 rtl/pred_switchbox.sv
-rtl/scratchpad_bank.sv
+rtl/shared_scratchpad.sv
 rtl/lsu.sv
 rtl/tile.sv
 rtl/mesh.sv
