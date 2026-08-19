@@ -20,7 +20,6 @@ A tile contains:
 * control and constant memories
 * data and predicate switchboxes
 * an optional load/store unit
-* a private scratchpad when the LSU is enabled
 
 Tiles can execute an operation and drive routed outputs in the same cycle.
 
@@ -33,8 +32,15 @@ Comparisons and predicate operations can generate predicates, `select` can
 choose between data values, and stores may be predicated.
 
 LSUs are enabled with `HAS_LSU_MASK`. In the default 4x4 setup, the first tile
-of each row has an LSU. Each LSU tile owns a separate scratchpad bank. Loads
-have a fixed two-cycle return latency.
+of each row has an LSU. Enabled LSUs receive dedicated ports of one array-level
+shared scratchpad in deterministic row-major order: `(0,0)` through `(3,0)` map
+to ports 0 through 3. Every enabled LSU may access every valid scratchpad
+address; there is no runtime arbitration, stall, retry, or bank ownership.
+
+Scratchpad addresses are 32-bit word addresses. Loads have a fixed two-cycle
+architectural return latency. Multiple ports may load the same address in one
+cycle, but a same-cycle same-address access involving a store is illegal and is
+checked by RTL simulation, the golden model, and schedule tooling.
 
 | Default resource |                      Size |
 | ---------------- | ------------------------: |
@@ -44,7 +50,7 @@ have a fixed two-cycle return latency.
 | Predicate RF     |       16 entries per tile |
 | Constant memory  |       16 entries per tile |
 | Control memory   |      256 entries per tile |
-| Scratchpad bank  | 1024 entries per LSU tile |
+| Shared scratchpad | 4096 x 32-bit words, 4 ports |
 
 The FU supports pass-through, arithmetic, bitwise, shift, select, comparison,
 and predicate operations. Opcode, source-selection, and control-word encodings
@@ -72,12 +78,17 @@ The main hierarchy is:
 
 ```text
 cgra_top
+|-- loop controller
+|-- per-tile control memories
+|-- shared_scratchpad
 `-- mesh
     `-- tile
+        `-- LSU memory request unit (when enabled)
 ```
 
-The register files, FU, switchboxes, LSU, and scratchpad are kept in separate
-RTL modules.
+The LSU selects addresses, store data, and predicates and emits requests; it
+does not own memory storage. The shared scratchpad is instantiated once by
+`cgra_top` and is connected to the statically assigned LSU ports.
 
 ## Build and Test
 
@@ -127,11 +138,13 @@ framework validates the supplied image without rescheduling it, emits the
 configuration writes and protocol testbench, runs the golden model and
 Verilator, and compares both cycle-level traces field by field.
 
-`examples/schedules/fir32_transposed_predicated_ii7_4x4.semantic.json` is an
-already scheduled and target-encoded 4x4 program manifest. It retains the
-human-readable semantic controls and provides four 32-bit `chunks` for every
-tile/PC control entry. It is the retained example of the artifact an external
-compiler must emit.
+`examples/schedules/shared_memory_cross_lsu_4x4.json` is the default already
+scheduled and target-encoded 4x4 program manifest. It preloads global memory
+from a non-LSU tile image, performs a store through port 0, issues four
+concurrent loads, and then has every LSU load the value written by tile `(0,0)`.
+The example therefore exercises global preload semantics, cross-LSU memory
+visibility, all four static ports, legal same-address loads, and the fixed
+two-cycle load response in the complete golden-versus-RTL flow.
 
 Replay the default manifest through the complete flow:
 
@@ -160,10 +173,11 @@ configuration stream, generated SystemVerilog testbench, golden and RTL CSV
 traces, and logs are written below `build/program/`; `artifacts.json` records
 the input and preparation-artifact hashes.
 
-The retained FIR manifest is a legal 242-cycle, II=7 schedule with 2,210
-encoded control entries. The replay loader materializes the complete 4x4
-control image, filling omitted tile/PC entries with NOP writes. Its RTL
-simulation produces 3,872 cycle/tile trace records.
+The older
+`examples/schedules/fir32_transposed_predicated_ii7_4x4.semantic.json` remains
+as a legacy private-bank target artifact and is not silently reinterpreted as a
+shared-memory schedule. A compiler targeting the current architecture must
+emit `target/cgra_v2.json` and one global word-addressed scratchpad image.
 
 Use:
 
@@ -185,14 +199,14 @@ The current area breakdown is:
 
 | Area component | Model basis | 2 x 2 (um^2) | 4 x 4 (um^2) |
 | --- | --- | ---: | ---: |
-| Mapped logic | ASAP7 7 nm, memory excluded | 2922.1965 | 11507.60034 |
+| Mapped logic | ASAP7 7 nm, memory excluded | 3183.99498 | 11751.30504 |
 | Control memories | FN-CACTI | 13347.760 | 53391.040 |
 | Data register files | FN-CACTI | 1341.096 | 5364.384 |
 | Predicate register files | FN-CACTI | 751.220 | 3004.880 |
 | Constant memories | FN-CACTI | 486.152 | 1944.608 |
-| Scratchpad banks | FN-CACTI | 8558.500 | 17117.000 |
-| FN-CACTI storage subtotal | 14 nm devices, 7 nm wires | 24484.728 | 80821.912 |
-| Arithmetic breakdown total | Mixed-node proxy | 27406.9245 | 92329.51234 |
+| Shared 4096 x 32, 4RW scratchpad | FN-CACTI, one instance | 24766.500 | 24766.500 |
+| FN-CACTI storage subtotal | 14 nm devices, 7 nm wires | 40692.728 | 88471.412 |
+| Arithmetic breakdown total | Mixed-node proxy | 43876.72298 | 100222.71704 |
 
 FN-CACTI supports 14 nm FinFET devices and 7 nm ASAP7 wires in this flow; it
 cannot produce a 7 nm device model. The arithmetic total above is therefore a
@@ -204,11 +218,11 @@ The remaining timing and power results are:
 
 | Result | 2 x 2 | 4 x 4 |
 | --- | ---: | ---: |
-| Combinational delay | 9642.85 ps (memory excluded) | 9553.48 ps (memory excluded) |
-| Margin at 100 MHz | 357.15 ps (memory excluded) | 446.52 ps (memory excluded) |
-| ABC total power | 1.52088e+06 raw units (memory excluded) | 6.03186e+06 raw units (memory excluded) |
-| FN-CACTI storage leakage | 0.269045708 mW | 0.878528432 mW |
-| FN-CACTI storage power, all declared ports active at 100 MHz | 1.141073828 mW | 3.981238112 mW |
+| Combinational delay | 9599.95 ps (memory excluded) | 9516.86 ps (memory excluded) |
+| Margin at 100 MHz | 400.05 ps (memory excluded) | 483.14 ps (memory excluded) |
+| ABC total power | 1.60225e+06 raw units (memory excluded) | 6.13667e+06 raw units (memory excluded) |
+| FN-CACTI storage leakage | 0.444880508 mW | 0.955536032 mW |
+| FN-CACTI bounded-access storage power at 100 MHz | 1.561019228 mW | 4.109654912 mW |
 
 The ABC rows use internally generated switching frames rather than the captured
 RTL SAIF, so they are uncalibrated feasibility values rather than workload
@@ -234,23 +248,28 @@ Set `ASAP7_7Z=/absolute/path/to/7z` when the extractor is not available as
 `7z` on `PATH`. Summaries and raw synthesis artifacts are generated under
 `reports/synthesis/` and `sim/synthesis/`. `make synth-fn-cacti` models the
 control memories, data and predicate register files, constant memories, and
-scratchpad banks, reruns the logic-area measurement, creates canonical and
-replay evidence under `reports/synthesis/fn_cacti/`, and validates both runs.
+one shared 4096-word scratchpad with four read/write ports. It reruns the
+logic-area measurement, creates canonical and replay evidence under
+`reports/synthesis/fn_cacti/`, and validates both runs.
 
 ## Configuration and Execution
 
 `cgra_top` is configured through a ready/valid write interface. Each write
-selects a tile, an address, and one of the local memories:
+selects an address and a memory type; tile coordinates select local control and
+constant memories but do not select scratchpad ownership:
 
 | `cfg_mem_type` | Destination       |
 | -------------: | ----------------- |
 |            `0` | Control memory    |
 |            `1` | Constant memory   |
-|            `2` | Scratchpad memory |
+|            `2` | Shared scratchpad |
 |            `3` | Loop descriptor (global tile only) |
 
 Control words wider than the configuration datapath are written in 32-bit
-chunks using `cfg_word_idx`.
+chunks using `cfg_word_idx`. Shared scratchpad configuration writes are global,
+use tile `(0,0)` and `cfg_word_idx = 0`, and interpret `cfg_addr` as a word
+address. Preload entries from all manifest tile images are gathered into one
+global address space and duplicate global addresses are rejected.
 
 Once configuration is complete, set `run_cycles` to the schedule length and
 pulse `start`. The execution state is available through `busy`, `done`, and
@@ -290,6 +309,10 @@ traces, and logs are kept under `build/modulo_loop/`.
 `ROWS`, `COLS`, and `HAS_LSU_MASK` are top-level parameters. `cgra_top` also
 exports the directional data outputs of every tile, including their
 write-enable signals.
+
+The semantic control word remains 126 bits and its physical configuration
+representation remains four 32-bit chunks (128 bits). Shared memory adds no
+bank ID or port ID field to that compiler contract.
 
 ## Tracing
 

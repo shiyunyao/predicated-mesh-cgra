@@ -10,7 +10,13 @@ import pathlib
 
 import pytest
 
-from model.golden_model import GoldenModelError, MultiTileGolden, TileControl, load_target
+from model.golden_model import (
+    GoldenModelError,
+    MultiTileGolden,
+    TileControl,
+    load_target,
+    manifest_execution_steps,
+)
 from tools.check_schedule import check_manifest
 from tools.emit_config import emit_config_manifest
 from tools.validate_program import validate_program
@@ -60,6 +66,51 @@ def test_shared_state_cross_lsu_and_four_same_address_loads():
     )
     array.step({coord: consume for coord in reversed(coords)})
     assert [array.tiles[coord].data_rf[2] for coord in coords] == [0xDEAD_BEEF] * 4
+
+
+def test_load_response_and_shared_state_cross_modulo_kernel_period():
+    target = load_target("target/cgra_v2.json")
+    array = MultiTileGolden(target)
+    coord = lsu_coords(target)[0]
+    array.tiles[coord].poke_data_rf(0, 200)
+    array.tiles[coord].poke_data_rf(1, 0xCAFE_BABE)
+
+    store = TileControl(
+        data_rf_raddr_a=0,
+        data_rf_raddr_b=1,
+        lsu_op="STORE",
+        lsu_addr_src="RF_A",
+        lsu_store_data_src="RF_B",
+    )
+    load = TileControl(
+        data_rf_raddr_a=0,
+        lsu_op="LOAD",
+        lsu_addr_src="RF_A",
+    )
+    controls = {coord: [store, TileControl(), load]}
+    steps = manifest_execution_steps({
+        "loop": {
+            "enabled": True,
+            "prologue_cycles": 1,
+            "ii": 2,
+            "trip_count": 2,
+            "epilogue_cycles": 0,
+        }
+    })
+
+    records = array.run(controls, run_cycles=len(steps), execution_steps=steps)
+
+    assert array.shared_scratchpad[200] == 0xCAFE_BABE
+    response = next(
+        record for record in records
+        if record["cycle"] == "4"
+        and record["tile_row"] == str(coord[0])
+        and record["tile_col"] == str(coord[1])
+    )
+    assert response["loop_iteration"] == "1"
+    assert response["kernel_slot"] == "1"
+    assert response["lsu_load_resp_valid"] == "1"
+    assert response["lsu_load_resp_data"] == "cafebabe"
 
 
 @pytest.mark.parametrize("second_is_store", [False, True])
