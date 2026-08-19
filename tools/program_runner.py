@@ -151,6 +151,10 @@ def emit_testbench(
       if (($test$plusargs("SKIP_LOOP_COMMIT") != 0) && (index == {loop_write_indices[4]})) begin
         clear_cfg();
       end
+      if (($test$plusargs("PARTIAL_LOOP_DESC") != 0)
+          && ((index == {loop_write_indices[0]}) || (index == {loop_write_indices[3]}))) begin
+        clear_cfg();
+      end
       if (($test$plusargs("INVALID_LOOP_SPAN") != 0) && (index == {loop_write_indices[0]})) begin
         cfg_wdata = 32'd255;
       end

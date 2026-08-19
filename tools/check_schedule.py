@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT
-"""Statically reject illegal CGRA v1 program schedules before RTL simulation.
+"""Statically reject illegal CGRA program schedules before RTL simulation.
 
 The checker consumes the same explicit tile-image manifests as the golden
 model. It deliberately does not schedule, reroute, insert bubbles, or repair
@@ -80,8 +80,6 @@ class _TileState:
     pred_valid: list[bool]
     pred_values: list[int | None]
     const_values: list[int]
-    scratch_values: list[int | None]
-    pending_loads: dict[int, int | None]
 
 
 def _load_manifest(path: pathlib.Path) -> dict[str, Any]:
@@ -270,16 +268,18 @@ def check_manifest(manifest_path: str | pathlib.Path) -> list[ScheduleDiagnostic
                 pred_valid=[False] * params["pred_rf_depth"],
                 pred_values=[None] * params["pred_rf_depth"],
                 const_values=[0] * params["const_mem_depth"],
-                scratch_values=[0] * params["scratch_bank_depth"],
-                pending_loads={},
             )
 
+    scratch_values: list[int | None] = [0] * params["scratchpad_depth"]
+    pending_loads: dict[tuple[int, int], dict[int, int | None]] = {
+        coord: {} for coord in enabled_lsus
+    }
     for tile_image in manifest["program"]["tiles"]:
         state = states[(tile_image["row"], tile_image["col"])]
         for entry in tile_image["const_memory"]:
             state.const_values[entry["addr"]] = int(entry["value"], 16)
         for entry in tile_image["scratchpad_preload"]:
-            state.scratch_values[entry["addr"]] = int(entry["value"], 16)
+            scratch_values[entry["addr"]] = int(entry["value"], 16)
 
     data_inputs: dict[tuple[int, int], dict[str, int | None]] = {coord: {} for coord in states}
     pred_inputs: dict[tuple[int, int], dict[str, int | None]] = {coord: {} for coord in states}
@@ -313,7 +313,7 @@ def check_manifest(manifest_path: str | pathlib.Path) -> list[ScheduleDiagnostic
     loop_enabled = isinstance(loop, dict) and loop.get("enabled") is True
     kernel_period_snapshots: list[tuple[Any, ...]] = []
 
-    def structural_snapshot() -> tuple[Any, ...]:
+    def structural_snapshot(snapshot_cycle: int) -> tuple[Any, ...]:
         state_snapshot = []
         for coord in sorted(states):
             state = states[coord]
@@ -321,19 +321,24 @@ def check_manifest(manifest_path: str | pathlib.Path) -> list[ScheduleDiagnostic
                 coord,
                 tuple(state.data_valid),
                 tuple(state.pred_valid),
-                tuple(sorted(state.pending_loads)),
+                tuple(
+                    (ready_cycle - snapshot_cycle, value is not None)
+                    for ready_cycle, value in sorted(pending_loads.get(coord, {}).items())
+                ),
             ))
         input_snapshot = tuple(
             (coord, tuple(sorted(data_inputs[coord])), tuple(sorted(pred_inputs[coord])))
             for coord in sorted(states)
         )
-        return tuple(state_snapshot) + input_snapshot
+        memory_snapshot = tuple(value is not None for value in scratch_values)
+        return tuple(state_snapshot) + input_snapshot + (memory_snapshot,)
 
     for cycle, control_pc in execution_cycles:
         load_responses: dict[tuple[int, int], tuple[bool, int | None]] = {}
-        for coord, state in states.items():
-            if cycle in state.pending_loads:
-                load_responses[coord] = (True, state.pending_loads.pop(cycle))
+        for coord in states:
+            pending = pending_loads.get(coord, {})
+            if cycle in pending:
+                load_responses[coord] = (True, pending.pop(cycle))
             else:
                 load_responses[coord] = (False, None)
 
@@ -342,8 +347,8 @@ def check_manifest(manifest_path: str | pathlib.Path) -> list[ScheduleDiagnostic
         pending_effects: list[tuple[
             tuple[int, int], list[tuple[int, int | None]], list[tuple[int, int | None]],
             list[tuple[str, int | None]], list[tuple[str, int | None]],
-            tuple[int, int | None] | None, tuple[int, int | None] | None,
         ]] = []
+        memory_requests: list[tuple[tuple[int, int], bool, int, int | None]] = []
 
         for coord, state in states.items():
             ctrl = controls_by_tile.get(coord, {}).get(control_pc, TileControl())
@@ -380,7 +385,7 @@ def check_manifest(manifest_path: str | pathlib.Path) -> list[ScheduleDiagnostic
                 if source == "LSU_LOAD_DATA":
                     valid, value = load_responses[coord]
                     if not valid:
-                        add("SCHED_LSU_LOAD_RESPONSE_TIMING", cycle, coord, f"{field} selects LSU_LOAD_DATA without a response")
+                        add("SCHED_MEMORY_LOAD_RESPONSE", cycle, coord, f"{field} selects LSU_LOAD_DATA without a response")
                     return value if valid else None
                 if source in DATA_NETWORK_SOURCES:
                     if source not in data_inputs[coord]:
@@ -460,8 +465,6 @@ def check_manifest(manifest_path: str | pathlib.Path) -> list[ScheduleDiagnostic
                 else:
                     pred_routes.append((direction, pred_source(route.src, f"pred_route_{direction}")))
 
-            load_issue: tuple[int, int | None] | None = None
-            scratch_write: tuple[int, int | None] | None = None
             if ctrl.lsu_op != "NONE":
                 if coord not in enabled_lsus:
                     add("SCHED_NON_LSU_OPERATION", cycle, coord, f"{ctrl.lsu_op} issued on a tile without an LSU")
@@ -471,11 +474,12 @@ def check_manifest(manifest_path: str | pathlib.Path) -> list[ScheduleDiagnostic
                     add("SCHED_UNSUPPORTED_CONTROL", cycle, coord, "LOAD enables predicate commit")
                 else:
                     lsu_addr = data_source(ctrl.lsu_addr_src, "lsu_addr_src")
-                    valid_addr = lsu_addr is not None and 0 <= lsu_addr < len(state.scratch_values)
+                    valid_addr = lsu_addr is not None and 0 <= lsu_addr < len(scratch_values)
                     if lsu_addr is not None and not valid_addr:
-                        add("SCHED_SCRATCHPAD_ADDRESS_RANGE", cycle, coord, f"address {lsu_addr} is outside [0, {len(state.scratch_values) - 1}]")
+                        add("SCHED_MEMORY_ADDR_RANGE", cycle, coord, f"address {lsu_addr} is outside [0, {len(scratch_values) - 1}]")
                     if ctrl.lsu_op == "LOAD" and valid_addr:
-                        load_issue = (cycle + load_latency, state.scratch_values[lsu_addr])
+                        assert lsu_addr is not None
+                        memory_requests.append((coord, False, lsu_addr, None))
                     elif ctrl.lsu_op == "STORE" and valid_addr:
                         store_data = data_source(ctrl.lsu_store_data_src, "lsu_store_data_src")
                         commit = True
@@ -483,13 +487,42 @@ def check_manifest(manifest_path: str | pathlib.Path) -> list[ScheduleDiagnostic
                             predicate = pred_source(ctrl.lsu_commit_pred_src, "lsu_commit_pred_src")
                             commit = predicate is not None and bool(predicate ^ int(ctrl.lsu_commit_pred_invert))
                         if commit:
-                            scratch_write = (lsu_addr, store_data)
+                            assert lsu_addr is not None
+                            memory_requests.append((coord, True, lsu_addr, store_data))
                     elif ctrl.lsu_op not in {"LOAD", "STORE"}:
                         add("SCHED_UNSUPPORTED_CONTROL", cycle, coord, f"unsupported LSU operation {ctrl.lsu_op}")
 
-            pending_effects.append((coord, data_writes, pred_writes, data_routes, pred_routes, load_issue, scratch_write))
+            pending_effects.append((coord, data_writes, pred_writes, data_routes, pred_routes))
 
-        for coord, data_writes, pred_writes, data_routes, pred_routes, load_issue, scratch_write in pending_effects:
+        requests_by_address: dict[int, list[tuple[tuple[int, int], bool, int | None]]] = {}
+        for coord, is_store, address, value in memory_requests:
+            requests_by_address.setdefault(address, []).append((coord, is_store, value))
+        conflicting_addresses: set[int] = set()
+        for address, same_address in sorted(requests_by_address.items()):
+            if len(same_address) > 1 and any(is_store for _, is_store, _ in same_address):
+                conflicting_addresses.add(address)
+                tiles = ",".join(f"({row},{col})" for (row, col), _, _ in same_address)
+                add(
+                    "SCHED_MEMORY_SAME_ADDR_STORE_CONFLICT",
+                    cycle,
+                    same_address[0][0],
+                    f"address {address} is accessed by tiles={tiles} and at least one access is a store",
+                )
+
+        ready_cycle = cycle + load_latency
+        for coord, is_store, address, _ in memory_requests:
+            if not is_store and address not in conflicting_addresses:
+                pending = pending_loads[coord]
+                if ready_cycle in pending:
+                    add("SCHED_MEMORY_LOAD_RESPONSE", cycle, coord, f"multiple responses scheduled for cycle {ready_cycle}")
+                else:
+                    pending[ready_cycle] = scratch_values[address]
+
+        for _, is_store, address, value in memory_requests:
+            if is_store and address not in conflicting_addresses:
+                scratch_values[address] = value
+
+        for coord, data_writes, pred_writes, data_routes, pred_routes in pending_effects:
             state = states[coord]
             for addr, value in data_writes:
                 state.data_valid[addr] = True
@@ -497,15 +530,6 @@ def check_manifest(manifest_path: str | pathlib.Path) -> list[ScheduleDiagnostic
             for addr, value in pred_writes:
                 state.pred_valid[addr] = True
                 state.pred_values[addr] = value
-            if scratch_write is not None:
-                addr, value = scratch_write
-                state.scratch_values[addr] = value
-            if load_issue is not None:
-                ready_cycle, value = load_issue
-                if ready_cycle in state.pending_loads:
-                    add("SCHED_LSU_LOAD_RESPONSE_TIMING", cycle, coord, f"multiple responses scheduled for cycle {ready_cycle}")
-                else:
-                    state.pending_loads[ready_cycle] = value
             for direction, value in data_routes:
                 emit_link(next_data_inputs, DATA_NEIGHBORS, coord, direction, value, cycle, "data")
             for direction, value in pred_routes:
@@ -519,7 +543,7 @@ def check_manifest(manifest_path: str | pathlib.Path) -> list[ScheduleDiagnostic
             ii = loop["ii"]
             kernel_proof_end = prologue + (proof_periods or 0) * ii
             if prologue <= cycle < kernel_proof_end and (cycle - prologue + 1) % ii == 0:
-                kernel_period_snapshots.append(structural_snapshot())
+                kernel_period_snapshots.append(structural_snapshot(cycle))
 
     if loop_enabled and loop["trip_count"] > len(kernel_period_snapshots):
         if len(kernel_period_snapshots) < 2 or kernel_period_snapshots[-1] != kernel_period_snapshots[-2]:

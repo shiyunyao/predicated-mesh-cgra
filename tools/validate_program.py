@@ -103,10 +103,31 @@ def validate_program(manifest):
         return errors
 
     params = target["parameters"]
+    memory = target.get("memory")
+    require(isinstance(memory, dict), "target.memory must be an object", errors)
+    if isinstance(memory, dict):
+        require(
+            memory.get("model") == "shared_multiport_scratchpad",
+            "target.memory.model must be shared_multiport_scratchpad",
+            errors,
+        )
+        require(memory.get("address_unit") == "word", "target.memory.address_unit must be word", errors)
     chunks_per_control = params["control_word_chunks"]
     ctrl_depth = params["ctrl_mem_depth"]
     const_depth = params["const_mem_depth"]
-    scratch_depth = params["scratch_bank_depth"]
+    scratch_depth = params.get("scratchpad_depth")
+    require(isinstance(scratch_depth, int) and scratch_depth > 0, "target scratchpad_depth must be positive", errors)
+    if not isinstance(scratch_depth, int) or scratch_depth <= 0:
+        return errors
+    enabled_lsus = target.get("lsu", {}).get("enabled_tiles", [])
+    shared_ports = params.get("shared_mem_ports")
+    require(isinstance(shared_ports, int) and shared_ports > 0, "target shared_mem_ports must be positive", errors)
+    if isinstance(shared_ports, int):
+        require(
+            len(enabled_lsus) <= shared_ports,
+            f"target enables {len(enabled_lsus)} LSUs but has only {shared_ports} shared memory ports",
+            errors,
+        )
 
     loop = manifest.get("loop")
     loop_enabled = False
@@ -180,7 +201,7 @@ def validate_program(manifest):
         return errors
 
     seen_tiles = set()
-    lsu_tiles = {(tile["row"], tile["col"]) for tile in target["lsu"]["enabled_tiles"]}
+    seen_scratch: dict[int, str] = {}
     for index, tile in enumerate(tiles):
         prefix = f"program.tiles[{index}]"
         require(isinstance(tile, dict), f"{prefix} must be an object", errors)
@@ -242,9 +263,6 @@ def validate_program(manifest):
         scratchpad = tile.get("scratchpad_preload")
         require(isinstance(scratchpad, list), f"{prefix}.scratchpad_preload must be a list", errors)
         if isinstance(scratchpad, list):
-            if scratchpad:
-                require(coord in lsu_tiles, f"{prefix}.scratchpad_preload is only valid for LSU-enabled tiles", errors)
-            seen_scratch = set()
             for scratch_index, entry in enumerate(scratchpad):
                 eprefix = f"{prefix}.scratchpad_preload[{scratch_index}]"
                 require(isinstance(entry, dict), f"{eprefix} must be an object", errors)
@@ -255,8 +273,12 @@ def validate_program(manifest):
                 require(isinstance(addr, int), f"{eprefix}.addr must be an integer", errors)
                 if isinstance(addr, int):
                     require(0 <= addr < scratch_depth, f"{eprefix}.addr out of range: {addr}", errors)
-                    require(addr not in seen_scratch, f"duplicate scratch addr in {prefix}: {addr}", errors)
-                    seen_scratch.add(addr)
+                    require(
+                        addr not in seen_scratch,
+                        f"duplicate global scratchpad preload address {addr}: {seen_scratch.get(addr)} and {eprefix}",
+                        errors,
+                    )
+                    seen_scratch.setdefault(addr, eprefix)
                 require(is_hex32(value), f"{eprefix}.value must be 32-bit hex string", errors)
 
     symbolic = manifest.get("symbolic_dfg")
@@ -283,7 +305,7 @@ def main():
         return 1
 
     print(f"program validation passed: {manifest_path}")
-    print("schema=cgra.program_manifest.v1 target=cgra_v1_default format=explicit_tile_images result_observation=trace_only")
+    print(f"schema=cgra.program_manifest.v1 target={manifest['target']['name']} format=explicit_tile_images result_observation=trace_only")
     return 0
 
 

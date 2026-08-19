@@ -4,8 +4,8 @@
   "version": 1,
   "target": {
     "schema": "cgra.target.v1",
-    "name": "cgra_v1_default",
-    "path": "target/cgra_v1.json"
+    "name": "cgra_v2_shared4p",
+    "path": "target/cgra_v2.json"
   },
   "run": {
     "run_cycles": 11,

@@ -34,7 +34,7 @@ CONFIG_STREAM_SCHEMA = "cgra.config_stream.v1"
 CONFIG_MEM_TYPES = {
     "CONTROL_MEM": 0,
     "CONST_MEM": 1,
-    "SCRATCHPAD_BANK": 2,
+    "SHARED_SCRATCHPAD": 2,
     "LOOP_DESC": 3,
 }
 
@@ -111,9 +111,21 @@ def expected_writes(manifest: dict[str, Any], target: dict[str, Any] | None = No
             if tile is not None:
                 for entry in sorted(tile["const_memory"], key=lambda image: image["addr"]):
                     writes.append(_write(len(writes), "CONST_MEM", row, col, entry["addr"], 0, entry["value"]))
-                for entry in sorted(tile["scratchpad_preload"], key=lambda image: image["addr"]):
-                    writes.append(_write(len(writes), "SCRATCHPAD_BANK", row, col, entry["addr"], 0, entry["value"]))
 
+    global_preloads = sorted(
+        (
+            entry
+            for tile in tile_images.values()
+            for entry in tile["scratchpad_preload"]
+        ),
+        key=lambda image: image["addr"],
+    )
+    for entry in global_preloads:
+        writes.append(_write(len(writes), "SHARED_SCRATCHPAD", 0, 0, entry["addr"], 0, entry["value"]))
+
+    for row in range(params["array_rows"]):
+        for col in range(params["array_cols"]):
+            tile = tile_images.get((row, col))
             explicit_controls = {} if tile is None else {
                 entry["pc"]: entry for entry in tile["control"]
             }

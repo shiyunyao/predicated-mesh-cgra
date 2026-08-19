@@ -18,11 +18,11 @@ from tools.validate_program import validate_program
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 
-MANIFEST = REPO_ROOT / "examples" / "schedules" / "fir32_transposed_predicated_ii7_4x4.semantic.json"
+MANIFEST = REPO_ROOT / "examples" / "schedules" / "shared_memory_cross_lsu_4x4.json"
 
 
 def test_prepare_archives_manifest_config_golden_trace_and_protocol_testbench(tmp_path: pathlib.Path):
-    artifacts = prepare_program_manifest(MANIFEST, tmp_path / "fir32")
+    artifacts = prepare_program_manifest(MANIFEST, tmp_path / "shared_memory")
 
     for key in ("program_manifest", "config_stream", "golden_trace", "testbench", "metadata"):
         assert artifacts[key].is_file(), key
@@ -33,15 +33,22 @@ def test_prepare_archives_manifest_config_golden_trace_and_protocol_testbench(tm
         config = json.load(handle)
     assert validate_program(manifest) == []
     assert validate_config_manifest(config) == []
-    assert config["config_stream"]["run"] == {"command": "START", "run_cycles": 242}
+    assert config["config_stream"]["run"] == {"command": "START", "run_cycles": 7}
+    scratch_writes = [
+        write for write in config["config_stream"]["writes"]
+        if write["mem_type"] == "SHARED_SCRATCHPAD"
+    ]
+    assert [(write["cfg_tile_row"], write["cfg_tile_col"], write["cfg_addr"]) for write in scratch_writes] == [
+        (0, 0, 101), (0, 0, 102), (0, 0, 103)
+    ]
     control_writes = [
         write for write in config["config_stream"]["writes"]
         if write["mem_type"] == "CONTROL_MEM"
     ]
-    assert len(control_writes) == 4 * 4 * 242 * 4
+    assert len(control_writes) == 4 * 4 * 7 * 4
     omitted_pc = [
         write for write in control_writes
-        if (write["cfg_tile_row"], write["cfg_tile_col"], write["cfg_addr"]) == (0, 0, 229)
+        if (write["cfg_tile_row"], write["cfg_tile_col"], write["cfg_addr"]) == (0, 0, 3)
     ]
     assert [write["cfg_wdata"] for write in omitted_pc] == ["0x00000000"] * 4
 
@@ -70,12 +77,12 @@ def test_manifest_run_length_cannot_wrap_the_8_bit_kernel_pc():
 
 
 def test_trace_mismatch_reports_manifest_config_seed_cycle_tile_and_field(tmp_path: pathlib.Path):
-    artifacts = prepare_program_manifest(MANIFEST, tmp_path / "fir32")
+    artifacts = prepare_program_manifest(MANIFEST, tmp_path / "shared_memory")
     bad_rtl = tmp_path / "bad_rtl_trace.csv"
     with artifacts["golden_trace"].open(newline="", encoding="utf-8") as handle:
         rows = list(csv.DictReader(handle))
-    changed = next(row for row in rows if row["fu_data_valid"] == "1")
-    changed["fu_data_result"] = "deadbeef"
+    changed = next(row for row in rows if row["lsu_load_resp_valid"] == "1")
+    changed["lsu_load_resp_data"] = "bad0cafe"
     with artifacts["golden_trace"].open(newline="", encoding="utf-8") as handle:
         writer_fields = csv.DictReader(handle).fieldnames
     assert writer_fields is not None
@@ -96,7 +103,7 @@ def test_trace_mismatch_reports_manifest_config_seed_cycle_tile_and_field(tmp_pa
     assert "manifest=" in diagnostic
     assert "config=" in diagnostic
     assert "seed=none" in diagnostic
-    assert f"cycle={changed['cycle']} tile=({changed['tile_row']},{changed['tile_col']}) field=fu_data_result" in diagnostic
+    assert f"cycle={changed['cycle']} tile=({changed['tile_row']},{changed['tile_col']}) field=lsu_load_resp_data" in diagnostic
 
     result = subprocess.run(
         [

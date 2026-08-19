@@ -70,7 +70,7 @@ endif
 
 TOP_MODULE := $(if $(filter modulo_loop,$(TEST)),generated_program_tb,$(TEST))
 
-PROGRAM_MANIFEST ?= examples/schedules/fir32_transposed_predicated_ii7_4x4.semantic.json
+PROGRAM_MANIFEST ?= examples/schedules/shared_memory_cross_lsu_4x4.json
 PROGRAM_NAME := $(basename $(notdir $(PROGRAM_MANIFEST)))
 PROGRAM_DIR := $(BUILD_DIR)/program/$(PROGRAM_NAME)
 PROGRAM_OBJ_DIR := $(PROGRAM_DIR)/obj
@@ -195,7 +195,7 @@ modulo-loop-assert-tests:
 	$(MAKE) --no-print-directory test TEST=modulo_loop
 	@set -e; \
 	"$(MODULO_LOOP_DIR)/obj/Vtop" +SKIP_LOOP_COMMIT +CGRA_TRACE +CGRA_LOOP_TRACE +CGRA_TRACE_FILE="$(MODULO_LOOP_DIR)/skip_commit_trace.csv"; \
-	for arg in +INVALID_LOOP_II +INVALID_LOOP_SPAN +LOOP_DESC_DURING_RUN +LOOP_DESC_DURING_DONE; do \
+	for arg in +INVALID_LOOP_II +INVALID_LOOP_SPAN +PARTIAL_LOOP_DESC +LOOP_DESC_DURING_RUN +LOOP_DESC_DURING_DONE; do \
 		if "$(MODULO_LOOP_DIR)/obj/Vtop" $$arg > "$(MODULO_LOOP_DIR)/$${arg#+}.log" 2>&1; then \
 			echo "expected failure did not occur for $$arg" >&2; exit 1; \
 		fi; \
