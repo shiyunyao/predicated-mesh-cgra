@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import pathlib
 import sys
 from dataclasses import dataclass
@@ -126,7 +127,7 @@ def _source_pred_reads(ctrl: TileControl) -> set[int]:
     return reads
 
 
-def _decode_manifest_control(entry: dict[str, Any], target: dict[str, Any]) -> TileControl:
+def _decode_manifest_control(entry: dict[str, Any], manifest: dict[str, Any], target: dict[str, Any]) -> TileControl:
     """Decode one target-format control image."""
 
     return decode_control_chunks(entry["chunks"], target)
@@ -141,7 +142,7 @@ def _decode_controls(
         image_controls: dict[int, TileControl] = {}
         for entry in tile_image["control"]:
             try:
-                image_controls[entry["pc"]] = _decode_manifest_control(entry, target)
+                image_controls[entry["pc"]] = _decode_manifest_control(entry, manifest, target)
             except (GoldenModelError, TypeError, ValueError) as exc:
                 add("SCHED_CONTROL_DECODE", entry.get("pc"), coord, str(exc))
         controls[coord] = image_controls
@@ -174,7 +175,7 @@ def _duplicate_link_conflicts(manifest: dict[str, Any], target: dict[str, Any]) 
             if not isinstance(entry, dict) or not isinstance(entry.get("pc"), int):
                 continue
             try:
-                ctrl = _decode_manifest_control(entry, target)
+                ctrl = _decode_manifest_control(entry, manifest, target)
             except (GoldenModelError, KeyError, TypeError, ValueError):
                 continue
             for kind, routes in (("data", ctrl.data_routes), ("predicate", ctrl.pred_routes)):
@@ -191,6 +192,34 @@ def _duplicate_link_conflicts(manifest: dict[str, Any], target: dict[str, Any]) 
                             f"multiple explicit {kind} drivers claim {direction} output",
                         ))
     return diagnostics
+
+
+def _check_cycles(manifest: dict[str, Any], target: dict[str, Any]) -> tuple[list[tuple[int, int]], int | None]:
+    """Build a bounded structural proof window instead of unrolling N iterations."""
+
+    loop = manifest.get("loop")
+    if not isinstance(loop, dict) or loop.get("enabled") is not True:
+        return [(cycle, cycle) for cycle in range(manifest["run"]["run_cycles"])], None
+
+    prologue = loop["prologue_cycles"]
+    ii = loop["ii"]
+    trip_count = loop["trip_count"]
+    epilogue = loop["epilogue_cycles"]
+    max_latency = max(target["parameters"]["mesh_hop_latency"], target["parameters"]["load_latency"])
+    proof_periods = min(trip_count, max(3, 2 + math.ceil(max_latency / ii)))
+    cycles: list[tuple[int, int]] = []
+    cycle = 0
+    for pc in range(prologue):
+        cycles.append((cycle, pc))
+        cycle += 1
+    for _ in range(proof_periods):
+        for slot in range(ii):
+            cycles.append((cycle, prologue + slot))
+            cycle += 1
+    for offset in range(epilogue):
+        cycles.append((cycle, prologue + ii + offset))
+        cycle += 1
+    return cycles, proof_periods
 
 
 def check_manifest(manifest_path: str | pathlib.Path) -> list[ScheduleDiagnostic]:
@@ -279,8 +308,28 @@ def check_manifest(manifest_path: str | pathlib.Path) -> list[ScheduleDiagnostic
             return
         next_inputs[destination][destination_source] = value
 
-    run_cycles = manifest["run"]["run_cycles"]
-    for cycle in range(run_cycles):
+    execution_cycles, proof_periods = _check_cycles(manifest, target)
+    loop = manifest.get("loop")
+    loop_enabled = isinstance(loop, dict) and loop.get("enabled") is True
+    kernel_period_snapshots: list[tuple[Any, ...]] = []
+
+    def structural_snapshot() -> tuple[Any, ...]:
+        state_snapshot = []
+        for coord in sorted(states):
+            state = states[coord]
+            state_snapshot.append((
+                coord,
+                tuple(state.data_valid),
+                tuple(state.pred_valid),
+                tuple(sorted(state.pending_loads)),
+            ))
+        input_snapshot = tuple(
+            (coord, tuple(sorted(data_inputs[coord])), tuple(sorted(pred_inputs[coord])))
+            for coord in sorted(states)
+        )
+        return tuple(state_snapshot) + input_snapshot
+
+    for cycle, control_pc in execution_cycles:
         load_responses: dict[tuple[int, int], tuple[bool, int | None]] = {}
         for coord, state in states.items():
             if cycle in state.pending_loads:
@@ -297,7 +346,7 @@ def check_manifest(manifest_path: str | pathlib.Path) -> list[ScheduleDiagnostic
         ]] = []
 
         for coord, state in states.items():
-            ctrl = controls_by_tile.get(coord, {}).get(cycle, TileControl())
+            ctrl = controls_by_tile.get(coord, {}).get(control_pc, TileControl())
 
             data_write_addrs = ({ctrl.data_w0_addr} if ctrl.data_w0_we else set()) | ({ctrl.data_w1_addr} if ctrl.data_w1_we else set())
             pred_write_addrs = ({ctrl.pred_w0_addr} if ctrl.pred_w0_we else set()) | ({ctrl.pred_w1_addr} if ctrl.pred_w1_we else set())
@@ -464,6 +513,22 @@ def check_manifest(manifest_path: str | pathlib.Path) -> list[ScheduleDiagnostic
 
         data_inputs = next_data_inputs
         pred_inputs = next_pred_inputs
+
+        if loop_enabled:
+            prologue = loop["prologue_cycles"]
+            ii = loop["ii"]
+            kernel_proof_end = prologue + (proof_periods or 0) * ii
+            if prologue <= cycle < kernel_proof_end and (cycle - prologue + 1) % ii == 0:
+                kernel_period_snapshots.append(structural_snapshot())
+
+    if loop_enabled and loop["trip_count"] > len(kernel_period_snapshots):
+        if len(kernel_period_snapshots) < 2 or kernel_period_snapshots[-1] != kernel_period_snapshots[-2]:
+            add(
+                "SCHED_LOOP_PERIODIC_UNPROVEN",
+                None,
+                None,
+                "bounded kernel proof did not reach a structural fixed point; schedule may contain a non-periodic hazard",
+            )
 
     return diagnostics
 

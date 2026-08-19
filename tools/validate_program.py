@@ -11,6 +11,7 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 ALLOWED_OBSERVATION_MODES = {"trace_only", "top_output", "future_readback", "unsupported"}
 REQUIRED_TOP_LEVEL = {"schema", "name", "version", "target", "run", "program"}
 REQUIRED_TILE_KEYS = {"row", "col", "control", "const_memory", "scratchpad_preload"}
+LOOP_KEYS = {"enabled", "prologue_cycles", "ii", "trip_count", "epilogue_cycles"}
 HEX32_PREFIX = "0x"
 
 
@@ -72,6 +73,19 @@ def validate_tile_coord(tile, target, prefix, errors):
         require(0 <= col < cols, f"{prefix}.col out of range: {col}", errors)
 
 
+def loop_descriptor(manifest):
+    """Return the optional loop descriptor without interpreting malformed input."""
+
+    loop = manifest.get("loop") if isinstance(manifest, dict) else None
+    return loop if isinstance(loop, dict) else None
+
+
+def loop_total_cycles(loop):
+    """Return P + N*II + E for a structurally valid loop descriptor."""
+
+    return loop["prologue_cycles"] + loop["trip_count"] * loop["ii"] + loop["epilogue_cycles"]
+
+
 def validate_program(manifest):
     errors = []
     require(isinstance(manifest, dict), "manifest must be a JSON object", errors)
@@ -94,17 +108,59 @@ def validate_program(manifest):
     const_depth = params["const_mem_depth"]
     scratch_depth = params["scratch_bank_depth"]
 
+    loop = manifest.get("loop")
+    loop_enabled = False
+    loop_span = None
+    loop_total = None
+    if loop is not None:
+        require(isinstance(loop, dict), "loop must be an object when present", errors)
+        if isinstance(loop, dict):
+            missing_loop = sorted(LOOP_KEYS - set(loop))
+            extra_loop = sorted(set(loop) - LOOP_KEYS)
+            require(not missing_loop, f"loop missing keys: {missing_loop}", errors)
+            require(not extra_loop, f"loop has unsupported keys: {extra_loop}", errors)
+            enabled = loop.get("enabled")
+            require(type(enabled) is bool, "loop.enabled must be a boolean", errors)
+            loop_enabled = enabled is True
+            for field in ("prologue_cycles", "ii", "trip_count", "epilogue_cycles"):
+                value = loop.get(field)
+                require(type(value) is int, f"loop.{field} must be an integer", errors)
+                if type(value) is int:
+                    require(0 <= value <= 0xffff_ffff, f"loop.{field} must fit unsigned 32 bits", errors)
+            numeric = all(
+                type(loop.get(field)) is int
+                for field in ("prologue_cycles", "ii", "trip_count", "epilogue_cycles")
+            )
+            if numeric:
+                loop_span = loop["prologue_cycles"] + loop["ii"] + loop["epilogue_cycles"]
+                require(
+                    loop_span <= ctrl_depth,
+                    f"loop phase span P+II+E exceeds control memory depth: {loop_span} > {ctrl_depth}",
+                    errors,
+                )
+                if loop_enabled:
+                    require(loop["ii"] > 0, "loop.ii must be positive when loop.enabled is true", errors)
+                    require(loop["trip_count"] > 0, "loop.trip_count must be positive when loop.enabled is true", errors)
+                    loop_total = loop_total_cycles(loop)
+
     run = manifest.get("run")
     require(isinstance(run, dict), "run must be an object", errors)
     if isinstance(run, dict):
         run_cycles = run.get("run_cycles")
         require(isinstance(run_cycles, int), "run.run_cycles must be an integer", errors)
         if isinstance(run_cycles, int):
-            require(
-                0 < run_cycles < ctrl_depth,
-                f"run.run_cycles must be in [1, {ctrl_depth - 1}]",
-                errors,
-            )
+            if loop_enabled and loop_total is not None:
+                require(
+                    run_cycles == loop_total,
+                    f"run.run_cycles must equal P+trip_count*II+E ({loop_total}) in loop mode",
+                    errors,
+                )
+            else:
+                require(
+                    0 < run_cycles < ctrl_depth,
+                    f"run.run_cycles must be in [1, {ctrl_depth - 1}]",
+                    errors,
+                )
         observation = run.get("result_observation")
         require(isinstance(observation, dict), "run.result_observation must be an object", errors)
         if isinstance(observation, dict):
@@ -158,6 +214,12 @@ def validate_program(manifest):
                     require(len(chunks) == chunks_per_control, f"{eprefix}.chunks length must be {chunks_per_control}", errors)
                     for chunk_index, chunk in enumerate(chunks):
                         require(is_hex32(chunk), f"{eprefix}.chunks[{chunk_index}] must be 32-bit hex string", errors)
+            if loop_enabled and loop_span is not None:
+                expected_pc = set(range(loop_span))
+                missing_pc = sorted(expected_pc - seen_pc)
+                extra_pc = sorted(seen_pc - expected_pc)
+                require(not missing_pc, f"{prefix}.control missing loop phase PCs: {missing_pc}", errors)
+                require(not extra_pc, f"{prefix}.control has PCs outside loop phase span: {extra_pc}", errors)
 
         const_memory = tile.get("const_memory")
         require(isinstance(const_memory, list), f"{prefix}.const_memory must be a list", errors)

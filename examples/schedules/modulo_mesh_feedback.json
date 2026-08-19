@@ -1,0 +1,59 @@
+{
+  "schema": "cgra.program_manifest.v1",
+  "name": "modulo_mesh_feedback",
+  "version": 1,
+  "target": {
+    "schema": "cgra.target.v1",
+    "name": "cgra_v1_default",
+    "path": "target/cgra_v1.json"
+  },
+  "run": {
+    "run_cycles": 11,
+    "result_observation": {
+      "mode": "trace_only",
+      "description": "The final epilogue cycle routes trip_count north from tile (0,0)."
+    }
+  },
+  "loop": {
+    "enabled": true,
+    "prologue_cycles": 2,
+    "ii": 2,
+    "trip_count": 4,
+    "epilogue_cycles": 1
+  },
+  "program": {
+    "format": "explicit_tile_images",
+    "control_word_encoding": "lsb_first_32bit_chunks",
+    "tiles": [
+      {
+        "row": 0,
+        "col": 0,
+        "control": [
+          {"pc": 0, "chunks": ["0x001de200", "0xc0080000", "0x00011001", "0x1c880000"], "comment": "Prologue: seed zero east."},
+          {"pc": 1, "chunks": ["0x001de200", "0xc0080000", "0x00000001", "0x1c880000"]},
+          {"pc": 2, "chunks": ["0x001dd902", "0xc0080000", "0x0000b001", "0x1c880400"], "comment": "Kernel slot 0: consume east feedback, add one, send east."},
+          {"pc": 3, "chunks": ["0x001de200", "0xc0080000", "0x00000001", "0x1c880000"]},
+          {"pc": 4, "chunks": ["0x001de200", "0xc0080000", "0x0000001d", "0x1c880000"], "comment": "Epilogue: drain final east feedback north."}
+        ],
+        "const_memory": [
+          {"addr": 0, "value": "0x00000000"},
+          {"addr": 1, "value": "0x00000001"}
+        ],
+        "scratchpad_preload": []
+      },
+      {
+        "row": 0,
+        "col": 1,
+        "control": [
+          {"pc": 0, "chunks": ["0x001de200", "0xc0080000", "0x00000001", "0x1c880000"]},
+          {"pc": 1, "chunks": ["0x001de200", "0xc0080000", "0x00120001", "0x1c880000"], "comment": "Prologue: return seed west."},
+          {"pc": 2, "chunks": ["0x001de200", "0xc0080000", "0x00000001", "0x1c880000"]},
+          {"pc": 3, "chunks": ["0x001de200", "0xc0080000", "0x00120001", "0x1c880000"], "comment": "Kernel slot 1: return iteration result west."},
+          {"pc": 4, "chunks": ["0x001de200", "0xc0080000", "0x00000001", "0x1c880000"]}
+        ],
+        "const_memory": [],
+        "scratchpad_preload": []
+      }
+    ]
+  }
+}

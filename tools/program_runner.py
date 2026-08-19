@@ -24,7 +24,7 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from model.golden_model import run_manifest, write_trace_csv
+from model.golden_model import manifest_execution_steps, run_manifest, write_trace_csv
 from tools.check_schedule import check_manifest
 from tools.emit_config import emit_config_manifest, validate_config_manifest, write_config_manifest
 from tools.trace_compare import compare_trace_paths
@@ -114,6 +114,9 @@ def emit_testbench(
     tiles, lsu_mask = _lsu_mask(target)
     writes = config["config_stream"]["writes"]
     run_cycles = config["config_stream"]["run"]["run_cycles"]
+    execution_steps = manifest_execution_steps(config)
+    loop = config.get("loop")
+    loop_enabled = isinstance(loop, dict) and loop.get("enabled") is True
     cases = []
     for index, write in enumerate(writes):
         cases.append(
@@ -124,6 +127,63 @@ def emit_testbench(
             f"{_sv_value(write['cfg_wdata'])});"
         )
     case_text = "\n".join(cases)
+    pc_case_text = "\n".join(
+        f"        {index}: expected_pc = CTRL_PC_WIDTH'({step.pc});"
+        for index, step in enumerate(execution_steps)
+    )
+    loop_write_indices = {
+        write["cfg_addr"]: index
+        for index, write in enumerate(writes)
+        if write["mem_type"] == "LOOP_DESC"
+    }
+    descriptor_overrides = ""
+    if loop_enabled:
+        descriptor_overrides = f"""
+      if (index == {loop_write_indices[0]}) begin
+        cfg_wdata = 32'(active_prologue);
+      end
+      if (index == {loop_write_indices[2]}) begin
+        cfg_wdata = 32'(active_trip_count);
+      end
+      if (index == {loop_write_indices[3]}) begin
+        cfg_wdata = 32'(active_epilogue);
+      end
+      if (($test$plusargs("SKIP_LOOP_COMMIT") != 0) && (index == {loop_write_indices[4]})) begin
+        clear_cfg();
+      end
+      if (($test$plusargs("INVALID_LOOP_SPAN") != 0) && (index == {loop_write_indices[0]})) begin
+        cfg_wdata = 32'd255;
+      end
+      if (($test$plusargs("INVALID_LOOP_II") != 0) && (index == {loop_write_indices[1]})) begin
+        cfg_wdata = 32'd0;
+      end"""
+    loop_localparams = """
+  localparam bit LOOP_MODE = 1'b0;
+  localparam int LOOP_PROLOGUE = 0;
+  localparam int LOOP_II = 0;
+  localparam int LOOP_TRIP_COUNT = 0;
+  localparam int LOOP_EPILOGUE = 0;"""
+    expected_pc_body = f"""unique case (index)
+{pc_case_text}
+        default: expected_pc = 'x;
+      endcase"""
+    if loop_enabled:
+        loop_localparams = f"""
+  localparam bit LOOP_MODE = 1'b1;
+  localparam int LOOP_PROLOGUE = {loop['prologue_cycles']};
+  localparam int LOOP_II = {loop['ii']};
+  localparam int LOOP_TRIP_COUNT = {loop['trip_count']};
+  localparam int LOOP_EPILOGUE = {loop['epilogue_cycles']};"""
+        expected_pc_body = """if (!active_loop_mode) begin
+        expected_pc = CTRL_PC_WIDTH'(index);
+      end else if (index < active_prologue) begin
+        expected_pc = CTRL_PC_WIDTH'(index);
+      end else if (index < active_prologue + active_trip_count * LOOP_II) begin
+        expected_pc = CTRL_PC_WIDTH'(active_prologue + ((index - active_prologue) % LOOP_II));
+      end else begin
+        expected_pc = CTRL_PC_WIDTH'(active_prologue + LOOP_II
+                                     + index - (active_prologue + active_trip_count * LOOP_II));
+      end"""
     content = f"""// SPDX-License-Identifier: MIT
 `timescale 1ns/1ps
 
@@ -137,6 +197,7 @@ module generated_program_tb(input logic clk);
   localparam int WRITE_COUNT = {len(writes)};
   localparam int RUN_CYCLES = {run_cycles};
   localparam int START_CYCLE = 1 + WRITE_COUNT;
+{loop_localparams}
   localparam string INPUT_MANIFEST = {_sv_path(manifest_path)};
   localparam string CONFIG_STREAM = {_sv_path(config_path)};
 
@@ -165,6 +226,11 @@ module generated_program_tb(input logic clk);
   logic [TILES*DATA_WIDTH-1:0] west_data_out;
   logic unused_outputs;
   int cycle;
+  bit active_loop_mode;
+  int active_prologue;
+  int active_trip_count;
+  int active_epilogue;
+  int active_run_cycles;
 
   cgra_top #(
     .ROWS(ROWS),
@@ -245,8 +311,15 @@ module generated_program_tb(input logic clk);
 {case_text}
         default: $fatal(1, "Generated config stream index out of range manifest=%s config=%s write=%0d", INPUT_MANIFEST, CONFIG_STREAM, index);
       endcase
+{descriptor_overrides}
     end
   endtask
+
+  function automatic logic [CTRL_PC_WIDTH-1:0] expected_pc(input int index);
+    begin
+      {expected_pc_body}
+    end
+  endfunction
 /* verilator lint_on BLKSEQ */
 
   initial begin
@@ -255,6 +328,34 @@ module generated_program_tb(input logic clk);
     clear_cfg();
     start = 1'b0;
     run_cycles = '0;
+    active_loop_mode = LOOP_MODE && ($test$plusargs("SKIP_LOOP_COMMIT") == 0);
+    active_prologue = LOOP_PROLOGUE;
+    active_trip_count = LOOP_TRIP_COUNT;
+    active_epilogue = LOOP_EPILOGUE;
+    if (LOOP_MODE && ($test$plusargs("LOOP_ZERO_BOUNDARIES") != 0)) begin
+      active_prologue = 0;
+      active_epilogue = 0;
+    end
+    if (LOOP_MODE && ($test$plusargs("LOOP_TRIP_COUNT_1") != 0)) begin
+      active_trip_count = 1;
+    end
+    if (LOOP_MODE && ($test$plusargs("LOOP_TRIP_COUNT_2") != 0)) begin
+      active_trip_count = 2;
+    end
+    if (LOOP_MODE && ($test$plusargs("LOOP_TRIP_COUNT_4") != 0)) begin
+      active_trip_count = 4;
+    end
+    if (LOOP_MODE && ($test$plusargs("LOOP_TRIP_COUNT_7") != 0)) begin
+      active_trip_count = 7;
+    end
+    if (LOOP_MODE && ($value$plusargs("LOOP_TRIP_COUNT=%d", active_trip_count) != 0)) begin
+    end
+    active_run_cycles = active_loop_mode
+                        ? active_prologue + active_trip_count * LOOP_II + active_epilogue
+                        : RUN_CYCLES;
+    if (LOOP_MODE && (active_trip_count <= 0)) begin
+      $fatal(1, "LOOP_TRIP_COUNT plusarg must be positive");
+    end
   end
 
 /* verilator lint_off BLKSEQ */
@@ -275,26 +376,32 @@ module generated_program_tb(input logic clk);
       if (!cfg_ready) begin
         $fatal(1, "Generated start rejected manifest=%s config=%s seed=none cycle=%0d", INPUT_MANIFEST, CONFIG_STREAM, cycle);
       end
-      run_cycles <= CTRL_PC_WIDTH'(RUN_CYCLES);
+      run_cycles <= CTRL_PC_WIDTH'(active_run_cycles);
       start <= 1'b1;
-    end else if ((cycle >= START_CYCLE + 1) && (cycle <= START_CYCLE + RUN_CYCLES)) begin
+    end else if ((cycle >= START_CYCLE + 1) && (cycle <= START_CYCLE + active_run_cycles)) begin
       if (!busy) begin
         $fatal(1, "Generated run ended early manifest=%s config=%s seed=none cycle=%0d", INPUT_MANIFEST, CONFIG_STREAM, cycle);
       end
-      if (kernel_pc !== CTRL_PC_WIDTH'(cycle - START_CYCLE - 1)) begin
-        $fatal(1, "Generated pc mismatch manifest=%s config=%s seed=none cycle=%0d expected_pc=%0d actual_pc=%0d", INPUT_MANIFEST, CONFIG_STREAM, cycle, cycle - START_CYCLE - 1, kernel_pc);
+      if (kernel_pc !== expected_pc(cycle - START_CYCLE - 1)) begin
+        $fatal(1, "Generated pc mismatch manifest=%s config=%s seed=none cycle=%0d expected_pc=%0d actual_pc=%0d", INPUT_MANIFEST, CONFIG_STREAM, cycle, expected_pc(cycle - START_CYCLE - 1), kernel_pc);
       end
-    end else if (cycle == START_CYCLE + RUN_CYCLES + 1) begin
+      if ($test$plusargs("LOOP_DESC_DURING_RUN") != 0) begin
+        drive_cfg_int(2'd3, '0, '0, '0, '0, 32'd1);
+      end
+    end else if (cycle == START_CYCLE + active_run_cycles + 1) begin
       if (!done) begin
         $fatal(1, "Generated done pulse missing manifest=%s config=%s seed=none cycle=%0d", INPUT_MANIFEST, CONFIG_STREAM, cycle);
       end
-    end else if (cycle == START_CYCLE + RUN_CYCLES + 2) begin
+      if ($test$plusargs("LOOP_DESC_DURING_DONE") != 0) begin
+        drive_cfg_int(2'd3, '0, '0, '0, '0, 32'd1);
+      end
+    end else if (cycle == START_CYCLE + active_run_cycles + 2) begin
       if (done) begin
         $fatal(1, "Generated done pulse did not clear manifest=%s config=%s seed=none cycle=%0d", INPUT_MANIFEST, CONFIG_STREAM, cycle);
       end
-      $display("PROGRAM_RTL_PASS manifest=%s config=%s seed=none run_cycles=%0d", INPUT_MANIFEST, CONFIG_STREAM, RUN_CYCLES);
+      $display("PROGRAM_RTL_PASS manifest=%s config=%s seed=none run_cycles=%0d", INPUT_MANIFEST, CONFIG_STREAM, active_run_cycles);
       $finish;
-    end else if (cycle > START_CYCLE + RUN_CYCLES + 4) begin
+    end else if (cycle > START_CYCLE + active_run_cycles + 4) begin
       $fatal(1, "Generated program timed out manifest=%s config=%s seed=none cycle=%0d", INPUT_MANIFEST, CONFIG_STREAM, cycle);
     end
   end
@@ -417,13 +524,17 @@ def run_program(
     rtl_trace = output / "rtl_trace.csv"
     artifacts["rtl_trace"] = rtl_trace
     simulation_log = output / "rtl_simulation.log"
+    simulation_args = [
+        str(obj_dir / "Vtop"),
+        "+CGRA_TRACE",
+        f"+CGRA_TRACE_FILE={rtl_trace}",
+    ]
+    archived_manifest = load_json(artifacts["program_manifest"])
+    if archived_manifest.get("loop", {}).get("enabled") is True:
+        simulation_args.append("+CGRA_LOOP_TRACE")
     with simulation_log.open("w", encoding="utf-8") as log:
         subprocess.run(
-            [
-                str(obj_dir / "Vtop"),
-                "+CGRA_TRACE",
-                f"+CGRA_TRACE_FILE={rtl_trace}",
-            ],
+            simulation_args,
             cwd=REPO_ROOT,
             check=True,
             stdout=log,

@@ -53,6 +53,22 @@ TRACE_FILE := $(TEST_BUILD_DIR)/trace.csv
 RUN_ARGS := $(if $(filter $(TEST),trace_tb trace_extended_tb),+CGRA_TRACE +CGRA_TRACE_FILE=$(TRACE_FILE))
 VERILATOR_FLAGS ?= -Wall --cc --exe --build
 
+MODULO_LOOP_PROGRAM ?= examples/schedules/modulo_mesh_feedback.json
+MODULO_LOOP_DIR := $(BUILD_DIR)/modulo_loop
+MODULO_LOOP_TB := $(MODULO_LOOP_DIR)/generated_program_tb.sv
+MODULO_LOOP_CONFIG := $(MODULO_LOOP_DIR)/config_stream.json
+MODULO_LOOP_GOLDEN := $(MODULO_LOOP_DIR)/golden_trace.csv
+MODULO_LOOP_RTL := $(MODULO_LOOP_DIR)/rtl_trace.csv
+
+ifeq ($(TEST),modulo_loop)
+TB_SRC := $(MODULO_LOOP_TB)
+TEST_BUILD_DIR := $(MODULO_LOOP_DIR)/obj
+TRACE_FILE := $(MODULO_LOOP_RTL)
+RUN_ARGS := +CGRA_TRACE +CGRA_LOOP_TRACE +CGRA_TRACE_FILE=$(TRACE_FILE)
+endif
+
+TOP_MODULE := $(if $(filter modulo_loop,$(TEST)),generated_program_tb,$(TEST))
+
 PROGRAM_MANIFEST ?= examples/schedules/fir32_transposed_predicated_ii7_4x4.semantic.json
 PROGRAM_NAME := $(basename $(notdir $(PROGRAM_MANIFEST)))
 PROGRAM_DIR := $(BUILD_DIR)/program/$(PROGRAM_NAME)
@@ -64,13 +80,14 @@ PROGRAM_CONFIG := $(PROGRAM_DIR)/config_stream.json
 PROGRAM_IMAGE := $(PROGRAM_DIR)/program_manifest.json
 PROGRAM_CPP := $(abspath sim/data_rf_main.cpp)
 
-.PHONY: help check-test lint build test regression program program-prepare program-build program-run program-check synth-fetch-asap7 synth-memory-shape synth-area synth-timing synth-power synth-power-feasibility synth-fn-cacti clean
+.PHONY: help check-test lint build test regression program program-prepare program-build program-run program-check modulo-loop modulo-loop-prepare modulo-loop-check modulo-loop-tripcount-tests modulo-loop-zero-boundary-test modulo-loop-reuse-test modulo-loop-assert-tests synth-fetch-asap7 synth-memory-shape synth-area synth-timing synth-power synth-power-feasibility synth-fn-cacti clean
 
 help:
 	@echo "make test TEST=<name>  Build and run one testbench"
 	@echo "make lint TEST=<name>  Lint RTL with one testbench"
 	@echo "make regression         Run all retained testbenches"
 	@echo "make program PROGRAM_MANIFEST=<path>  Replay an external cgra.program_manifest.v1 through RTL and compare traces"
+	@echo "make modulo-loop        Replay the external modulo-loop manifest and run loop coverage"
 	@echo "make synth-area         Map 2x2/4x4 logic and report ASAP7 cell area"
 	@echo "make synth-timing       Estimate 2x2/4x4 logic timing at 100 MHz"
 	@echo "make synth-power        Capture SAIF and probe 2x2/4x4 ABC power"
@@ -86,11 +103,12 @@ lint: check-test
 build: check-test
 	mkdir -p "$(TEST_BUILD_DIR)"
 	$(VERILATOR) $(VERILATOR_FLAGS) --Mdir "$(TEST_BUILD_DIR)" --prefix Vtop \
-		$(RTL_SRCS) $(TB_SRC) $(CPP_SRC) --top-module $(TEST)
+		$(RTL_SRCS) $(TB_SRC) $(CPP_SRC) --top-module $(TOP_MODULE)
 
-test: build
+test: $(if $(filter modulo_loop,$(TEST)),modulo-loop-prepare) build
 	"$(TEST_BUILD_DIR)/Vtop" $(RUN_ARGS)
 	@if echo " $(TEST) " | grep -q " trace_"; then test -s "$(TRACE_FILE)"; fi
+	@if [ "$(TEST)" = modulo_loop ]; then test -s "$(TRACE_FILE)"; fi
 
 regression:
 	@set -e; for test_name in $(TESTS); do \
@@ -112,8 +130,12 @@ program-build: program-prepare
 		--top-module generated_program_tb
 
 program-run: program-build
+	@loop_trace_arg=""; \
+	if python3 -c 'import json, sys; m=json.load(open(sys.argv[1], encoding="utf-8")); raise SystemExit(0 if m.get("loop", {}).get("enabled") is True else 1)' "$(PROGRAM_IMAGE)"; then \
+		loop_trace_arg=+CGRA_LOOP_TRACE; \
+	fi; \
 	"$(PROGRAM_OBJ_DIR)/Vtop" \
-		+CGRA_TRACE +CGRA_TRACE_FILE="$(abspath $(PROGRAM_RTL_TRACE))" \
+		+CGRA_TRACE +CGRA_TRACE_FILE="$(abspath $(PROGRAM_RTL_TRACE))" $$loop_trace_arg \
 		> "$(PROGRAM_DIR)/rtl_simulation.log" 2>&1
 	cat "$(PROGRAM_DIR)/rtl_simulation.log"
 	@test -s "$(PROGRAM_RTL_TRACE)"
@@ -126,6 +148,48 @@ program-check: program-run
 		--rtl "$(PROGRAM_RTL_TRACE)" \
 		> "$(PROGRAM_DIR)/compare.log" 2>&1
 	cat "$(PROGRAM_DIR)/compare.log"
+
+modulo-loop: modulo-loop-check modulo-loop-tripcount-tests modulo-loop-zero-boundary-test modulo-loop-reuse-test modulo-loop-assert-tests
+	python3 -m pytest tests/test_modulo_loop.py
+
+modulo-loop-prepare:
+	mkdir -p "$(MODULO_LOOP_DIR)"
+	python3 tools/modulo_loop_runner.py --prepare "$(MODULO_LOOP_PROGRAM)" --out-dir "$(MODULO_LOOP_DIR)"
+
+modulo-loop-check:
+	$(MAKE) --no-print-directory test TEST=modulo_loop
+	python3 tools/modulo_loop_runner.py --compare --golden "$(MODULO_LOOP_GOLDEN)" --rtl "$(MODULO_LOOP_RTL)"
+
+modulo-loop-tripcount-tests:
+	$(MAKE) --no-print-directory test TEST=modulo_loop
+	@set -e; for n in 1 2 7; do \
+		out="$(MODULO_LOOP_DIR)/n$$n"; \
+		mkdir -p "$$out"; \
+		python3 tools/modulo_loop_runner.py --prepare "$(MODULO_LOOP_PROGRAM)" --trip-count $$n --out-dir "$$out"; \
+		"$(MODULO_LOOP_DIR)/obj/Vtop" +LOOP_TRIP_COUNT_$$n +CGRA_TRACE +CGRA_LOOP_TRACE +CGRA_TRACE_FILE="$$out/rtl_trace.csv"; \
+		python3 tools/modulo_loop_runner.py --compare --golden "$$out/golden_trace.csv" --rtl "$$out/rtl_trace.csv"; \
+	done
+
+modulo-loop-zero-boundary-test:
+	$(MAKE) --no-print-directory test TEST=modulo_loop
+	@set -e; out="$(MODULO_LOOP_DIR)/zero_boundaries"; \
+	mkdir -p "$$out"; \
+	python3 tools/modulo_loop_runner.py --prepare "$(MODULO_LOOP_PROGRAM)" --trip-count 1 --zero-boundaries --out-dir "$$out"; \
+	"$(MODULO_LOOP_DIR)/obj/Vtop" +LOOP_TRIP_COUNT_1 +LOOP_ZERO_BOUNDARIES +CGRA_TRACE +CGRA_LOOP_TRACE +CGRA_TRACE_FILE="$$out/rtl_trace.csv"; \
+	python3 tools/modulo_loop_runner.py --compare --golden "$$out/golden_trace.csv" --rtl "$$out/rtl_trace.csv"
+
+modulo-loop-reuse-test:
+	$(MAKE) --no-print-directory test TEST=modulo_loop_reuse_tb
+
+modulo-loop-assert-tests:
+	$(MAKE) --no-print-directory test TEST=modulo_loop
+	@set -e; \
+	"$(MODULO_LOOP_DIR)/obj/Vtop" +SKIP_LOOP_COMMIT +CGRA_TRACE +CGRA_LOOP_TRACE +CGRA_TRACE_FILE="$(MODULO_LOOP_DIR)/skip_commit_trace.csv"; \
+	for arg in +INVALID_LOOP_II +INVALID_LOOP_SPAN +LOOP_DESC_DURING_RUN +LOOP_DESC_DURING_DONE; do \
+		if "$(MODULO_LOOP_DIR)/obj/Vtop" $$arg > "$(MODULO_LOOP_DIR)/$${arg#+}.log" 2>&1; then \
+			echo "expected failure did not occur for $$arg" >&2; exit 1; \
+		fi; \
+	done
 
 synth-fetch-asap7:
 	python3 scripts/fetch_asap7.py --seven-zip $(ASAP7_7Z)

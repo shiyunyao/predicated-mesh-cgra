@@ -247,6 +247,7 @@ selects a tile, an address, and one of the local memories:
 |            `0` | Control memory    |
 |            `1` | Constant memory   |
 |            `2` | Scratchpad memory |
+|            `3` | Loop descriptor (global tile only) |
 
 Control words wider than the configuration datapath are written in 32-bit
 chunks using `cfg_word_idx`.
@@ -254,6 +255,37 @@ chunks using `cfg_word_idx`.
 Once configuration is complete, set `run_cycles` to the schedule length and
 pulse `start`. The execution state is available through `busy`, `done`, and
 `kernel_pc`.
+
+## Modulo Loop Replay
+
+The external compiler can describe a modulo schedule in the same
+`cgra.program_manifest.v1` handoff by adding a `loop` object with
+`prologue_cycles`, `ii`, `trip_count`, and `epilogue_cycles`. The framework
+does not schedule or transform this image: it validates the descriptor, emits
+the bounded prologue/kernel/epilogue control image (`prologue + ii + epilogue`
+physical control slots), programs the RTL loop descriptor, and checks the
+expanded cycle-by-cycle trace. The loop descriptor is committed through the
+global tile and is then reused for each kernel iteration.
+
+Replay the checked-in modulo-scheduling example, including trip-count,
+zero-boundary, descriptor-reuse, and invalid-descriptor checks:
+
+```bash
+make modulo-loop
+```
+
+The example is `examples/schedules/modulo_mesh_feedback.json` (prologue 2,
+II 2, trip count 4, epilogue 1, for 11 execution cycles). To exercise another
+compiler-generated manifest through the same path, set
+`MODULO_LOOP_PROGRAM`:
+
+```bash
+make modulo-loop MODULO_LOOP_PROGRAM=path/to/loop_manifest.json
+```
+
+The standalone preparation and comparison stages are also available through
+`tools/modulo_loop_runner.py`; generated configurations, testbenches, models,
+traces, and logs are kept under `build/modulo_loop/`.
 
 `ROWS`, `COLS`, and `HAS_LSU_MASK` are top-level parameters. `cgra_top` also
 exports the directional data outputs of every tile, including their

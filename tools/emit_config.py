@@ -6,11 +6,11 @@ The emitted document remains a ``cgra.program_manifest.v1`` object so the
 existing program and schedule validators can consume it. It adds one
 derived ``config_stream`` section describing the ordered configuration-bus
 writes and the subsequent START command. Sparse compiler images are expanded
-here: every target tile and every PC in the run window receives a deterministic
-control write, with omitted entries represented by the all-zero NOP image. This
-keeps the loader contract deterministic even when the RTL memory has no reset
-value. It is intentionally a static loader artifact: no host readback, runtime
-retry, or RTL protocol is implied.
+here: every target tile and every executable control slot receives a
+deterministic control write, with omitted entries represented by the all-zero
+NOP image. This keeps the loader contract deterministic even when the RTL
+memory has no reset value. It is intentionally a static loader artifact: no
+host readback, runtime retry, or RTL protocol is implied.
 """
 
 from __future__ import annotations
@@ -35,6 +35,7 @@ CONFIG_MEM_TYPES = {
     "CONTROL_MEM": 0,
     "CONST_MEM": 1,
     "SCRATCHPAD_BANK": 2,
+    "LOOP_DESC": 3,
 }
 
 
@@ -85,8 +86,9 @@ def expected_writes(manifest: dict[str, Any], target: dict[str, Any] | None = No
 
     Ordering is deliberately independent of JSON-list order: tile coordinates,
     memory addresses, and control PCs are each sorted before emitting writes.
-    The target's complete tile/PC control image is emitted so omitted compiler
-    entries cannot leave an implementation-dependent value in control memory.
+    The target's complete executable tile/PC image is emitted so omitted
+    compiler entries cannot leave an implementation-dependent value in control
+    memory. Loop manifests initialize only P+II+E physical control slots.
     """
 
     target = target or _target_for(manifest)
@@ -95,7 +97,12 @@ def expected_writes(manifest: dict[str, Any], target: dict[str, Any] | None = No
         (tile["row"], tile["col"]): tile for tile in manifest["program"]["tiles"]
     }
     nop_chunks = ["0x00000000"] * params["control_word_chunks"]
-    run_cycles = manifest["run"]["run_cycles"]
+    loop = manifest.get("loop")
+    control_span = (
+        loop["prologue_cycles"] + loop["ii"] + loop["epilogue_cycles"]
+        if isinstance(loop, dict) and loop.get("enabled") is True
+        else manifest["run"]["run_cycles"]
+    )
     writes: list[dict[str, Any]] = []
 
     for row in range(params["array_rows"]):
@@ -112,7 +119,7 @@ def expected_writes(manifest: dict[str, Any], target: dict[str, Any] | None = No
             }
             # Preserve explicitly supplied PCs outside the run window while
             # initializing every PC that START can execute.
-            pcs = sorted(set(range(run_cycles)) | set(explicit_controls))
+            pcs = sorted(set(range(control_span)) | set(explicit_controls))
             for pc in pcs:
                 entry = explicit_controls.get(pc)
                 chunks = nop_chunks if entry is None else _round_trip_chunks(
@@ -120,6 +127,16 @@ def expected_writes(manifest: dict[str, Any], target: dict[str, Any] | None = No
                 )
                 for word_idx, chunk in enumerate(chunks):
                     writes.append(_write(len(writes), "CONTROL_MEM", row, col, pc, word_idx, chunk))
+    if isinstance(loop, dict):
+        descriptor_values = (
+            loop["prologue_cycles"],
+            loop["ii"],
+            loop["trip_count"],
+            loop["epilogue_cycles"],
+            int(loop["enabled"]),
+        )
+        for addr, value in enumerate(descriptor_values):
+            writes.append(_write(len(writes), "LOOP_DESC", 0, 0, addr, 0, f"0x{value:08x}"))
     return writes
 
 
@@ -151,6 +168,8 @@ def emit_config_manifest(manifest: dict[str, Any]) -> dict[str, Any]:
     stream["writes"] = writes
     stream["write_count"] = len(writes)
     stream["run"] = {"command": "START", "run_cycles": manifest["run"]["run_cycles"]}
+    if manifest.get("loop", {}).get("enabled") is True:
+        stream["run"]["mode"] = "LOOP"
     emitted["config_stream"] = stream
     return emitted
 
@@ -186,6 +205,8 @@ def validate_config_manifest(manifest: dict[str, Any]) -> list[str]:
     if stream.get("write_count") != len(writes):
         errors.append("config_stream.write_count does not match config_stream.writes")
     expected_run = {"command": "START", "run_cycles": manifest["run"]["run_cycles"]}
+    if manifest.get("loop", {}).get("enabled") is True:
+        expected_run["mode"] = "LOOP"
     if stream.get("run") != expected_run:
         errors.append("config_stream.run does not match manifest run-cycle count")
     return errors

@@ -119,10 +119,58 @@ TRACE_FIELDNAMES = [
     "lsu_op", "lsu_addr", "lsu_store_data", "lsu_store_commit",
     "lsu_load_resp_valid", "lsu_load_resp_data",
 ]
+LOOP_TRACE_FIELDNAMES = TRACE_FIELDNAMES + ["loop_phase", "loop_iteration", "kernel_slot"]
 
 
 class GoldenModelError(ValueError):
     """Raised when a schedule/control word violates the CGRA v1 contract."""
+
+
+@dataclass(frozen=True)
+class ExecutionStep:
+    """One architectural cycle and its absolute control-memory address."""
+
+    pc: int
+    loop_phase: int | None = None
+    loop_iteration: int | None = None
+    kernel_slot: int | None = None
+
+
+def manifest_execution_steps(manifest: dict[str, Any]) -> list[ExecutionStep]:
+    """Expand a finite loop run without changing the supplied schedule."""
+
+    loop = manifest.get("loop")
+    if not isinstance(loop, dict) or loop.get("enabled") is not True:
+        return [ExecutionStep(pc=pc) for pc in range(manifest["run"]["run_cycles"])]
+
+    prologue = loop["prologue_cycles"]
+    ii = loop["ii"]
+    trip_count = loop["trip_count"]
+    epilogue = loop["epilogue_cycles"]
+    steps = [
+        ExecutionStep(pc=pc, loop_phase=1, loop_iteration=0, kernel_slot=0)
+        for pc in range(prologue)
+    ]
+    for iteration in range(trip_count):
+        steps.extend(
+            ExecutionStep(
+                pc=prologue + slot,
+                loop_phase=2,
+                loop_iteration=iteration,
+                kernel_slot=slot,
+            )
+            for slot in range(ii)
+        )
+    steps.extend(
+        ExecutionStep(
+            pc=prologue + ii + offset,
+            loop_phase=3,
+            loop_iteration=trip_count,
+            kernel_slot=0,
+        )
+        for offset in range(epilogue)
+    )
+    return steps
 
 
 def mask32(value: int) -> int:
@@ -834,7 +882,12 @@ class MultiTileGolden:
     def _empty_inputs(self) -> dict[tuple[int, int], dict[str, tuple[bool, int]]]:
         return {(row, col): {} for row in range(self.rows) for col in range(self.cols)}
 
-    def step(self, controls: dict[tuple[int, int], TileControl]) -> list[dict[str, str]]:
+    def step(
+        self,
+        controls: dict[tuple[int, int], TileControl],
+        kernel_pc: int | None = None,
+        loop_metadata: tuple[int, int, int] | None = None,
+    ) -> list[dict[str, str]]:
         results: dict[tuple[int, int], StepResult] = {}
         next_data = self._empty_inputs()
         next_pred = self._empty_inputs()
@@ -846,7 +899,21 @@ class MultiTileGolden:
                 inputs = {**self.data_inputs[coord], **self.pred_inputs[coord]}
                 result = self.tiles[coord].step(ctrl, inputs)
                 results[coord] = result
-                records.append(trace_record(self.cycle, self.cycle, row, col, result))
+                record = trace_record(
+                    self.cycle,
+                    self.cycle if kernel_pc is None else kernel_pc,
+                    row,
+                    col,
+                    result,
+                )
+                if loop_metadata is not None:
+                    phase, iteration, slot = loop_metadata
+                    record.update({
+                        "loop_phase": str(phase),
+                        "loop_iteration": str(iteration),
+                        "kernel_slot": str(slot),
+                    })
+                records.append(record)
 
         for (row, col), result in results.items():
             self._route_outputs(row, col, result, next_data, next_pred)
@@ -855,11 +922,24 @@ class MultiTileGolden:
         self.cycle += 1
         return records
 
-    def run(self, controls_by_tile: dict[tuple[int, int], list[TileControl]], run_cycles: int) -> list[dict[str, str]]:
+    def run(
+        self,
+        controls_by_tile: dict[tuple[int, int], list[TileControl]],
+        run_cycles: int,
+        execution_steps: list[ExecutionStep] | None = None,
+    ) -> list[dict[str, str]]:
         rows = []
-        for pc in range(run_cycles):
-            controls = {coord: ctrls[pc] for coord, ctrls in controls_by_tile.items() if pc < len(ctrls)}
-            rows.extend(self.step(controls))
+        steps = execution_steps or [ExecutionStep(pc=pc) for pc in range(run_cycles)]
+        for step in steps:
+            controls = {
+                coord: ctrls[step.pc]
+                for coord, ctrls in controls_by_tile.items()
+                if step.pc < len(ctrls)
+            }
+            metadata = None
+            if step.loop_phase is not None:
+                metadata = (step.loop_phase, step.loop_iteration or 0, step.kernel_slot or 0)
+            rows.extend(self.step(controls, kernel_pc=step.pc, loop_metadata=metadata))
         return rows
 
     def _route_outputs(
@@ -967,7 +1047,8 @@ def write_trace_csv(path: str | pathlib.Path, rows: list[dict[str, str]]) -> Non
         trace_path = REPO_ROOT / trace_path
     trace_path.parent.mkdir(parents=True, exist_ok=True)
     with open(trace_path, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=TRACE_FIELDNAMES, lineterminator="\n")
+        fieldnames = LOOP_TRACE_FIELDNAMES if any("loop_phase" in row for row in rows) else TRACE_FIELDNAMES
+        writer = csv.DictWriter(f, fieldnames=fieldnames, lineterminator="\n")
         writer.writeheader()
         writer.writerows(rows)
 
@@ -1035,13 +1116,22 @@ def run_manifest(manifest_path: str | pathlib.Path, trace_out: str | pathlib.Pat
             tile.write_const(entry["addr"], int(entry["value"], 16))
         for entry in tile_image.get("scratchpad_preload", []):
             tile.write_scratchpad(entry["addr"], int(entry["value"], 16))
-        controls = [TileControl() for _ in range(manifest["run"]["run_cycles"])]
+        control_slots = (
+            target["parameters"]["ctrl_mem_depth"]
+            if manifest.get("loop", {}).get("enabled") is True
+            else manifest["run"]["run_cycles"]
+        )
+        controls = [TileControl() for _ in range(control_slots)]
         for ctrl_entry in tile_image["control"]:
             pc = ctrl_entry["pc"]
             if pc < len(controls):
                 controls[pc] = _manifest_tile_control(ctrl_entry, target)
         controls_by_tile[coord] = controls
-    rows = array.run(controls_by_tile, manifest["run"]["run_cycles"])
+    rows = array.run(
+        controls_by_tile,
+        manifest["run"]["run_cycles"],
+        execution_steps=manifest_execution_steps(manifest),
+    )
     if trace_out is not None:
         write_trace_csv(trace_out, rows)
     return rows
