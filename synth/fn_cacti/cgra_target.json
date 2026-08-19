@@ -8,15 +8,16 @@
     "pred_rf_depth": 16,
     "const_mem_depth": 16,
     "ctrl_mem_depth": 256,
-    "scratch_bank_depth": 1024,
+    "scratchpad_depth": 4096,
+    "shared_mem_ports": 4,
     "physical_control_word_width_bits": 128
   },
   "lsu": {
     "enabled_tiles": [
-      {"row": 0, "col": 0, "bank_id": 0},
-      {"row": 1, "col": 0, "bank_id": 1},
-      {"row": 2, "col": 0, "bank_id": 2},
-      {"row": 3, "col": 0, "bank_id": 3}
+      {"row": 0, "col": 0, "port_id": 0},
+      {"row": 1, "col": 0, "port_id": 1},
+      {"row": 2, "col": 0, "port_id": 2},
+      {"row": 3, "col": 0, "port_id": 3}
     ]
   }
 }
