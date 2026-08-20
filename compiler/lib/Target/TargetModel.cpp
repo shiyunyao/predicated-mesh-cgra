@@ -77,6 +77,23 @@ RegisterFileDesc parseRegisterFile(const Json &root, const std::string &key) {
     fail(key + ".same_cycle_read_write_same_address", "unsupported policy");
   if (desc.sameCycleMultiwriteSameAddress != "illegal")
     fail(key + ".same_cycle_multiwrite_same_address", "unsupported policy");
+  const auto &ports = requiredObject(json, "write_ports_detail", key);
+  for (const auto &[port, sources] : ports.items()) {
+    if (!sources.is_object() || !sources.contains("sources") ||
+        !sources.at("sources").is_array() || sources.at("sources").empty())
+      fail(key + ".write_ports_detail." + port + ".sources",
+           "must be a non-empty array");
+    auto &portSources = desc.writePortSources[port];
+    for (const auto &source : sources.at("sources")) {
+      if (!source.is_string())
+        fail(key + ".write_ports_detail." + port + ".sources",
+             "entries must be strings");
+      portSources.push_back(source.get<std::string>());
+    }
+  }
+  if (desc.writePortSources.size() != desc.writePorts)
+    fail(key + ".write_ports_detail",
+         "must describe every register-file write port exactly once");
   return desc;
 }
 

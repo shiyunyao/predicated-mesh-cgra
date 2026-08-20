@@ -25,6 +25,7 @@ struct RegisterFileDesc {
   unsigned writePorts = 0;
   std::string sameCycleReadWriteSameAddress;
   std::string sameCycleMultiwriteSameAddress;
+  std::unordered_map<std::string, std::vector<std::string>> writePortSources;
 };
 
 struct InterconnectDesc {

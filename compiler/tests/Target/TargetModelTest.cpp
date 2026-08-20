@@ -94,10 +94,18 @@ void testCanonicalResources(const cgra::TargetModel &target) {
   check(target.dataRF().depth == 16 && target.dataRF().readPorts == 2 &&
             target.dataRF().writePorts == 2,
         "DataRF resources");
+  check(target.dataRF().writePortSources.at("W0") ==
+            std::vector<std::string>{"FU_DATA_RESULT"} &&
+            target.dataRF().writePortSources.at("W1").size() == 9,
+        "DataRF write-port source constraints");
   check(target.predicateRF().depth == 16 &&
             target.predicateRF().readPorts == 2 &&
             target.predicateRF().writePorts == 2,
         "PredicateRF resources");
+  check(target.predicateRF().writePortSources.at("W0") ==
+            std::vector<std::string>{"FU_PRED_RESULT"} &&
+            target.predicateRF().writePortSources.at("W1").size() == 8,
+        "PredicateRF write-port source constraints");
   check(target.dataNetwork().registeredLinks &&
             target.dataNetwork().hopLatency == 1 &&
             !target.dataNetwork().inputBuffering &&
