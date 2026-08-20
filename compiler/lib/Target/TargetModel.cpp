@@ -343,6 +343,10 @@ TargetModel TargetModel::loadFromFile(const std::filesystem::path &path) {
     fail("control_layout.fields", "must cover every raw control bit exactly once");
 
   const auto &lsu = requiredObject(root, "lsu", "");
+  const auto portAssignment =
+      required<std::string>(lsu, "port_assignment", "lsu");
+  if (portAssignment != "enabled_tile_row_major_rank")
+    fail("lsu.port_assignment", "unsupported port assignment policy");
   const auto &enabledTiles = requiredArray(lsu, "enabled_tiles", "lsu");
   if (enabledTiles.size() > model.memory_.ports)
     fail("lsu.enabled_tiles", "enabled LSU count exceeds memory port count");
@@ -365,6 +369,14 @@ TargetModel TargetModel::loadFromFile(const std::filesystem::path &path) {
     if (!seenPorts.insert(tile.portId).second)
       fail(context + ".port_id", "duplicates a memory port assignment");
     model.lsuTiles_.push_back(tile);
+  }
+  std::ranges::sort(model.lsuTiles_, [](const LsuTileDesc &lhs,
+                                       const LsuTileDesc &rhs) {
+    return std::pair{lhs.row, lhs.col} < std::pair{rhs.row, rhs.col};
+  });
+  for (unsigned rank = 0; rank < model.lsuTiles_.size(); ++rank) {
+    if (model.lsuTiles_[rank].portId != rank)
+      fail("lsu.enabled_tiles", "port IDs must be dense row-major ranks");
   }
 
   const auto &params = requiredObject(root, "parameters", "");
@@ -408,6 +420,27 @@ TargetModel TargetModel::loadFromFile(const std::filesystem::path &path) {
   requireEqual(parsedLayout.chunks_,
                positiveUnsigned(params, "control_word_chunks", "parameters"),
                "parameters.control_word_chunks");
+
+  const auto &legacyControlSchema =
+      requiredObject(root, "control_schema", "");
+  if (required<std::string>(legacyControlSchema, "encoding", "control_schema") !=
+      "lsb_first_fixed_field_order")
+    fail("control_schema.encoding", "unsupported compatibility encoding");
+  requireEqual(parsedLayout.chunkBits_,
+               positiveUnsigned(legacyControlSchema, "alignment_bits",
+                                "control_schema"),
+               "control_schema.alignment_bits");
+  requireEqual(parsedLayout.rawWidth_,
+               positiveUnsigned(legacyControlSchema, "raw_width_bits",
+                                "control_schema"),
+               "control_schema.raw_width_bits");
+  requireEqual(parsedLayout.physicalWidth_,
+               positiveUnsigned(legacyControlSchema, "physical_width_bits",
+                                "control_schema"),
+               "control_schema.physical_width_bits");
+  requireEqual(parsedLayout.chunks_,
+               positiveUnsigned(legacyControlSchema, "chunks", "control_schema"),
+               "control_schema.chunks");
 
   return model;
 }

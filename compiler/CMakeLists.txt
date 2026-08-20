@@ -6,7 +6,8 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-find_package(nlohmann_json 3.10 REQUIRED)
+# Keep the compiler contract build reproducible across developer machines.
+find_package(nlohmann_json 3.10.5 EXACT REQUIRED)
 
 add_library(cgra_target
   lib/Target/ControlLayout.cpp

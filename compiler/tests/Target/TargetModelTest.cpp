@@ -288,6 +288,18 @@ void testMalformedTargets(const Json &canonical) {
                  [](Json &json) { json["lsu"]["enabled_tiles"][0]["row"] = 4; },
                  "outside the array");
   expectRejected(canonical,
+                 [](Json &json) { json["lsu"]["port_assignment"] = "arbitrary"; },
+                 "unsupported port assignment policy");
+  expectRejected(canonical,
+                 [](Json &json) {
+                   json["lsu"]["enabled_tiles"][0]["port_id"] = 1;
+                   json["lsu"]["enabled_tiles"][1]["port_id"] = 0;
+                 },
+                 "port IDs must be dense row-major ranks");
+  expectRejected(canonical,
+                 [](Json &json) { json["control_schema"]["chunks"] = 3; },
+                 "control_schema.chunks");
+  expectRejected(canonical,
                  [](Json &json) { json["lsu"]["enabled_tiles"][1] = json["lsu"]["enabled_tiles"][0]; },
                  "duplicates an enabled LSU tile");
 }

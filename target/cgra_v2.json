@@ -150,6 +150,13 @@
     "compare": ["CMP_EQ", "CMP_NE", "CMP_ULT", "CMP_ULE"],
     "predicate": ["PPASS", "PNOT", "PAND", "POR"]
   },
+  "enums": {
+    "data_sources": ["ZERO", "DATA_RF_A", "DATA_RF_B", "NORTH_DATA_IN", "SOUTH_DATA_IN", "EAST_DATA_IN", "WEST_DATA_IN", "CONST_DATA", "LSU_LOAD_DATA"],
+    "predicate_sources": ["CONST_FALSE", "CONST_TRUE", "PRED_RF_A", "PRED_RF_B", "NORTH_PRED_IN", "SOUTH_PRED_IN", "EAST_PRED_IN", "WEST_PRED_IN"],
+    "data_route_sources": ["NONE", "NORTH_DATA_IN", "SOUTH_DATA_IN", "EAST_DATA_IN", "WEST_DATA_IN", "FU_DATA_RESULT", "DATA_RF_A", "DATA_RF_B", "CONST_DATA", "LSU_LOAD_DATA", "ZERO"],
+    "predicate_route_sources": ["NONE", "NORTH_PRED_IN", "SOUTH_PRED_IN", "EAST_PRED_IN", "WEST_PRED_IN", "FU_PRED_RESULT", "PRED_RF_A", "PRED_RF_B", "CONST_TRUE", "CONST_FALSE"],
+    "lsu_ops": ["NONE", "LOAD", "STORE"]
+  },
   "encodings": {
     "op": {
       "NOP": 0,
