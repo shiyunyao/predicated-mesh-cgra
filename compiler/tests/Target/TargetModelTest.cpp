@@ -270,6 +270,18 @@ void testMalformedTargets(const Json &canonical) {
                  [](Json &json) { json["encodings"].erase("data_source"); },
                  "missing encoding domain data_source");
   expectRejected(canonical,
+                 [](Json &json) {
+                   json["data_rf"]["write_ports_detail"]["W1"]["sources"][0] =
+                       "TYPO";
+                 },
+                 "source TYPO is not in encoding domain data_source");
+  expectRejected(canonical,
+                 [](Json &json) {
+                   json["predicate_rf"]["write_ports_detail"]["W1"]["sources"]
+                       .push_back("CONST_FALSE");
+                 },
+                 "contains duplicate source CONST_FALSE");
+  expectRejected(canonical,
                  [](Json &json) { json["control_layout"]["fields"][1]["lsb"] = 0; },
                  "overlaps another field");
   expectRejected(canonical,

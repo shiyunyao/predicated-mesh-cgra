@@ -157,6 +157,10 @@
     "predicate_route_sources": ["NONE", "NORTH_PRED_IN", "SOUTH_PRED_IN", "EAST_PRED_IN", "WEST_PRED_IN", "FU_PRED_RESULT", "PRED_RF_A", "PRED_RF_B", "CONST_TRUE", "CONST_FALSE"],
     "lsu_ops": ["NONE", "LOAD", "STORE"]
   },
+  "enum_compatibility": {
+    "status": "legacy_compatibility_view",
+    "authoritative_section": "encodings"
+  },
   "encodings": {
     "op": {
       "NOP": 0,

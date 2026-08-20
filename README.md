@@ -66,7 +66,7 @@ implementations are checked against that contract by regression tests.
 |-- sim/       # Verilator C++ harnesses
 |-- examples/  # Pre-generated target-encoded schedules
 |-- model/     # Cycle-level golden execution model
-|-- target/    # Tooling description of the RTL target
+|-- target/    # Compiler-facing machine-readable target contract
 |-- tools/     # Manifest validation, replay, config emission, and comparison
 |-- scripts/   # Synthesis runners and report checks
 |-- synth/     # RTL filelist and ASAP7/ABC inputs
@@ -153,6 +153,9 @@ Inspect a loaded target contract with:
 ```bash
 compiler/build/bin/cgra-target-dump target/cgra_v2.json
 ```
+
+The legacy `enums` block remains for older tools as a compatibility view only;
+the numeric `encodings` block and `control_layout` are authoritative for C++.
 
 The contract tests validate malformed-target diagnostics, architectural
 resource constants, every packed control encoding, known control images, and

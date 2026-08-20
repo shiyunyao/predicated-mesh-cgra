@@ -102,6 +102,35 @@ void requireEqual(unsigned lhs, unsigned rhs, const std::string &context) {
     fail(context, "inconsistent duplicate contract values");
 }
 
+void validateWritePortNames(const RegisterFileDesc &desc,
+                            const std::string &key) {
+  if (desc.writePortSources.size() != 2 ||
+      !desc.writePortSources.contains("W0") ||
+      !desc.writePortSources.contains("W1"))
+    fail(key + ".write_ports_detail", "must contain exactly W0 and W1");
+}
+
+void validateWritePortSource(const RegisterFileDesc &desc,
+                             const std::string &key, std::string_view port,
+                             std::string_view sourceDomain,
+                             const std::unordered_map<std::string,
+                                                      std::unordered_map<std::string, unsigned>> &encodings) {
+  const auto domainIt = encodings.find(std::string(sourceDomain));
+  if (domainIt == encodings.end())
+    fail("encodings." + std::string(sourceDomain),
+         "missing encoding domain " + std::string(sourceDomain));
+  std::unordered_set<std::string> seen;
+  for (const auto &source : desc.writePortSources.at(std::string(port))) {
+    if (!seen.insert(source).second)
+      fail(key + ".write_ports_detail." + std::string(port) + ".sources",
+           "contains duplicate source " + source);
+    if (!domainIt->second.contains(source))
+      fail(key + ".write_ports_detail." + std::string(port) + ".sources",
+           "source " + source + " is not in encoding domain " +
+               std::string(sourceDomain));
+  }
+}
+
 void parseNetworkDomain(const Json &network, const std::string &key,
                         InterconnectDesc &desc) {
   const auto &domain = requiredObject(network, key, "interconnect");
@@ -261,6 +290,17 @@ TargetModel TargetModel::loadFromFile(const std::filesystem::path &path) {
       model.reverseEncodings_[domain].emplace(value, name);
     }
   }
+
+  validateWritePortNames(model.dataRF_, "data_rf");
+  validateWritePortNames(model.predicateRF_, "predicate_rf");
+  validateWritePortSource(model.dataRF_, "data_rf", "W0",
+                          "route_data_source", model.encodings_);
+  validateWritePortSource(model.dataRF_, "data_rf", "W1", "data_source",
+                          model.encodings_);
+  validateWritePortSource(model.predicateRF_, "predicate_rf", "W0",
+                          "route_predicate_source", model.encodings_);
+  validateWritePortSource(model.predicateRF_, "predicate_rf", "W1",
+                          "predicate_source", model.encodings_);
 
   const auto &layout = requiredObject(root, "control_layout", "");
   auto &parsedLayout = model.controlLayout_;
