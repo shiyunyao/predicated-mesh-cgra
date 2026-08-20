@@ -53,8 +53,9 @@ checked by RTL simulation, the golden model, and schedule tooling.
 | Shared scratchpad | 4096 x 32-bit words, 4 ports |
 
 The FU supports pass-through, arithmetic, bitwise, shift, select, comparison,
-and predicate operations. Opcode, source-selection, and control-word encodings
-are defined in `rtl/cgra_pkg.sv`.
+and predicate operations. The compiler-facing opcode, source-selection, and
+control-word encodings are defined in `target/cgra_v2.json`; RTL and Python
+implementations are checked against that contract by regression tests.
 
 ## Repository Layout
 
@@ -128,6 +129,32 @@ make lint TEST=cgra_top_tb
 The test suite includes unit tests for the FU, register files, source muxes,
 routing, control-word packing, and LSU behavior, together with tile, mesh, and
 full-array integration tests.
+
+## Compiler Target Contract
+
+`target/cgra_v2.json` is the compiler-facing source of truth for target
+capabilities, resource limits, timing semantics, numeric encodings, and the
+126-bit semantic control layout (stored as four 32-bit chunks). The C++ target
+library does not parse RTL or Python files and does not change the existing
+`cgra.program_manifest.v1` handoff.
+
+Build and test the standalone C++20 contract library without LLVM:
+
+```bash
+cmake -S compiler -B compiler/build
+cmake --build compiler/build
+ctest --test-dir compiler/build --output-on-failure
+```
+
+Inspect a loaded target contract with:
+
+```bash
+compiler/build/bin/cgra-target-dump target/cgra_v2.json
+```
+
+The contract tests validate malformed-target diagnostics, architectural
+resource constants, every packed control encoding, known control images, and
+exact decode-to-encode round trips for the retained shared-memory schedule.
 
 ## External Program Replay
 
