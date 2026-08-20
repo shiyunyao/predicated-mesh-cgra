@@ -1,12 +1,12 @@
 {
-  "schema": "cgra.target.v1",
+  "schema": "cgra.target.v2",
+  "target_contract_version": 2,
   "name": "cgra_v2_shared4p",
-  "version": 1,
-  "role": "tooling_target_description",
+  "version": 2,
+  "role": "compiler_facing_target_contract",
   "authority": {
-    "mode": "validates_existing_rtl_package",
-    "rtl_package": "rtl/cgra_pkg.sv",
-    "notes": "Shared multi-port scratchpad target. The compiler supplies target-encoded static schedules; this file does not generate RTL."
+    "mode": "compiler_source_of_truth",
+    "notes": "The compiler consumes this contract without parsing RTL or Python. RTL and verification code remain independent implementations checked against this contract by regression tests."
   },
   "parameters": {
     "array_rows": 4,
@@ -27,6 +27,59 @@
     "physical_control_word_width_bits": 128,
     "control_word_chunks": 4
   },
+  "array": {
+    "rows": 4,
+    "cols": 4,
+    "data_width": 32,
+    "predicate_width": 1,
+    "hardware_branch": false
+  },
+  "data_rf": {
+    "depth": 16,
+    "read_ports": 2,
+    "write_ports": 2,
+    "same_cycle_read_write_same_address": "illegal",
+    "same_cycle_multiwrite_same_address": "illegal",
+    "write_ports_detail": {
+      "W0": {
+        "sources": ["FU_DATA_RESULT"]
+      },
+      "W1": {
+        "sources": ["RF_A", "RF_B", "NORTH_DATA_IN", "SOUTH_DATA_IN", "EAST_DATA_IN", "WEST_DATA_IN", "CONST_DATA", "LSU_LOAD_DATA", "ZERO"]
+      }
+    }
+  },
+  "predicate_rf": {
+    "depth": 16,
+    "read_ports": 2,
+    "write_ports": 2,
+    "same_cycle_read_write_same_address": "illegal",
+    "same_cycle_multiwrite_same_address": "illegal",
+    "write_ports_detail": {
+      "W0": {
+        "sources": ["FU_PRED_RESULT"]
+      },
+      "W1": {
+        "sources": ["RF_A", "RF_B", "NORTH_PRED_IN", "SOUTH_PRED_IN", "EAST_PRED_IN", "WEST_PRED_IN", "CONST_TRUE", "CONST_FALSE"]
+      }
+    }
+  },
+  "interconnect": {
+    "topology": "mesh_2d",
+    "registered_links": true,
+    "hop_latency": 1,
+    "input_buffering": false,
+    "runtime_arbitration": false,
+    "compiler_routed": true,
+    "data_network": {
+      "separate_resource_domain": true,
+      "channels_per_direction_per_link": 1
+    },
+    "predicate_network": {
+      "separate_resource_domain": true,
+      "channels_per_direction_per_link": 1
+    }
+  },
   "memory": {
     "model": "shared_multiport_scratchpad",
     "address_unit": "word",
@@ -34,7 +87,11 @@
     "width_bits": 32,
     "ports": 4,
     "load_latency": 2,
+    "max_issue_per_lsu_per_cycle": 1,
+    "max_issue_per_port_per_cycle": 1,
     "same_address_policy": "multi_load_only",
+    "runtime_stall": false,
+    "runtime_arbitration": false,
     "configuration_scope": "global_tile_0_0"
   },
   "derived_widths": {
@@ -47,6 +104,7 @@
   },
   "lsu": {
     "default_enable_policy": "left_column",
+    "port_assignment": "enabled_tile_row_major_rank",
     "enabled_tiles": [
       {"row": 0, "col": 0, "port_id": 0},
       {"row": 1, "col": 0, "port_id": 1},
@@ -54,12 +112,35 @@
       {"row": 3, "col": 0, "port_id": 3}
     ]
   },
+  "loop_execution": {
+    "supported": true,
+    "model": "finite_modulo_replay",
+    "control_phases": ["prologue", "kernel", "epilogue"],
+    "rotating_registers": false,
+    "loop_counter_operand": false,
+    "same_address_rf_read_write_recurrence": false
+  },
   "latencies": {
     "fu_ops": {
-      "NOP": 1, "PASS": 1, "ADD": 1, "SUB": 1, "MUL": 1,
-      "AND": 1, "OR": 1, "XOR": 1, "SHL": 1, "LSHR": 1,
-      "SELECT": 1, "CMP_EQ": 1, "CMP_NE": 1, "CMP_ULT": 1,
-      "CMP_ULE": 1, "PPASS": 1, "PNOT": 1, "PAND": 1, "POR": 1
+      "NOP": 1,
+      "PASS": 1,
+      "ADD": 1,
+      "SUB": 1,
+      "MUL": 1,
+      "AND": 1,
+      "OR": 1,
+      "XOR": 1,
+      "SHL": 1,
+      "LSHR": 1,
+      "SELECT": 1,
+      "CMP_EQ": 1,
+      "CMP_NE": 1,
+      "CMP_ULT": 1,
+      "CMP_ULE": 1,
+      "PPASS": 1,
+      "PNOT": 1,
+      "PAND": 1,
+      "POR": 1
     },
     "mesh_hop": 1,
     "load_response": 2
@@ -69,12 +150,142 @@
     "compare": ["CMP_EQ", "CMP_NE", "CMP_ULT", "CMP_ULE"],
     "predicate": ["PPASS", "PNOT", "PAND", "POR"]
   },
-  "enums": {
-    "data_sources": ["ZERO", "DATA_RF_A", "DATA_RF_B", "NORTH_DATA_IN", "SOUTH_DATA_IN", "EAST_DATA_IN", "WEST_DATA_IN", "CONST_DATA", "LSU_LOAD_DATA"],
-    "predicate_sources": ["CONST_FALSE", "CONST_TRUE", "PRED_RF_A", "PRED_RF_B", "NORTH_PRED_IN", "SOUTH_PRED_IN", "EAST_PRED_IN", "WEST_PRED_IN"],
-    "data_route_sources": ["NONE", "NORTH_DATA_IN", "SOUTH_DATA_IN", "EAST_DATA_IN", "WEST_DATA_IN", "FU_DATA_RESULT", "DATA_RF_A", "DATA_RF_B", "CONST_DATA", "LSU_LOAD_DATA", "ZERO"],
-    "predicate_route_sources": ["NONE", "NORTH_PRED_IN", "SOUTH_PRED_IN", "EAST_PRED_IN", "WEST_PRED_IN", "FU_PRED_RESULT", "PRED_RF_A", "PRED_RF_B", "CONST_TRUE", "CONST_FALSE"],
-    "lsu_ops": ["NONE", "LOAD", "STORE"]
+  "encodings": {
+    "op": {
+      "NOP": 0,
+      "PASS": 1,
+      "ADD": 2,
+      "SUB": 3,
+      "MUL": 4,
+      "AND": 5,
+      "OR": 6,
+      "XOR": 7,
+      "SHL": 8,
+      "LSHR": 9,
+      "SELECT": 10,
+      "CMP_EQ": 16,
+      "CMP_NE": 17,
+      "CMP_ULT": 18,
+      "CMP_ULE": 19,
+      "PPASS": 32,
+      "PNOT": 33,
+      "PAND": 34,
+      "POR": 35
+    },
+    "data_source": {
+      "RF_A": 0,
+      "RF_B": 1,
+      "NORTH_DATA_IN": 2,
+      "SOUTH_DATA_IN": 3,
+      "EAST_DATA_IN": 4,
+      "WEST_DATA_IN": 5,
+      "CONST_DATA": 6,
+      "LSU_LOAD_DATA": 7,
+      "ZERO": 8
+    },
+    "predicate_source": {
+      "RF_A": 0,
+      "RF_B": 1,
+      "NORTH_PRED_IN": 2,
+      "SOUTH_PRED_IN": 3,
+      "EAST_PRED_IN": 4,
+      "WEST_PRED_IN": 5,
+      "CONST_TRUE": 6,
+      "CONST_FALSE": 7
+    },
+    "route_data_source": {
+      "NONE": 0,
+      "NORTH_DATA_IN": 1,
+      "SOUTH_DATA_IN": 2,
+      "EAST_DATA_IN": 3,
+      "WEST_DATA_IN": 4,
+      "FU_DATA_RESULT": 5,
+      "RF_A": 6,
+      "RF_B": 7,
+      "CONST_DATA": 8,
+      "LSU_LOAD_DATA": 9,
+      "ZERO": 10
+    },
+    "route_predicate_source": {
+      "NONE": 0,
+      "NORTH_PRED_IN": 1,
+      "SOUTH_PRED_IN": 2,
+      "EAST_PRED_IN": 3,
+      "WEST_PRED_IN": 4,
+      "FU_PRED_RESULT": 5,
+      "RF_A": 6,
+      "RF_B": 7,
+      "CONST_TRUE": 8,
+      "CONST_FALSE": 9
+    },
+    "lsu_op": {
+      "NONE": 0,
+      "LOAD": 1,
+      "STORE": 2,
+      "RESERVED": 3
+    }
+  },
+  "control_layout": {
+    "raw_width": 126,
+    "physical_width": 128,
+    "chunks": 4,
+    "chunk_bits": 32,
+    "chunk_order": "little_word",
+    "padding": {
+      "lsb": 126,
+      "width": 2,
+      "value": 0
+    },
+    "fields": [
+      {"name": "op", "lsb": 0, "width": 6, "encoding": "op"},
+      {"name": "src_a", "lsb": 6, "width": 4, "encoding": "data_source"},
+      {"name": "src_b", "lsb": 10, "width": 4, "encoding": "data_source"},
+      {"name": "src_p0", "lsb": 14, "width": 4, "encoding": "predicate_source"},
+      {"name": "src_p1", "lsb": 18, "width": 4, "encoding": "predicate_source"},
+      {"name": "data_rf_raddr_a", "lsb": 22, "width": 4},
+      {"name": "data_rf_raddr_b", "lsb": 26, "width": 4},
+      {"name": "pred_rf_raddr_a", "lsb": 30, "width": 4},
+      {"name": "pred_rf_raddr_b", "lsb": 34, "width": 4},
+
+      {"name": "data_w0_we", "lsb": 38, "width": 1},
+      {"name": "data_w0_addr", "lsb": 39, "width": 4},
+      {"name": "data_w1_we", "lsb": 43, "width": 1},
+      {"name": "data_w1_addr", "lsb": 44, "width": 4},
+      {"name": "data_w1_src", "lsb": 48, "width": 4, "encoding": "data_source"},
+
+      {"name": "pred_w0_we", "lsb": 52, "width": 1},
+      {"name": "pred_w0_addr", "lsb": 53, "width": 4},
+      {"name": "pred_w1_we", "lsb": 57, "width": 1},
+      {"name": "pred_w1_addr", "lsb": 58, "width": 4},
+      {"name": "pred_w1_src", "lsb": 62, "width": 4, "encoding": "predicate_source"},
+
+      {"name": "data_route_north_we", "lsb": 66, "width": 1},
+      {"name": "data_route_north_src", "lsb": 67, "width": 4, "encoding": "route_data_source"},
+      {"name": "data_route_south_we", "lsb": 71, "width": 1},
+      {"name": "data_route_south_src", "lsb": 72, "width": 4, "encoding": "route_data_source"},
+      {"name": "data_route_east_we", "lsb": 76, "width": 1},
+      {"name": "data_route_east_src", "lsb": 77, "width": 4, "encoding": "route_data_source"},
+      {"name": "data_route_west_we", "lsb": 81, "width": 1},
+      {"name": "data_route_west_src", "lsb": 82, "width": 4, "encoding": "route_data_source"},
+
+      {"name": "pred_route_north_we", "lsb": 86, "width": 1},
+      {"name": "pred_route_north_src", "lsb": 87, "width": 4, "encoding": "route_predicate_source"},
+      {"name": "pred_route_south_we", "lsb": 91, "width": 1},
+      {"name": "pred_route_south_src", "lsb": 92, "width": 4, "encoding": "route_predicate_source"},
+      {"name": "pred_route_east_we", "lsb": 96, "width": 1},
+      {"name": "pred_route_east_src", "lsb": 97, "width": 4, "encoding": "route_predicate_source"},
+      {"name": "pred_route_west_we", "lsb": 101, "width": 1},
+      {"name": "pred_route_west_src", "lsb": 102, "width": 4, "encoding": "route_predicate_source"},
+
+      {"name": "const_addr", "lsb": 106, "width": 4},
+
+      {"name": "lsu_op", "lsb": 110, "width": 2, "encoding": "lsu_op"},
+      {"name": "lsu_addr_src", "lsb": 112, "width": 4, "encoding": "data_source"},
+      {"name": "lsu_store_data_src", "lsb": 116, "width": 4, "encoding": "data_source"},
+      {"name": "lsu_commit_pred_enable", "lsb": 120, "width": 1},
+      {"name": "lsu_commit_pred_invert", "lsb": 121, "width": 1},
+      {"name": "lsu_commit_pred_src", "lsb": 122, "width": 4, "encoding": "predicate_source"}
+    ]
   },
   "control_schema": {
     "encoding": "lsb_first_fixed_field_order",
