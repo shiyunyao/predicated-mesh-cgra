@@ -36,6 +36,17 @@ and supplies:
 * producer output readiness offset;
 * memory access width for `LOAD` and `STORE`.
 
+Each operation also carries an explicit semantic-to-encoding binding
+(`domain` plus `symbol`). `TargetModel` validates that the binding names an
+existing numeric encoding and that LSU/FU operation classes use the correct
+encoding domain. An operation is executable only when its descriptor, encoding
+binding, and compatible execution resources are all present.
+
+FU tile compatibility is target-described through `tile_capabilities`:
+`default_fu_operations` supplies the default set and per-tile overrides may
+restrict it. `TargetLegalizer`, `ModuloResourceModel`, and `MIIAnalyzer` query
+this model rather than assuming every FU operation runs on every tile.
+
 For the canonical target, integer FU results and comparisons have latency 1,
 loads have latency 2, and all operations have issue occupancy 1. FU output
 readiness is offset 0 and load output readiness is offset 2. These values are

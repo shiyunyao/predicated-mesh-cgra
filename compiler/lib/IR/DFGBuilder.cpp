@@ -9,33 +9,26 @@ namespace cgra::ir {
 ExternalValueId DFGBuilder::addExternal(std::string name, ValueType type) {
   if (name.empty())
     throw std::invalid_argument("DFG external value name must not be empty");
-  return dfg_.appendExternal(
-      {static_cast<ExternalValueId>(dfg_.externalValues().size()), type, std::move(name)});
+  return importExternal({nextExternalId_++, type, std::move(name)});
 }
 
 ConstantId DFGBuilder::addConstant(ValueType type, std::uint64_t bits) {
-  return dfg_.appendConstant({static_cast<ConstantId>(dfg_.constants().size()), type, bits});
+  return importConstant({nextConstantId_++, type, bits});
 }
 
 LiveOutId DFGBuilder::addLiveOut(std::string name, ValueType type, NodeId source) {
   if (name.empty())
     throw std::invalid_argument("DFG live-out name must not be empty");
   checkNode(source);
-  return dfg_.appendLiveOut(
-      {static_cast<LiveOutId>(dfg_.liveOuts().size()), type, std::move(name), source});
+  return importLiveOut({nextLiveOutId_++, type, std::move(name), source});
 }
 
 NodeId DFGBuilder::addNode(Opcode opcode, std::vector<ValueType> operandTypes, ValueType resultType,
                            std::optional<ICmpPredicate> predicate,
                            std::optional<MemoryOpInfo> memoryInfo,
                            std::optional<SourceInfo> source) {
-  Node node{static_cast<NodeId>(dfg_.nodes().size()),
-            opcode,
-            resultType,
-            std::move(operandTypes),
-            predicate,
-            memoryInfo,
-            std::move(source)};
+  Node node{nextNodeId_++, opcode,     resultType,       std::move(operandTypes),
+            predicate,     memoryInfo, std::move(source)};
   return dfg_.appendNode(std::move(node));
 }
 
@@ -88,8 +81,8 @@ EdgeId DFGBuilder::addDataEdge(NodeId src, NodeId dst, std::uint32_t dstOperand,
 EdgeId DFGBuilder::addDataEdge(NodeId src, NodeId dst, std::uint32_t dstOperand,
                                std::uint32_t distance, std::optional<RecurrenceBoundary> boundary) {
   checkProviderAvailable(dst, dstOperand);
-  return dfg_.appendEdge({static_cast<EdgeId>(dfg_.edges().size()), src, dst, distance,
-                          DataEdgeInfo{dstOperand, std::move(boundary)}});
+  return importEdge(
+      {nextEdgeId_++, src, dst, distance, DataEdgeInfo{dstOperand, std::move(boundary)}});
 }
 
 EdgeId DFGBuilder::addPredicateEdge(NodeId src, NodeId dst, std::uint32_t dstOperand,
@@ -101,16 +94,15 @@ EdgeId DFGBuilder::addPredicateEdge(NodeId src, NodeId dst, std::uint32_t dstOpe
                                     std::uint32_t distance,
                                     std::optional<RecurrenceBoundary> boundary) {
   checkProviderAvailable(dst, dstOperand);
-  return dfg_.appendEdge({static_cast<EdgeId>(dfg_.edges().size()), src, dst, distance,
-                          PredicateEdgeInfo{dstOperand, std::move(boundary)}});
+  return importEdge(
+      {nextEdgeId_++, src, dst, distance, PredicateEdgeInfo{dstOperand, std::move(boundary)}});
 }
 
 EdgeId DFGBuilder::addMemoryEdge(NodeId src, NodeId dst, MemoryDepKind dependence,
                                  std::uint32_t distance) {
   checkNode(src);
   checkNode(dst);
-  return dfg_.appendEdge(
-      {static_cast<EdgeId>(dfg_.edges().size()), src, dst, distance, MemoryEdgeInfo{dependence}});
+  return importEdge({nextEdgeId_++, src, dst, distance, MemoryEdgeInfo{dependence}});
 }
 
 } // namespace cgra::ir
