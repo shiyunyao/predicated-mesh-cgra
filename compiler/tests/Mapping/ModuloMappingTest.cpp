@@ -171,7 +171,6 @@ void testFootprintsAndReservations(const cgra::TargetModel& target) {
 void testOccupancyMutation(const cgra::TargetModel& canonical) {
   auto json = loadTargetJson();
   json["operations"]["ADD"]["issue_occupancy"] = 2;
-  json["latencies"]["issue_occupancy"]["fu"] = 2;
   TemporaryTarget file(json);
   const auto target = cgra::TargetModel::loadFromFile(file.path());
   const auto dfg = legalize(cgra::ir::fixtures::simpleAdd(), target);
@@ -197,7 +196,6 @@ void testOccupancyMutation(const cgra::TargetModel& canonical) {
 
   auto offsetJson = loadTargetJson();
   offsetJson["operations"]["LOAD"]["producer_output_ready_offset"] = 5;
-  offsetJson["latencies"]["producer_output_ready_offsets"]["load"] = 5;
   {
     TemporaryTarget offsetFile(offsetJson);
     const auto offsetTarget = cgra::TargetModel::loadFromFile(offsetFile.path());

@@ -356,22 +356,15 @@ TargetModel TargetModel::loadFromFile(const std::filesystem::path& path) {
       storeOperation.accessWidthBits != model.memory_.widthBits)
     fail("operations.STORE", "does not match memory width/execution contract");
 
-  // Legacy RTL/control views remain checked compatibility projections. They
-  // cannot define compiler semantics, but silently drifting copies are unsafe.
+  // Legacy RTL/control views are validated for shape above, but do not define
+  // compiler operation semantics. The complete per-operation descriptors are
+  // authoritative and may evolve independently of these compatibility views.
   for (const auto& [name, latencyJson] : legacyFuLatencies.items()) {
     if (!latencyJson.is_number_unsigned() && !latencyJson.is_number_integer())
       fail("latencies.fu_ops." + name, "must be an unsigned integer");
     if (latencyJson.get<std::int64_t>() < 0)
       fail("latencies.fu_ops." + name, "must not be negative");
-    const auto* operation = model.findOperation(name);
-    if (!operation)
-      continue;
-    const auto legacyLatency = latencyJson.get<unsigned>();
-    if (!operation->resultLatency || *operation->resultLatency != legacyLatency)
-      fail("latencies", "legacy operation timing disagrees with operations." + name);
   }
-  if (!loadOperation.resultLatency || *loadOperation.resultLatency != model.memory_.loadLatency)
-    fail("latencies", "legacy LOAD/STORE timing disagrees with operations descriptors");
 
   const auto& loop = requiredObject(root, "loop_execution", "");
   model.loopExecution_.supported = required<bool>(loop, "supported", "loop_execution");

@@ -217,7 +217,6 @@ void testUnsupportedGenericOperations(const cgra::TargetModel& target) {
 void testTargetMutation(const cgra::ir::DFG& fixture) {
   auto targetJson = loadTargetJson();
   targetJson["operations"]["ADD"]["result_latency"] = 3;
-  targetJson["latencies"]["fu_ops"]["ADD"] = 3;
   TemporaryTarget file(targetJson);
   const auto target = cgra::TargetModel::loadFromFile(file.path());
   const auto result = cgra::target::TargetLegalizer::legalize(fixture, target);
@@ -229,7 +228,6 @@ void testTargetMutation(const cgra::ir::DFG& fixture) {
 
   targetJson = loadTargetJson();
   targetJson["operations"]["ADD"]["issue_occupancy"] = 3;
-  targetJson["latencies"]["issue_occupancy"]["fu"] = 3;
   TemporaryTarget occupancyFile(targetJson);
   const auto occupancyTarget = cgra::TargetModel::loadFromFile(occupancyFile.path());
   const auto occupancyResult = cgra::target::TargetLegalizer::legalize(fixture, occupancyTarget);
@@ -242,7 +240,6 @@ void testTargetMutation(const cgra::ir::DFG& fixture) {
 
   targetJson = loadTargetJson();
   targetJson["operations"]["ADD"]["producer_output_ready_offset"] = 2;
-  targetJson["latencies"]["producer_output_ready_offsets"]["fu"] = 2;
   TemporaryTarget outputFile(targetJson);
   const auto outputTarget = cgra::TargetModel::loadFromFile(outputFile.path());
   const auto outputResult = cgra::target::TargetLegalizer::legalize(fixture, outputTarget);
