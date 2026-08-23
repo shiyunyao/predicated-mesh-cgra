@@ -221,6 +221,19 @@ void testOccupancyMutation(const cgra::TargetModel& canonical) {
   }
 }
 
+void testTileCapabilities() {
+  auto json = loadTargetJson();
+  json["tile_capabilities"]["overrides"] =
+      Json::array({{{"row", 0}, {"col", 0}, {"operations", Json::array({"ADD"})}}});
+  TemporaryTarget file(json);
+  const auto target = cgra::TargetModel::loadFromFile(file.path());
+  const auto dfg = legalize(cgra::ir::fixtures::arithmeticChain(), target);
+  const auto& mul = dfg.node(1);
+  ModuloResourceModel model(target, 1);
+  expect(!model.supportsOperation({0, 0}, mul), "tile capability override rejects MUL");
+  expect(model.supportsOperation({0, 1}, mul), "default tile capability permits MUL");
+}
+
 void testMappingAndSerialization(const cgra::TargetModel& target) {
   const auto dfg = legalize(cgra::ir::fixtures::recurrence(), target);
   ModuloMappingBuilder builder(dfg, 2);
@@ -282,6 +295,7 @@ int main() {
     testModuloTimeAndTopology(target);
     testFootprintsAndReservations(target);
     testOccupancyMutation(target);
+    testTileCapabilities();
     testMappingAndSerialization(target);
     std::cout << "CGRA_MODULO_MAPPING_TEST_PASS\n";
     return 0;
