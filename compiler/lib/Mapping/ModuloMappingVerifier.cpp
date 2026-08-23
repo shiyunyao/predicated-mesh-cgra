@@ -112,7 +112,9 @@ void verifyValueTransport(const cgra::target::TargetDFG& dfg, const cgra::Target
         "value-producing target operation has no producer output-ready offset", edge.src, edge.id);
     return;
   }
-  const auto hopLatency = target.dataNetwork().hopLatency;
+  const auto& network =
+      plan.domain == NetworkDomain::Predicate ? target.predicateNetwork() : target.dataNetwork();
+  const auto hopLatency = network.hopLatency;
   if (hopLatency == 0) {
     add(report, MappingDiagnosticCode::MMAP_TARGET_TIMING_MISSING,
         "target network hop latency must be positive", std::nullopt, edge.id);
@@ -122,6 +124,7 @@ void verifyValueTransport(const cgra::target::TargetDFG& dfg, const cgra::Target
   Availability availability{srcPlacement.tile, *producer.producerOutputReadyOffset};
   const auto producerReady = availability.elapsed;
   std::unordered_set<ResourceId> routeResources;
+  std::vector<ResourceId> routeResourceList;
   bool routeValid = true;
   for (std::size_t index = 0; index < plan.actions.size(); ++index) {
     const auto& action = plan.actions[index];
@@ -181,8 +184,8 @@ void verifyValueTransport(const cgra::target::TargetDFG& dfg, const cgra::Target
         routeValid = false;
         continue;
       }
-      if (!reservations.reserve(std::span<const ResourceId>(&*resource, 1),
-                                {ReservationOwnerKind::Edge, edge.id})) {
+      routeResourceList.push_back(*resource);
+      if (!reservations.isFree(*resource)) {
         const auto owner = reservations.owner(*resource);
         std::ostringstream message;
         message << "link resource conflicts with edge ";
@@ -249,6 +252,14 @@ void verifyValueTransport(const cgra::target::TargetDFG& dfg, const cgra::Target
     add(report, MappingDiagnosticCode::MMAP_REQUIRED_SEPARATION_MISMATCH,
         "cached required separation does not match reconstructed transport timing", std::nullopt,
         edge.id);
+    return;
+  }
+  if (!routeResourceList.empty() &&
+      !reservations.reserve(std::span<const ResourceId>(routeResourceList),
+                            {ReservationOwnerKind::Edge, edge.id})) {
+    add(report, MappingDiagnosticCode::MMAP_INTERNAL_ERROR,
+        "fresh reservation table rejected a previously free transport route", std::nullopt,
+        edge.id);
   }
 }
 
@@ -267,6 +278,7 @@ ModuloMappingVerificationReport ModuloMappingVerifier::verify(const cgra::target
   if (dfg.targetName() != target.name()) {
     add(report, MappingDiagnosticCode::MMAP_INVALID_TARGET_DFG,
         "TargetDFG target name does not match selected TargetModel");
+    return report;
   }
   if (mapping.ii() == 0) {
     add(report, MappingDiagnosticCode::MMAP_INVALID_II, "mapping II must be at least one");
@@ -275,6 +287,7 @@ ModuloMappingVerificationReport ModuloMappingVerifier::verify(const cgra::target
   if (mapping.targetName() != target.name()) {
     add(report, MappingDiagnosticCode::MMAP_TARGET_NAME_MISMATCH,
         "mapping target name does not match selected TargetModel");
+    return report;
   }
 
   ModuloResourceModel resources(target, mapping.ii());

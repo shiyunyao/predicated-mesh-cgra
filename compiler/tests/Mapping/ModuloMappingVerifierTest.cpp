@@ -94,6 +94,33 @@ ModuloMapping makeChainMapping(const cgra::TargetModel& target) {
   return builder.finish();
 }
 
+ModuloMapping makeFanoutMapping(const cgra::TargetModel& target) {
+  const auto dfg = legalize(cgra::ir::fixtures::fanout(), target);
+  ModuloMappingBuilder builder(dfg, 1);
+  builder.place(0, {0, 0}, ModuloSlot(0));
+  builder.place(1, {0, 1}, ModuloSlot(0));
+  builder.place(2, {1, 0}, ModuloSlot(0));
+  for (const auto& edge : dfg.edges()) {
+    const auto direction = edge.dst == 1 ? Direction::East : Direction::South;
+    builder.setTransport(
+        edge.id,
+        {edge.id, NetworkDomain::Data, {LinkStep{NetworkDomain::Data, {0, 0}, direction, 0}}, 1});
+  }
+  return builder.finish();
+}
+
+ModuloMapping makePredicateMapping(const cgra::TargetModel& target) {
+  const auto dfg = legalize(cgra::ir::fixtures::predicateSelectUnsigned(), target);
+  ModuloMappingBuilder builder(dfg, 1);
+  builder.place(0, {0, 0}, ModuloSlot(0));
+  builder.place(1, {0, 1}, ModuloSlot(0));
+  builder.setTransport(0, {0,
+                           NetworkDomain::Predicate,
+                           {LinkStep{NetworkDomain::Predicate, {0, 0}, Direction::East, 0}},
+                           1});
+  return builder.finish();
+}
+
 ModuloMapping makeLoadMapping(const cgra::TargetModel& target) {
   const auto dfg = legalize(cgra::ir::fixtures::recurrence(), target);
   ModuloMappingBuilder builder(dfg, 2);
@@ -128,6 +155,22 @@ ModuloMapping makeCoissueMapping(const cgra::TargetModel& target) {
   return builder.finish();
 }
 
+ModuloMapping makeInvalidThenValidRouteMapping(const cgra::TargetModel& target) {
+  const auto dfg = legalize(cgra::ir::fixtures::loadAddStore(), target);
+  ModuloMappingBuilder builder(dfg, 2);
+  builder.place(0, {0, 0}, ModuloSlot(0));
+  builder.place(1, {0, 0}, ModuloSlot(0));
+  builder.place(2, {0, 1}, ModuloSlot(0));
+  builder.setTransport(0, {0,
+                           NetworkDomain::Data,
+                           {LinkStep{NetworkDomain::Data, {0, 0}, Direction::East, 2},
+                            VirtualHold{NetworkDomain::Data, {1, 1}, 2, 3}},
+                           3});
+  builder.setTransport(
+      1, {1, NetworkDomain::Data, {LinkStep{NetworkDomain::Data, {0, 0}, Direction::East, 0}}, 1});
+  return builder.finish();
+}
+
 void testPositiveMappings(const cgra::TargetModel& target) {
   const auto simpleDfg = legalize(cgra::ir::fixtures::simpleAdd(), target);
   expect(ModuloMappingVerifier::verify(simpleDfg, target, makeSimpleMapping(target)).ok(),
@@ -139,6 +182,13 @@ void testPositiveMappings(const cgra::TargetModel& target) {
   expect(parse(beforeVerify) == chainMapping, "mapping JSON round-trip");
   expect(ModuloMappingVerifier::verify(chainDfg, target, chainMapping).ok(),
          "data chain mapping is valid");
+
+  const auto fanoutDfg = legalize(cgra::ir::fixtures::fanout(), target);
+  expect(ModuloMappingVerifier::verify(fanoutDfg, target, makeFanoutMapping(target)).ok(),
+         "fanout mapping is valid");
+  const auto predicateDfg = legalize(cgra::ir::fixtures::predicateSelectUnsigned(), target);
+  expect(ModuloMappingVerifier::verify(predicateDfg, target, makePredicateMapping(target)).ok(),
+         "predicate mapping is valid");
   expect(toJson(chainMapping) == beforeVerify, "mapping verifier is read-only");
 
   const auto loadDfg = legalize(cgra::ir::fixtures::recurrence(), target);
@@ -187,6 +237,23 @@ void testInvalidMappings(const cgra::TargetModel& target) {
   report = ModuloMappingVerifier::verify(chainDfg, target, conflictMapping);
   expect(report.contains(MappingDiagnosticCode::MMAP_FU_RESOURCE_CONFLICT),
          "same FU resource conflict is rejected");
+
+  const auto fanoutDfg = legalize(cgra::ir::fixtures::fanout(), target);
+  auto linkConflictJson = Json::parse(toJson(makeFanoutMapping(target)));
+  linkConflictJson["dependences"][1]["transport"]["domain"] = "data";
+  linkConflictJson["dependences"][1]["transport"]["actions"][0]["direction"] = "east";
+  const auto linkConflict = parse(linkConflictJson.dump());
+  report = ModuloMappingVerifier::verify(fanoutDfg, target, linkConflict);
+  expect(report.contains(MappingDiagnosticCode::MMAP_DATA_LINK_CONFLICT),
+         "same data link conflict is rejected");
+
+  const auto loadStoreDfg = legalize(cgra::ir::fixtures::loadAddStore(), target);
+  report =
+      ModuloMappingVerifier::verify(loadStoreDfg, target, makeInvalidThenValidRouteMapping(target));
+  expect(report.contains(MappingDiagnosticCode::MMAP_HOLD_WRONG_TILE),
+         "invalid route is diagnosed");
+  expect(!report.contains(MappingDiagnosticCode::MMAP_DATA_LINK_CONFLICT),
+         "invalid route does not poison later link reservations");
 }
 
 void testTargetMutations(const cgra::TargetModel& canonical) {

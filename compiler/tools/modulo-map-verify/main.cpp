@@ -46,7 +46,7 @@ int main(int argc, char** argv) {
     target = cgra::TargetModel::loadFromFile(targetPath);
   } catch (const std::exception& error) {
     std::cerr << "modulo-map-verify: target contract error: " << error.what() << '\n';
-    return 4;
+    return 3;
   }
   try {
     const auto dfg = cgra::target::readJson(dfgPath);
@@ -63,5 +63,8 @@ int main(int argc, char** argv) {
   } catch (const std::exception& error) {
     std::cerr << "modulo-map-verify: " << error.what() << '\n';
     return 2;
+  } catch (...) {
+    std::cerr << "modulo-map-verify: internal error\n";
+    return 4;
   }
 }
