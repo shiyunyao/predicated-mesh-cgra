@@ -29,8 +29,10 @@ int main(int argc, char** argv) {
     if (!notes || !target)
       throw std::runtime_error("artifact files were not created");
 
+    const auto metrics = cgra::test::metricsFixture();
+    artifacts.writeText("metrics.json", metrics.dump(2));
     std::string error;
-    if (!cgra::test::validateMetrics(cgra::test::metricsFixture(), &error))
+    if (!cgra::test::validateMetrics(metrics, &error))
       throw std::runtime_error("metrics fixture is invalid: " + error);
     std::cout << "CGRA_TEST_SUPPORT_PASS seed=" << cgra::test::getTestSeed() << '\n';
   } catch (const std::exception& error) {

@@ -76,12 +76,16 @@ if(CGRA_BUILD_TESTS)
     LIBRARIES nlohmann_json::nlohmann_json
     DEFINITIONS CGRA_REPOSITORY_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/.."
   )
-  add_test(NAME cgra-test-seed-env COMMAND cgra-test-support --expect-seed 42)
-  set_tests_properties(cgra-test-seed-env PROPERTIES
-    LABELS unit
-    TIMEOUT 10
-    ENVIRONMENT
-      "CGRA_TEST_SEED=42;CGRA_TEST_ARTIFACT_DIR=${CMAKE_BINARY_DIR}/failures"
+  cgra_add_test(
+    NAME cgra-test-seed-env
+    TYPE unit
+    SOURCES tests/Support/SupportSmokeTest.cpp
+            tests/support/TestArtifacts.cpp
+            tests/support/TestSeed.cpp
+    LIBRARIES nlohmann_json::nlohmann_json
+    DEFINITIONS CGRA_REPOSITORY_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/.."
+    COMMAND_ARGS --expect-seed 42
+    ENVIRONMENT CGRA_TEST_SEED=42
   )
 
   set(CGRA_GTEST_MAIN_TARGET)
@@ -99,6 +103,7 @@ if(CGRA_BUILD_TESTS)
               tests/support/TestSeed.cpp
       LIBRARIES ${CGRA_GTEST_MAIN_TARGET} nlohmann_json::nlohmann_json
       DEFINITIONS CGRA_REPOSITORY_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/.."
+      GTEST
     )
   endif()
 endif()

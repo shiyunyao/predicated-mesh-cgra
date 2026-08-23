@@ -12,7 +12,7 @@
         "CGRA_WARNINGS_AS_ERRORS": "OFF",
         "CGRA_ENABLE_ASAN": "OFF",
         "CGRA_ENABLE_UBSAN": "OFF",
-        "CGRA_FETCH_DEPS": "OFF"
+        "CGRA_FETCH_DEPS": "ON"
       }
     },
     {

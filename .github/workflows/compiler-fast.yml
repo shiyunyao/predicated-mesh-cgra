@@ -13,6 +13,9 @@ concurrency:
   group: compiler-fast-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  CGRA_TEST_SEED: 0
+
 jobs:
   format:
     name: compiler-format

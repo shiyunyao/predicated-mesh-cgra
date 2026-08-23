@@ -7,15 +7,14 @@ resource limits remain intact.
 
 ## Local Commands
 
-The compiler uses C++20, CMake, Ninja, and CTest. The existing target-contract
-test remains dependency-light; CI additionally enables the pinned GoogleTest
-smoke lane through `CGRA_FETCH_DEPS=ON`.
+The compiler uses C++20, CMake, Ninja, CTest, and a pinned GoogleTest smoke
+lane. The presets enable the pinned dependencies through
+`CGRA_FETCH_DEPS=ON`; an offline fallback is documented below.
 
-The offline developer preset expects the exact CMake package
-`nlohmann_json` 3.10.5 to be installed. On Ubuntu this is typically provided
-by `nlohmann-json3-dev`; environments without that package can use
-`cmake -S compiler -B compiler/build/dev-debug -G Ninja -DCGRA_FETCH_DEPS=ON`
-to fetch the pinned dependencies.
+The presets fetch exact dependency releases through CMake FetchContent. In an
+offline environment, use `-DCGRA_FETCH_DEPS=OFF` and install the exact CMake
+package `nlohmann_json` 3.10.5 (on Ubuntu this is typically provided by
+`nlohmann-json3-dev`).
 
 Developer build:
 
