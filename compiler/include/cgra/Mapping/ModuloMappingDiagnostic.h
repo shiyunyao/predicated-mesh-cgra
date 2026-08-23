@@ -40,7 +40,6 @@ enum class MappingDiagnosticCode : std::uint32_t {
   MMAP_OPERATION_SELF_OVERLAP,
   MMAP_ROUTE_SELF_RESOURCE_CONFLICT,
   MMAP_TRANSPORT_MISSING_FOR_VALUE_EDGE,
-  MMAP_TRANSPORT_UNEXPECTED_FOR_MEMORY_EDGE,
   MMAP_TRANSPORT_DOMAIN_MISMATCH,
   MMAP_TRANSPORT_BAD_START,
   MMAP_TRANSPORT_BAD_END,
@@ -61,6 +60,17 @@ enum class MappingDiagnosticCode : std::uint32_t {
   MMAP_INTERNAL_ERROR,
 };
 
+enum class MappingOwnerKind {
+  Node,
+  Edge,
+};
+
+struct MappingOwner {
+  MappingOwnerKind kind = MappingOwnerKind::Node;
+  std::uint32_t id = 0;
+  friend bool operator==(const MappingOwner&, const MappingOwner&) = default;
+};
+
 struct MappingDiagnostic {
   MappingDiagnosticSeverity severity = MappingDiagnosticSeverity::Error;
   MappingDiagnosticCode code = MappingDiagnosticCode::MMAP_INTERNAL_ERROR;
@@ -71,6 +81,7 @@ struct MappingDiagnostic {
   std::optional<TileCoord> tile;
   std::optional<std::uint32_t> slot;
   std::optional<std::uint32_t> actionIndex;
+  std::optional<MappingOwner> conflictingOwner;
 };
 
 std::string_view toString(MappingDiagnosticSeverity severity) noexcept;

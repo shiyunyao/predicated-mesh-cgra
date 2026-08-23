@@ -7,6 +7,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -237,6 +238,13 @@ void testInvalidMappings(const cgra::TargetModel& target) {
   report = ModuloMappingVerifier::verify(chainDfg, target, conflictMapping);
   expect(report.contains(MappingDiagnosticCode::MMAP_FU_RESOURCE_CONFLICT),
          "same FU resource conflict is rejected");
+  const auto conflictDiagnostic = std::find_if(
+      report.diagnostics().begin(), report.diagnostics().end(), [](const auto& diagnostic) {
+        return diagnostic.code == MappingDiagnosticCode::MMAP_FU_RESOURCE_CONFLICT;
+      });
+  expect(conflictDiagnostic != report.diagnostics().end() && conflictDiagnostic->conflictingOwner &&
+             conflictDiagnostic->conflictingOwner->kind == MappingOwnerKind::Node,
+         "resource conflict exposes the existing owner structurally");
 
   const auto fanoutDfg = legalize(cgra::ir::fixtures::fanout(), target);
   auto linkConflictJson = Json::parse(toJson(makeFanoutMapping(target)));

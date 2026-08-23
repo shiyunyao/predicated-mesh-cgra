@@ -26,9 +26,16 @@ void add(ModuloMappingVerificationReport& report, MappingDiagnosticCode code, st
          std::optional<ResourceId> resource = std::nullopt,
          std::optional<TileCoord> tile = std::nullopt,
          std::optional<std::uint32_t> slot = std::nullopt,
-         std::optional<std::uint32_t> action = std::nullopt) {
+         std::optional<std::uint32_t> action = std::nullopt,
+         std::optional<MappingOwner> conflictingOwner = std::nullopt) {
   report.add({MappingDiagnosticSeverity::Error, code, std::move(message), node, edge, resource,
-              tile, slot, action});
+              tile, slot, action, conflictingOwner});
+}
+
+MappingOwner mappingOwner(const ReservationOwner& owner) {
+  return {owner.kind == ReservationOwnerKind::Node ? MappingOwnerKind::Node
+                                                   : MappingOwnerKind::Edge,
+          owner.id};
 }
 
 NetworkDomain expectedDomain(cgra::ir::Edge::Kind kind) {
@@ -194,7 +201,8 @@ void verifyValueTransport(const cgra::target::TargetDFG& dfg, const cgra::Target
         else
           message << "a node";
         add(report, conflictCode(resources.resource(*resource)), message.str(), std::nullopt,
-            edge.id, resource, link->source, slot.value(), static_cast<std::uint32_t>(index));
+            edge.id, resource, link->source, slot.value(), static_cast<std::uint32_t>(index),
+            owner ? std::optional<MappingOwner>(mappingOwner(*owner)) : std::nullopt);
         routeValid = false;
         continue;
       }
@@ -376,7 +384,8 @@ ModuloMappingVerificationReport ModuloMappingVerifier::verify(const cgra::target
           std::ostringstream message;
           message << "node resource conflicts with mapped node " << owner->id;
           add(report, conflictCode(semantic), message.str(), id, std::nullopt, resource,
-              resourceTile(semantic), resourceSlot(semantic).value());
+              resourceTile(semantic), resourceSlot(semantic).value(), std::nullopt,
+              mappingOwner(*owner));
           break;
         }
       } else if (!reservations.reserve(footprint, {ReservationOwnerKind::Node, id})) {

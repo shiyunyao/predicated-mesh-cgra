@@ -37,6 +37,13 @@ struct TargetOperandDesc {
   friend bool operator==(const TargetOperandDesc&, const TargetOperandDesc&) = default;
 };
 
+struct TargetEncodingRef {
+  std::string domain;
+  std::string symbol;
+
+  friend bool operator==(const TargetEncodingRef&, const TargetEncodingRef&) = default;
+};
+
 std::string_view toString(TargetExecutionClass executionClass);
 TargetExecutionClass targetExecutionClassFromString(std::string_view value);
 std::string_view toString(TargetOperandRole role);
@@ -54,6 +61,7 @@ struct TargetOperationDesc {
   std::optional<unsigned> resultLatency;
   std::optional<unsigned> producerOutputReadyOffset;
   std::optional<unsigned> accessWidthBits;
+  std::optional<TargetEncodingRef> encoding;
 
   friend bool operator==(const TargetOperationDesc&, const TargetOperationDesc&) = default;
 };

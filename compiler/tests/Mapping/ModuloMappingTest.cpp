@@ -14,6 +14,7 @@
 #include <iostream>
 #include <limits>
 #include <stdexcept>
+#include <type_traits>
 
 namespace {
 
@@ -92,6 +93,22 @@ void testModuloTimeAndTopology(const cgra::TargetModel& target) {
   expect(stats.totalResources == stats.fuResources + stats.lsuResources + stats.dataLinkResources +
                                      stats.predicateLinkResources,
          "resource statistics total");
+  for (ResourceId id = 0; id < model.resourceCount(); ++id) {
+    const auto& resource = model.resource(id);
+    const auto roundTrip = std::visit(
+        [&](const auto& value) -> ResourceId {
+          using Resource = std::decay_t<decltype(value)>;
+          if constexpr (std::is_same_v<Resource, FUResource>)
+            return model.fuResource(value.tile, value.slot);
+          else if constexpr (std::is_same_v<Resource, LSUResource>)
+            return model.lsuResource(value.tile, value.slot).value();
+          else
+            return model.linkResource(value.domain, value.source, value.direction, value.slot)
+                .value();
+        },
+        resource);
+    expect(roundTrip == id, "semantic resource lookup round-trips to stable ResourceId");
+  }
 
   ModuloResourceModel modelII8(target, 8);
   expect(modelII8.stats().totalResources == 2 * stats.totalResources,

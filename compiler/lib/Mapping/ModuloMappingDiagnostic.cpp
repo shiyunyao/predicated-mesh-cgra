@@ -40,7 +40,6 @@ std::string_view toString(MappingDiagnosticCode code) noexcept {
     MMAP_CODE(MMAP_OPERATION_SELF_OVERLAP);
     MMAP_CODE(MMAP_ROUTE_SELF_RESOURCE_CONFLICT);
     MMAP_CODE(MMAP_TRANSPORT_MISSING_FOR_VALUE_EDGE);
-    MMAP_CODE(MMAP_TRANSPORT_UNEXPECTED_FOR_MEMORY_EDGE);
     MMAP_CODE(MMAP_TRANSPORT_DOMAIN_MISMATCH);
     MMAP_CODE(MMAP_TRANSPORT_BAD_START);
     MMAP_CODE(MMAP_TRANSPORT_BAD_END);
@@ -95,6 +94,10 @@ std::string ModuloMappingVerificationReport::format() const {
       output << " slot=" << *diagnostic.slot;
     if (diagnostic.actionIndex)
       output << " action=" << *diagnostic.actionIndex;
+    if (diagnostic.conflictingOwner)
+      output << " conflicting_owner="
+             << (diagnostic.conflictingOwner->kind == MappingOwnerKind::Node ? "node" : "edge")
+             << ":" << diagnostic.conflictingOwner->id;
     output << ": " << diagnostic.message;
   }
   return output.str();
@@ -122,6 +125,10 @@ std::string ModuloMappingVerificationReport::toJson() const {
       value["slot"] = *diagnostic.slot;
     if (diagnostic.actionIndex)
       value["action_index"] = *diagnostic.actionIndex;
+    if (diagnostic.conflictingOwner)
+      value["conflicting_owner"] = {
+          {"kind", diagnostic.conflictingOwner->kind == MappingOwnerKind::Node ? "node" : "edge"},
+          {"id", diagnostic.conflictingOwner->id}};
     root["diagnostics"].push_back(std::move(value));
   }
   return root.dump(2) + '\n';

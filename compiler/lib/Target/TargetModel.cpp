@@ -299,6 +299,12 @@ TargetModel TargetModel::loadFromFile(const std::filesystem::path& path) {
         fail(operandContext, "required operand follows optional operand");
       operands.push_back(operand);
     }
+    const auto& encodingJson = requiredObject(descriptorJson, "encoding", context);
+    TargetEncodingRef encoding{
+        required<std::string>(encodingJson, "domain", context + ".encoding"),
+        required<std::string>(encodingJson, "symbol", context + ".encoding")};
+    if (encoding.domain.empty() || encoding.symbol.empty())
+      fail(context + ".encoding", "domain and symbol must not be empty");
     const auto& resultJson = requiredObject(descriptorJson, "result", context);
     TargetResultRole resultRole;
     try {
@@ -332,15 +338,15 @@ TargetModel TargetModel::loadFromFile(const std::filesystem::path& path) {
     if (resultRole == TargetResultRole::Data)
       model.operations_.push_back({name, executionClass, std::move(operands), resultRole,
                                    ir::ValueType::integer(model.array_.dataWidth), issueOccupancy,
-                                   resultLatency, outputReadyOffset, accessWidth});
+                                   resultLatency, outputReadyOffset, accessWidth, encoding});
     else if (resultRole == TargetResultRole::Predicate)
       model.operations_.push_back({name, executionClass, std::move(operands), resultRole,
                                    ir::ValueType::predicate(), issueOccupancy, resultLatency,
-                                   outputReadyOffset, accessWidth});
+                                   outputReadyOffset, accessWidth, encoding});
     else
       model.operations_.push_back({name, executionClass, std::move(operands), resultRole,
                                    ir::ValueType::voidTy(), issueOccupancy, resultLatency,
-                                   outputReadyOffset, accessWidth});
+                                   outputReadyOffset, accessWidth, encoding});
     model.operationIndices_.emplace(name, model.operations_.size() - 1);
   }
   for (const auto& operation : model.operations_)
@@ -452,6 +458,25 @@ TargetModel TargetModel::loadFromFile(const std::filesystem::path& path) {
       model.encodings_[domain].emplace(name, value);
       model.reverseEncodings_[domain].emplace(value, name);
     }
+  }
+
+  for (const auto& operation : model.operations_) {
+    if (!operation.encoding)
+      fail("operations." + operation.id + ".encoding", "missing encoding binding");
+    const auto& binding = *operation.encoding;
+    const auto domainIt = model.encodings_.find(binding.domain);
+    if (domainIt == model.encodings_.end())
+      fail("operations." + operation.id + ".encoding.domain",
+           "references missing encoding domain " + binding.domain);
+    if (!domainIt->second.contains(binding.symbol))
+      fail("operations." + operation.id + ".encoding.symbol",
+           "references missing encoding " + binding.domain + "." + binding.symbol);
+    if (operation.executionClass == TargetExecutionClass::LSU && binding.domain != "lsu_op")
+      fail("operations." + operation.id + ".encoding.domain",
+           "LSU operations must bind the lsu_op encoding domain");
+    if (operation.executionClass == TargetExecutionClass::FU && binding.domain == "lsu_op")
+      fail("operations." + operation.id + ".encoding.domain",
+           "FU operations must not bind the lsu_op encoding domain");
   }
 
   validateWritePortNames(model.dataRF_, "data_rf");

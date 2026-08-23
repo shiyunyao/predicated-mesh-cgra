@@ -264,6 +264,8 @@ void testTargetMutation(const cgra::ir::DFG& fixture) {
 void testTargetDrivenOperations() {
   auto targetJson = loadTargetJson();
   targetJson["operations"]["ASHR"] = targetJson["operations"]["LSHR"];
+  targetJson["encodings"]["op"]["ASHR"] = 36;
+  targetJson["operations"]["ASHR"]["encoding"]["symbol"] = "ASHR";
   targetJson["tile_capabilities"]["default_fu_operations"].push_back("ASHR");
   TemporaryTarget ashrFile(targetJson);
   const auto ashrTarget = cgra::TargetModel::loadFromFile(ashrFile.path());
@@ -279,6 +281,8 @@ void testTargetDrivenOperations() {
 
   targetJson = loadTargetJson();
   targetJson["operations"]["CMP_SLT"] = targetJson["operations"]["CMP_ULT"];
+  targetJson["encodings"]["op"]["CMP_SLT"] = 37;
+  targetJson["operations"]["CMP_SLT"]["encoding"]["symbol"] = "CMP_SLT";
   targetJson["tile_capabilities"]["default_fu_operations"].push_back("CMP_SLT");
   TemporaryTarget sltFile(targetJson);
   const auto sltTarget = cgra::TargetModel::loadFromFile(sltFile.path());

@@ -45,7 +45,7 @@ ModuloMappingBuilder::ModuloMappingBuilder(const cgra::target::TargetDFG& dfg, s
             [](const auto& lhs, const auto& rhs) { return lhs.id < rhs.id; });
 }
 
-ModuloMappingBuilder::ModuloMappingBuilder(std::string targetName, std::uint32_t ii)
+ModuloMappingBuilder::ModuloMappingBuilder(std::string targetName, std::uint32_t ii, UncheckedTag)
     : targetName_(std::move(targetName)), time_(ii) {}
 
 void ModuloMappingBuilder::place(cgra::target::TargetNodeId node, TileCoord tile,

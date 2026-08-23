@@ -157,6 +157,8 @@ void testOperationSchema(const cgra::TargetModel& target) {
             add.operands[1].role == cgra::TargetOperandRole::Data && !add.operands[0].optional &&
             !add.operands[1].optional,
         "ADD semantic operand/result descriptor");
+  check(add.encoding && add.encoding->domain == "op" && add.encoding->symbol == "ADD",
+        "ADD has an explicit machine encoding binding");
 
   const auto& compare = target.operation("CMP_ULT");
   check(compare.resultRole == cgra::TargetResultRole::Predicate && compare.operands.size() == 2,
@@ -393,6 +395,18 @@ void testMalformedTargets(const Json& canonical) {
   expectRejected(
       canonical, [](Json& json) { json["operations"]["ADD"].erase("issue_occupancy"); },
       "operations.ADD");
+  expectRejected(
+      canonical, [](Json& json) { json["operations"]["ADD"].erase("encoding"); },
+      "operations.ADD.encoding");
+  expectRejected(
+      canonical,
+      [](Json& json) {
+        json["operations"]["LOAD"]["encoding"] = {{"domain", "op"}, {"symbol", "ADD"}};
+      },
+      "LSU operations must bind");
+  expectRejected(
+      canonical, [](Json& json) { json["operations"]["ADD"]["encoding"]["symbol"] = "MISSING"; },
+      "references missing encoding");
   expectRejected(
       canonical, [](Json& json) { json["operation_compatibility"].erase("authoritative_section"); },
       "operation_compatibility.authoritative_section");

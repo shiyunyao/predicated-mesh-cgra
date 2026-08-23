@@ -181,8 +181,8 @@ ModuloMapping parse(std::string_view jsonText) {
   }
   if (!root.is_object() || root.value("schema", "") != "cgra.modulo_mapping.debug.v1")
     throw std::invalid_argument("mapping JSON schema must be cgra.modulo_mapping.debug.v1");
-  ModuloMappingBuilder builder(required<std::string>(root, "target"),
-                               required<std::uint32_t>(root, "ii"));
+  UncheckedModuloMappingBuilder builder(required<std::string>(root, "target"),
+                                        required<std::uint32_t>(root, "ii"));
   const auto& placements = root.at("placements");
   if (!placements.is_array())
     throw std::invalid_argument("mapping placements must be an array");
