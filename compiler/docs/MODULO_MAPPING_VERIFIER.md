@@ -41,5 +41,6 @@ cgra-modulo-map-verify target_dfg.json mapping.json \
   --target target/cgra_v2.json --json-report report.json
 ```
 
-Exit status `0` means valid mapping, `1` means a mapping legality error, and
-`2` means input or target loading failed.
+Exit status `0` means valid mapping, `1` means a mapping legality error, `2`
+means mapping/TargetDFG input or serialization failure, `3` means a target
+contract failure, and `4` means an internal failure.

@@ -23,6 +23,71 @@ public:
   static void setRequiredSeparation(ModuloMapping& mapping, std::uint32_t separation) {
     mapping.dependences_.front().requiredSeparationCycles = separation;
   }
+  static void removePlacement(ModuloMapping& mapping) { mapping.placements_.pop_back(); }
+  static void removeDependence(ModuloMapping& mapping) { mapping.dependences_.pop_back(); }
+  static void addUnknownPlacement(ModuloMapping& mapping) {
+    mapping.placements_.push_back({999, {0, 0}, ModuloSlot(0)});
+  }
+  static void addUnknownDependence(ModuloMapping& mapping) {
+    mapping.dependences_.push_back({999, cgra::ir::Edge::Kind::Data, 1, std::nullopt});
+  }
+  static void duplicateDependence(ModuloMapping& mapping) {
+    mapping.dependences_.push_back(mapping.dependences_.front());
+  }
+  static void setPlacement(ModuloMapping& mapping, cgra::target::TargetNodeId node, TileCoord tile,
+                           ModuloSlot slot) {
+    for (auto& placement : mapping.placements_)
+      if (placement.node == node) {
+        placement.tile = tile;
+        placement.issueSlot = slot;
+        return;
+      }
+    throw std::runtime_error("test placement does not exist");
+  }
+  static void setTransportDomain(ModuloMapping& mapping, cgra::target::TargetEdgeId edge,
+                                 NetworkDomain domain) {
+    auto it = std::find_if(mapping.dependences_.begin(), mapping.dependences_.end(),
+                           [edge](const auto& value) { return value.edge == edge; });
+    if (it == mapping.dependences_.end())
+      throw std::runtime_error("test dependence does not exist");
+    auto& dependence = *it;
+    if (!dependence.transport)
+      throw std::runtime_error("test transport does not exist");
+    dependence.transport->domain = domain;
+    for (auto& action : dependence.transport->actions)
+      std::visit([domain](auto& value) { value.domain = domain; }, action);
+  }
+  static void setLink(ModuloMapping& mapping, cgra::target::TargetEdgeId edge,
+                      std::size_t actionIndex, TileCoord source, Direction direction,
+                      std::uint32_t elapsed) {
+    auto it = std::find_if(mapping.dependences_.begin(), mapping.dependences_.end(),
+                           [edge](const auto& value) { return value.edge == edge; });
+    if (it == mapping.dependences_.end())
+      throw std::runtime_error("test dependence does not exist");
+    auto& dependence = *it;
+    auto* link = std::get_if<LinkStep>(&dependence.transport->actions.at(actionIndex));
+    if (!link)
+      throw std::runtime_error("test action is not a link");
+    link->source = source;
+    link->direction = direction;
+    link->elapsedFromProducerIssue = elapsed;
+  }
+  static void setHoldInterval(ModuloMapping& mapping, cgra::target::TargetEdgeId edge,
+                              std::uint32_t capture, std::uint32_t release) {
+    auto it = std::find_if(mapping.dependences_.begin(), mapping.dependences_.end(),
+                           [edge](const auto& value) { return value.edge == edge; });
+    if (it == mapping.dependences_.end())
+      throw std::runtime_error("test dependence does not exist");
+    auto& dependence = *it;
+    auto* hold = std::get_if<VirtualHold>(&dependence.transport->actions.front());
+    if (!hold)
+      throw std::runtime_error("test action is not a hold");
+    hold->captureElapsed = capture;
+    hold->releaseElapsed = release;
+  }
+  static void addMemoryTransport(ModuloMapping& mapping, TransportPlan plan) {
+    mapping.dependences_.front().transport = std::move(plan);
+  }
 };
 
 } // namespace cgra::mapping
@@ -264,6 +329,100 @@ void testInvalidMappings(const cgra::TargetModel& target) {
          "invalid route does not poison later link reservations");
 }
 
+void testStructuralAndTimingNegativeCases(const cgra::TargetModel& target) {
+  const auto simpleDfg = legalize(cgra::ir::fixtures::simpleAdd(), target);
+  auto missingNode = makeSimpleMapping(target);
+  ModuloMappingTestAccess::removePlacement(missingNode);
+  auto report = ModuloMappingVerifier::verify(simpleDfg, target, missingNode);
+  expect(report.contains(MappingDiagnosticCode::MMAP_NODE_MISSING_PLACEMENT),
+         "missing node placement is rejected");
+
+  auto unknownNode = makeSimpleMapping(target);
+  ModuloMappingTestAccess::addUnknownPlacement(unknownNode);
+  report = ModuloMappingVerifier::verify(simpleDfg, target, unknownNode);
+  expect(report.contains(MappingDiagnosticCode::MMAP_UNKNOWN_NODE),
+         "unknown node placement is rejected");
+
+  const auto chainDfg = legalize(cgra::ir::fixtures::arithmeticChain(), target);
+  auto missingEdge = makeChainMapping(target);
+  ModuloMappingTestAccess::removeDependence(missingEdge);
+  report = ModuloMappingVerifier::verify(chainDfg, target, missingEdge);
+  expect(report.contains(MappingDiagnosticCode::MMAP_EDGE_MISSING_REALIZATION),
+         "missing edge realization is rejected");
+
+  auto unknownEdge = makeChainMapping(target);
+  ModuloMappingTestAccess::addUnknownDependence(unknownEdge);
+  report = ModuloMappingVerifier::verify(chainDfg, target, unknownEdge);
+  expect(report.contains(MappingDiagnosticCode::MMAP_UNKNOWN_EDGE),
+         "unknown edge realization is rejected");
+
+  auto duplicateEdge = makeChainMapping(target);
+  ModuloMappingTestAccess::duplicateDependence(duplicateEdge);
+  report = ModuloMappingVerifier::verify(chainDfg, target, duplicateEdge);
+  expect(report.contains(MappingDiagnosticCode::MMAP_EDGE_DUPLICATE_REALIZATION),
+         "duplicate edge realization is rejected");
+
+  auto outOfRangeTile = makeSimpleMapping(target);
+  ModuloMappingTestAccess::setPlacement(outOfRangeTile, 0, {target.array().rows, 0}, ModuloSlot(0));
+  report = ModuloMappingVerifier::verify(simpleDfg, target, outOfRangeTile);
+  expect(report.contains(MappingDiagnosticCode::MMAP_TILE_OUT_OF_RANGE),
+         "out-of-range tile is rejected");
+
+  auto outOfRangeSlot = makeSimpleMapping(target);
+  ModuloMappingTestAccess::setPlacement(outOfRangeSlot, 0, {0, 0}, ModuloSlot(1));
+  report = ModuloMappingVerifier::verify(simpleDfg, target, outOfRangeSlot);
+  expect(report.contains(MappingDiagnosticCode::MMAP_SLOT_OUT_OF_RANGE),
+         "out-of-range slot is rejected");
+
+  const auto loadStoreDfg = legalize(cgra::ir::fixtures::loadAddStore(), target);
+  auto loadOnFu = makeCoissueMapping(target);
+  ModuloMappingTestAccess::setPlacement(loadOnFu, 0, {0, 1}, ModuloSlot(0));
+  report = ModuloMappingVerifier::verify(loadStoreDfg, target, loadOnFu);
+  expect(report.contains(MappingDiagnosticCode::MMAP_OPERATION_UNSUPPORTED_ON_TILE),
+         "LOAD on non-LSU tile is rejected");
+
+  auto lsuConflict = makeCoissueMapping(target);
+  ModuloMappingTestAccess::setPlacement(lsuConflict, 2, {0, 0}, ModuloSlot(0));
+  report = ModuloMappingVerifier::verify(loadStoreDfg, target, lsuConflict);
+  expect(report.contains(MappingDiagnosticCode::MMAP_LSU_RESOURCE_CONFLICT),
+         "same LSU resource conflict is rejected");
+
+  const auto predicateDfg = legalize(cgra::ir::fixtures::predicateSelectUnsigned(), target);
+  auto wrongDomain = makePredicateMapping(target);
+  ModuloMappingTestAccess::setTransportDomain(wrongDomain, 0, NetworkDomain::Data);
+  report = ModuloMappingVerifier::verify(predicateDfg, target, wrongDomain);
+  expect(report.contains(MappingDiagnosticCode::MMAP_TRANSPORT_DOMAIN_MISMATCH),
+         "predicate dependence cannot use data transport");
+
+  auto border = makeChainMapping(target);
+  ModuloMappingTestAccess::setLink(border, 0, 0, {0, 0}, Direction::North, 0);
+  report = ModuloMappingVerifier::verify(chainDfg, target, border);
+  expect(report.contains(MappingDiagnosticCode::MMAP_LINK_INVALID_TOPOLOGY),
+         "border link is rejected");
+
+  auto gap = makeChainMapping(target);
+  ModuloMappingTestAccess::setLink(gap, 0, 0, {0, 0}, Direction::East, 2);
+  report = ModuloMappingVerifier::verify(chainDfg, target, gap);
+  expect(report.contains(MappingDiagnosticCode::MMAP_LINK_TIME_GAP_WITHOUT_STORAGE),
+         "implicit network wait is rejected");
+
+  auto badHold = makeLoadMapping(target);
+  ModuloMappingTestAccess::setHoldInterval(badHold, 1, 0, 0);
+  report = ModuloMappingVerifier::verify(legalize(cgra::ir::fixtures::recurrence(), target), target,
+                                         badHold);
+  expect(report.contains(MappingDiagnosticCode::MMAP_HOLD_INVALID_INTERVAL),
+         "zero-length VirtualHold is rejected");
+
+  auto memoryTransport = makeMemoryMapping(target);
+  ModuloMappingTestAccess::addMemoryTransport(
+      memoryTransport,
+      {0, NetworkDomain::Data, {LinkStep{NetworkDomain::Data, {0, 0}, Direction::East, 0}}, 1});
+  const auto memoryDfg = legalize(cgra::ir::fixtures::memoryDependence(), target);
+  report = ModuloMappingVerifier::verify(memoryDfg, target, memoryTransport);
+  expect(report.contains(MappingDiagnosticCode::MMAP_MEMORY_TRANSPORT_PRESENT),
+         "memory dependence transport is rejected");
+}
+
 void testTargetMutations(const cgra::TargetModel& canonical) {
   const auto chainDfg = legalize(cgra::ir::fixtures::arithmeticChain(), canonical);
   const auto chainMapping = makeChainMapping(canonical);
@@ -294,6 +453,7 @@ int main() {
     const auto target = loadTarget();
     testPositiveMappings(target);
     testInvalidMappings(target);
+    testStructuralAndTimingNegativeCases(target);
     testTargetMutations(target);
     std::cout << "CGRA_MODULO_MAPPING_VERIFIER_TEST_PASS\n";
     return 0;
