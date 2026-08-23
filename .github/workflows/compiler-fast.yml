@@ -20,14 +20,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install formatting tool
-        run: sudo apt-get update && sudo apt-get install -y clang-format
+        run: sudo apt-get update && sudo apt-get install -y clang-format-14
       - name: Check compiler formatting
         shell: bash
         run: |
           set -euo pipefail
           mapfile -t files < <(find compiler -path 'compiler/build' -prune -o -type f \( -name '*.h' -o -name '*.hpp' -o -name '*.cpp' -o -name '*.cc' \) -print)
           if ((${#files[@]})); then
-            clang-format --dry-run --Werror "${files[@]}"
+            clang-format-14 --dry-run --Werror "${files[@]}"
           fi
 
   compiler-debug:

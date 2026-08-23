@@ -138,7 +138,9 @@ capabilities, resource limits, timing semantics, numeric encodings, and the
 library does not parse RTL or Python files and does not change the existing
 `cgra.program_manifest.v1` handoff.
 
-The C++ contract build uses the CMake package `nlohmann_json` version 3.10.5.
+The C++ contract build uses the CMake package `nlohmann_json` version 3.10.5
+(install `nlohmann-json3-dev` on Ubuntu, or enable the pinned FetchContent
+dependencies in the CI preset).
 
 Build and test the standalone C++20 contract library without LLVM:
 

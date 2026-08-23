@@ -11,6 +11,12 @@ The compiler uses C++20, CMake, Ninja, and CTest. The existing target-contract
 test remains dependency-light; CI additionally enables the pinned GoogleTest
 smoke lane through `CGRA_FETCH_DEPS=ON`.
 
+The offline developer preset expects the exact CMake package
+`nlohmann_json` 3.10.5 to be installed. On Ubuntu this is typically provided
+by `nlohmann-json3-dev`; environments without that package can use
+`cmake -S compiler -B compiler/build/dev-debug -G Ninja -DCGRA_FETCH_DEPS=ON`
+to fetch the pinned dependencies.
+
 Developer build:
 
 ```bash
@@ -69,8 +75,9 @@ Implicit `std::random_device` seeding is prohibited.
 
 ## Failure Reproducers
 
-Test-only artifact helpers write under `CGRA_TEST_ARTIFACT_DIR`, or
-`compiler/build/failures/` when unset. A nontrivial compiler failure should be
+Test-only artifact helpers write under `CGRA_TEST_ARTIFACT_DIR`, or a
+`build/failures/` directory below the current working directory when unset. A
+nontrivial compiler failure should be
 self-contained and avoid absolute machine paths.
 
 The reserved failure schema is `cgra.compiler.failure.v1`:

@@ -36,6 +36,7 @@ if(CGRA_FETCH_DEPS)
   FetchContent_MakeAvailable(googletest)
 else()
   find_package(nlohmann_json 3.10.5 EXACT REQUIRED)
+  find_package(GTest QUIET)
 endif()
 
 add_library(cgra_target
@@ -72,6 +73,7 @@ if(CGRA_BUILD_TESTS)
     SOURCES tests/Support/SupportSmokeTest.cpp
             tests/support/TestArtifacts.cpp
             tests/support/TestSeed.cpp
+    LIBRARIES nlohmann_json::nlohmann_json
     DEFINITIONS CGRA_REPOSITORY_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/.."
   )
   add_test(NAME cgra-test-seed-env COMMAND cgra-test-support --expect-seed 42)
@@ -82,14 +84,20 @@ if(CGRA_BUILD_TESTS)
       "CGRA_TEST_SEED=42;CGRA_TEST_ARTIFACT_DIR=${CMAKE_BINARY_DIR}/failures"
   )
 
+  set(CGRA_GTEST_MAIN_TARGET)
   if(TARGET gtest_main)
+    set(CGRA_GTEST_MAIN_TARGET gtest_main)
+  elseif(TARGET GTest::gtest_main)
+    set(CGRA_GTEST_MAIN_TARGET GTest::gtest_main)
+  endif()
+  if(CGRA_GTEST_MAIN_TARGET)
     cgra_add_test(
       NAME cgra-gtest-smoke
       TYPE unit
       SOURCES tests/Support/GTestSmokeTest.cpp
               tests/support/TestArtifacts.cpp
               tests/support/TestSeed.cpp
-      LIBRARIES gtest_main
+      LIBRARIES ${CGRA_GTEST_MAIN_TARGET} nlohmann_json::nlohmann_json
       DEFINITIONS CGRA_REPOSITORY_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/.."
     )
   endif()
