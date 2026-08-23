@@ -28,8 +28,8 @@ public:
   unsigned paddingLsb() const noexcept { return paddingLsb_; }
   unsigned paddingWidth() const noexcept { return paddingWidth_; }
   std::uint64_t paddingValue() const noexcept { return paddingValue_; }
-  const std::vector<ControlField> &fields() const noexcept { return fields_; }
-  const ControlField &field(std::string_view name) const;
+  const std::vector<ControlField>& fields() const noexcept { return fields_; }
+  const ControlField& field(std::string_view name) const;
 
 private:
   friend class TargetModel;
@@ -85,12 +85,12 @@ struct TileControl {
 struct EncodedControl {
   std::array<std::uint32_t, 4> chunks{};
 
-  bool operator==(const EncodedControl &) const = default;
+  bool operator==(const EncodedControl&) const = default;
 };
 
 class TargetModel;
 
-EncodedControl encode(const TileControl &control, const TargetModel &target);
-TileControl decode(const EncodedControl &encoded, const TargetModel &target);
+EncodedControl encode(const TileControl& control, const TargetModel& target);
+TileControl decode(const EncodedControl& encoded, const TargetModel& target);
 
 } // namespace cgra

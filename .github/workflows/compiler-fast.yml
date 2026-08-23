@@ -1,0 +1,101 @@
+name: compiler-fast
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: compiler-fast-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  format:
+    name: compiler-format
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install formatting tool
+        run: sudo apt-get update && sudo apt-get install -y clang-format
+      - name: Check compiler formatting
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t files < <(find compiler -path 'compiler/build' -prune -o -type f \( -name '*.h' -o -name '*.hpp' -o -name '*.cpp' -o -name '*.cc' \) -print)
+          if ((${#files[@]})); then
+            clang-format --dry-run --Werror "${files[@]}"
+          fi
+
+  compiler-debug:
+    name: compiler-debug
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install compiler dependencies
+        run: sudo apt-get update && sudo apt-get install -y ccache clang cmake g++ ninja-build
+      - name: Configure
+        run: cmake --preset ci-debug -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+        working-directory: compiler
+      - name: Build
+        run: cmake --build --preset ci-debug --parallel
+        working-directory: compiler
+      - name: Test
+        run: ctest --preset ci-debug --output-on-failure
+        working-directory: compiler
+      - name: Upload compiler diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: compiler-debug-failures
+          if-no-files-found: ignore
+          path: |
+            compiler/build/ci-debug/failures/**
+            compiler/build/ci-debug/Testing/Temporary/LastTest.log
+            compiler/build/ci-debug/metrics/**
+
+  compiler-sanitize:
+    name: compiler-sanitize
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install sanitizer dependencies
+        run: sudo apt-get update && sudo apt-get install -y ccache clang cmake ninja-build
+      - name: Configure
+        run: cmake --preset ci-sanitize -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+        working-directory: compiler
+      - name: Build
+        run: cmake --build --preset ci-sanitize --parallel
+        working-directory: compiler
+      - name: Test unit and semantic lanes
+        run: ctest --preset ci-sanitize --output-on-failure
+        working-directory: compiler
+      - name: Upload sanitizer diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: compiler-sanitizer-failures
+          if-no-files-found: ignore
+          path: |
+            compiler/build/ci-sanitize/failures/**
+            compiler/build/ci-sanitize/Testing/Temporary/LastTest.log
+            compiler/build/ci-sanitize/metrics/**
+
+  compiler-fast-gate:
+    name: compiler-fast-gate
+    if: always()
+    needs: [format, compiler-debug, compiler-sanitize]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require all compiler lanes
+        shell: bash
+        run: |
+          if [[ "${{ needs.format.result }}" != success || \
+                "${{ needs.compiler-debug.result }}" != success || \
+                "${{ needs.compiler-sanitize.result }}" != success ]]; then
+            echo "Compiler CI lane failed or was cancelled."
+            exit 1
+          fi

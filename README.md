@@ -161,6 +161,10 @@ The contract tests validate malformed-target diagnostics, architectural
 resource constants, every packed control encoding, known control images, and
 exact decode-to-encode round trips for the retained shared-memory schedule.
 
+Compiler CI conventions, deterministic test seeds, failure reproducer artifacts,
+metrics schemas, and the local equivalents of both GitHub Actions workflows are
+documented in [compiler/docs/CI_CONTRACT.md](compiler/docs/CI_CONTRACT.md).
+
 ## External Program Replay
 
 The compiler/framework handoff is a scheduled and target-encoded

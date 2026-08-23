@@ -70,26 +70,30 @@ struct LsuTileDesc {
 
 class TargetModel {
 public:
-  static TargetModel loadFromFile(const std::filesystem::path &path);
+  static TargetModel loadFromFile(const std::filesystem::path& path);
 
   std::string_view name() const noexcept { return name_; }
   unsigned contractVersion() const noexcept { return contractVersion_; }
-  const ArrayDesc &array() const noexcept { return array_; }
-  const RegisterFileDesc &dataRF() const noexcept { return dataRF_; }
-  const RegisterFileDesc &predicateRF() const noexcept { return predicateRF_; }
-  const InterconnectDesc &dataNetwork() const noexcept { return interconnect_; }
-  const InterconnectDesc &predicateNetwork() const noexcept { return interconnect_; }
-  const MemoryDesc &memory() const noexcept { return memory_; }
-  const LoopExecutionDesc &loopExecution() const noexcept { return loopExecution_; }
-  const ControlLayout &controlLayout() const noexcept { return controlLayout_; }
-  const std::vector<LsuTileDesc> &lsuTiles() const noexcept { return lsuTiles_; }
+  const ArrayDesc& array() const noexcept { return array_; }
+  const RegisterFileDesc& dataRF() const noexcept { return dataRF_; }
+  const RegisterFileDesc& predicateRF() const noexcept { return predicateRF_; }
+  const InterconnectDesc& dataNetwork() const noexcept { return interconnect_; }
+  const InterconnectDesc& predicateNetwork() const noexcept { return interconnect_; }
+  const MemoryDesc& memory() const noexcept { return memory_; }
+  const LoopExecutionDesc& loopExecution() const noexcept { return loopExecution_; }
+  const ControlLayout& controlLayout() const noexcept { return controlLayout_; }
+  const std::vector<LsuTileDesc>& lsuTiles() const noexcept { return lsuTiles_; }
 
   bool tileHasLSU(unsigned row, unsigned col) const noexcept;
   unsigned encodingValue(std::string_view domain, std::string_view name) const;
   std::string encodingName(std::string_view domain, unsigned value) const;
   unsigned opcodeValue(std::string_view name) const { return encodingValue("op", name); }
-  unsigned dataSourceValue(std::string_view name) const { return encodingValue("data_source", name); }
-  unsigned predicateSourceValue(std::string_view name) const { return encodingValue("predicate_source", name); }
+  unsigned dataSourceValue(std::string_view name) const {
+    return encodingValue("data_source", name);
+  }
+  unsigned predicateSourceValue(std::string_view name) const {
+    return encodingValue("predicate_source", name);
+  }
 
 private:
   std::string name_;
