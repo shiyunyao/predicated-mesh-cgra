@@ -60,8 +60,8 @@ std::span<const EdgeId> DFG::outgoing(NodeId id) const {
 }
 
 NodeId DFG::appendNode(Node node) {
-  if (node.id != nodes_.size() || nodeIndices_.contains(node.id))
-    throw std::invalid_argument("DFG node IDs must be unique and allocated in order");
+  if (nodeIndices_.contains(node.id))
+    throw std::invalid_argument("DFG node ID is duplicated");
   nodeIndices_.emplace(node.id, nodes_.size());
   nodes_.push_back(std::move(node));
   incoming_.emplace_back();
@@ -70,24 +70,24 @@ NodeId DFG::appendNode(Node node) {
 }
 
 ExternalValueId DFG::appendExternal(ExternalValue value) {
-  if (value.id != externalValues_.size() || externalIndices_.contains(value.id))
-    throw std::invalid_argument("DFG external value IDs must be allocated in order");
+  if (externalIndices_.contains(value.id))
+    throw std::invalid_argument("DFG external value ID is duplicated");
   externalIndices_.emplace(value.id, externalValues_.size());
   externalValues_.push_back(std::move(value));
   return externalValues_.back().id;
 }
 
 ConstantId DFG::appendConstant(ConstantValue value) {
-  if (value.id != constants_.size() || constantIndices_.contains(value.id))
-    throw std::invalid_argument("DFG constant IDs must be allocated in order");
+  if (constantIndices_.contains(value.id))
+    throw std::invalid_argument("DFG constant ID is duplicated");
   constantIndices_.emplace(value.id, constants_.size());
   constants_.push_back(std::move(value));
   return constants_.back().id;
 }
 
 LiveOutId DFG::appendLiveOut(LiveOut value) {
-  if (value.id != liveOuts_.size() || liveOutIndices_.contains(value.id))
-    throw std::invalid_argument("DFG live-out IDs must be allocated in order");
+  if (liveOutIndices_.contains(value.id))
+    throw std::invalid_argument("DFG live-out ID is duplicated");
   if (!containsNode(value.source))
     throw std::invalid_argument("DFG live-out references an unknown source node");
   liveOutIndices_.emplace(value.id, liveOuts_.size());
@@ -96,8 +96,8 @@ LiveOutId DFG::appendLiveOut(LiveOut value) {
 }
 
 EdgeId DFG::appendEdge(Edge edge) {
-  if (edge.id != edges_.size() || edgeIndices_.contains(edge.id))
-    throw std::invalid_argument("DFG edge IDs must be unique and allocated in order");
+  if (edgeIndices_.contains(edge.id))
+    throw std::invalid_argument("DFG edge ID is duplicated");
   if (!containsNode(edge.src) || !containsNode(edge.dst))
     throw std::invalid_argument("DFG edge endpoints must reference existing nodes");
   edgeIndices_.emplace(edge.id, edges_.size());

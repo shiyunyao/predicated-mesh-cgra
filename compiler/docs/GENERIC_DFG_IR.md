@@ -59,7 +59,11 @@ memory edges never allocate a physical route.
 
 The container accepts directed cycles. For example, a recurrence can be
 represented with an edge `%n1 -> %n1` and `distance = 1` without copying the
-loop body.
+loop body. A value edge with positive distance also carries a
+`RecurrenceBoundary` sequence: one external or constant seed for each
+pre-seed iteration offset in `[0, distance)`. Boundary values are entry state,
+not ordinary operand providers, so they never create a duplicate provider for
+the steady-state edge. Distance-zero edges cannot carry boundary values.
 
 ## IDs, Ownership, and Determinism
 
@@ -68,10 +72,10 @@ value. Public handles are `NodeId`, `EdgeId`, `ExternalValueId`, `ConstantId`,
 and `LiveOutId`.
 Readers expose const spans; mutation is performed through `DFGBuilder`.
 The V1 builder allocates each handle monotonically for deterministic fixtures;
-callers must use ID lookup and must not treat an ID as a storage-vector index.
-Insertion IDs are stable for the graph lifetime and all public iteration is in
-ID order. Adjacency queries are maintained directly rather than scanning all
-edges.
+imported debug graphs may preserve sparse, non-contiguous IDs. Callers must use
+ID lookup and must not treat an ID as a storage-vector index. IDs are stable for
+the graph lifetime and adjacency queries are maintained directly rather than
+scanning all edges.
 
 The builder rejects duplicate operand providers, unknown references, invalid
 operand indices, and invalid endpoints. Full semantic legality, such as type
@@ -81,11 +85,11 @@ DFG verifier in T-COMP-002.
 ## Debug JSON
 
 `cgra::ir::writeJson` and `readJson` implement the versioned debug schema
-`cgra.dfg.debug.v1`. JSON arrays are ordered by stable ID and bindings are
-serialized by `(node, operand)`, so serialization is deterministic and suitable
-for fixtures and failure artifacts. The `live_outs` array records each output's
-ID, name, type, and source node. This is a debug/test interchange format, not a
-permanent compiler ABI.
+`cgra.dfg.debug.v1`. Arrays retain the graph's deterministic insertion order
+while each entry carries its stable ID; bindings are serialized by
+`(node, operand)`. Data and predicate recurrence boundaries serialize each
+offset and its external/constant seed. This is a debug/test interchange
+format, not a permanent compiler ABI.
 
 Canonical reusable fixtures are provided in `compiler/tests/IR/Fixtures.*`:
 

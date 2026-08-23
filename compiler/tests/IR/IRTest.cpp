@@ -4,8 +4,11 @@
 #include "cgra/IR/DFGSerialization.h"
 #include "support/TestArtifacts.h"
 
+#include <nlohmann/json.hpp>
+
 #include <cassert>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <stdexcept>
 #include <string>
@@ -67,6 +70,7 @@ void testLiveOutAndProviderOwnership() {
 void testRecurrenceAndMemoryEdges() {
   DFGBuilder builder("recurrence");
   const auto address = builder.addExternal("address", ValueType::i32());
+  const auto initial = builder.addExternal("initial", ValueType::i32());
   const auto load = builder.addNode(Opcode::Load, {ValueType::i32()}, ValueType::i32(),
                                     std::nullopt, MemoryOpInfo{32, false});
   const auto add =
@@ -76,7 +80,7 @@ void testRecurrenceAndMemoryEdges() {
                       ValueType::voidTy(), std::nullopt, MemoryOpInfo{32, false});
   builder.bindExternal(load, 0, address);
   builder.addDataEdge(load, add, 0);
-  builder.addDataEdge(add, add, 1, 1);
+  builder.addDataEdge(add, add, 1, 1, RecurrenceBoundary{{{0, ExternalValueRef{initial}}}});
   builder.bindExternal(store, 0, address);
   builder.addDataEdge(add, store, 1);
   builder.addMemoryEdge(store, load, MemoryDepKind::RAW, 1);
@@ -124,6 +128,42 @@ void testSerialization() {
   std::filesystem::remove(path);
   expect(original == restored, "JSON semantic round-trip");
   expect(cgra::ir::dump(restored) == first, "round-trip debug dump");
+
+  const auto recurrence = fixtures::recurrence();
+  const auto recurrencePath = std::filesystem::temp_directory_path() / "cgra-dfg-recurrence.json";
+  cgra::ir::writeJson(recurrence, recurrencePath);
+  const auto restoredRecurrence = cgra::ir::readJson(recurrencePath);
+  std::filesystem::remove(recurrencePath);
+  expect(recurrence == restoredRecurrence, "recurrence boundary JSON semantic round-trip");
+
+  const auto sparseSourcePath =
+      std::filesystem::temp_directory_path() / "cgra-dfg-sparse-source.json";
+  cgra::ir::writeJson(fixtures::simpleAdd(), sparseSourcePath);
+  std::ifstream sparseSource(sparseSourcePath);
+  nlohmann::json sparse;
+  sparseSource >> sparse;
+  std::filesystem::remove(sparseSourcePath);
+  sparse["external_values"][0]["id"] = 10;
+  sparse["external_values"][1]["id"] = 20;
+  sparse["nodes"][0]["id"] = 42;
+  sparse["live_outs"][0]["id"] = 99;
+  sparse["live_outs"][0]["node"] = 42;
+  for (auto& binding : sparse["external_bindings"]) {
+    binding["node"] = 42;
+    if (binding.contains("external"))
+      binding["external"] = binding["external"].get<unsigned>() == 0 ? 10 : 20;
+  }
+  const auto sparseRestored = cgra::ir::parse(sparse.dump());
+  expect(sparseRestored.node(42).id == 42 && sparseRestored.externalValue(20).id == 20,
+         "sparse semantic IDs survive DFG import");
+  const auto sparseOutputPath =
+      std::filesystem::temp_directory_path() / "cgra-dfg-sparse-output.json";
+  cgra::ir::writeJson(sparseRestored, sparseOutputPath);
+  std::ifstream sparseOutput(sparseOutputPath);
+  nlohmann::json serializedSparse;
+  sparseOutput >> serializedSparse;
+  std::filesystem::remove(sparseOutputPath);
+  expect(serializedSparse["nodes"][0]["id"] == 42, "sparse IDs remain stable in DFG serialization");
 }
 
 void testCanonicalFixtures() {

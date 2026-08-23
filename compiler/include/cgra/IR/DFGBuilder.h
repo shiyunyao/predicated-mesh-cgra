@@ -13,20 +13,31 @@ public:
   explicit DFGBuilder(std::string name = {}) : dfg_(std::move(name)) {}
 
   ExternalValueId addExternal(std::string name, ValueType type);
+  ExternalValueId importExternal(ExternalValue value) {
+    return dfg_.appendExternal(std::move(value));
+  }
   ConstantId addConstant(ValueType type, std::uint64_t bits);
+  ConstantId importConstant(ConstantValue value) { return dfg_.appendConstant(std::move(value)); }
   LiveOutId addLiveOut(std::string name, ValueType type, NodeId source);
   NodeId addNode(Opcode opcode, std::vector<ValueType> operandTypes, ValueType resultType,
                  std::optional<ICmpPredicate> predicate = std::nullopt,
                  std::optional<MemoryOpInfo> memoryInfo = std::nullopt,
                  std::optional<SourceInfo> source = std::nullopt);
+  NodeId importNode(Node node) { return dfg_.appendNode(std::move(node)); }
 
   void bindExternal(NodeId node, std::uint32_t operand, ExternalValueId value);
   void bindConstant(NodeId node, std::uint32_t operand, ConstantId value);
   EdgeId addDataEdge(NodeId src, NodeId dst, std::uint32_t dstOperand, std::uint32_t distance = 0);
+  EdgeId addDataEdge(NodeId src, NodeId dst, std::uint32_t dstOperand, std::uint32_t distance,
+                     std::optional<RecurrenceBoundary> boundary);
   EdgeId addPredicateEdge(NodeId src, NodeId dst, std::uint32_t dstOperand,
                           std::uint32_t distance = 0);
+  EdgeId addPredicateEdge(NodeId src, NodeId dst, std::uint32_t dstOperand, std::uint32_t distance,
+                          std::optional<RecurrenceBoundary> boundary);
   EdgeId addMemoryEdge(NodeId src, NodeId dst, MemoryDepKind dependence,
                        std::uint32_t distance = 0);
+  LiveOutId importLiveOut(LiveOut liveOut) { return dfg_.appendLiveOut(std::move(liveOut)); }
+  EdgeId importEdge(Edge edge) { return dfg_.appendEdge(std::move(edge)); }
 
   DFG finish() { return std::move(dfg_); }
 

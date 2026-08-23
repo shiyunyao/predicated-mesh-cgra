@@ -82,16 +82,27 @@ void DFGBuilder::bindConstant(NodeId node, std::uint32_t operand, ConstantId val
 
 EdgeId DFGBuilder::addDataEdge(NodeId src, NodeId dst, std::uint32_t dstOperand,
                                std::uint32_t distance) {
+  return addDataEdge(src, dst, dstOperand, distance, std::nullopt);
+}
+
+EdgeId DFGBuilder::addDataEdge(NodeId src, NodeId dst, std::uint32_t dstOperand,
+                               std::uint32_t distance, std::optional<RecurrenceBoundary> boundary) {
   checkProviderAvailable(dst, dstOperand);
-  return dfg_.appendEdge(
-      {static_cast<EdgeId>(dfg_.edges().size()), src, dst, distance, DataEdgeInfo{dstOperand}});
+  return dfg_.appendEdge({static_cast<EdgeId>(dfg_.edges().size()), src, dst, distance,
+                          DataEdgeInfo{dstOperand, std::move(boundary)}});
 }
 
 EdgeId DFGBuilder::addPredicateEdge(NodeId src, NodeId dst, std::uint32_t dstOperand,
                                     std::uint32_t distance) {
+  return addPredicateEdge(src, dst, dstOperand, distance, std::nullopt);
+}
+
+EdgeId DFGBuilder::addPredicateEdge(NodeId src, NodeId dst, std::uint32_t dstOperand,
+                                    std::uint32_t distance,
+                                    std::optional<RecurrenceBoundary> boundary) {
   checkProviderAvailable(dst, dstOperand);
   return dfg_.appendEdge({static_cast<EdgeId>(dfg_.edges().size()), src, dst, distance,
-                          PredicateEdgeInfo{dstOperand}});
+                          PredicateEdgeInfo{dstOperand, std::move(boundary)}});
 }
 
 EdgeId DFGBuilder::addMemoryEdge(NodeId src, NodeId dst, MemoryDepKind dependence,

@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <fstream>
 #include <map>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 #include <unordered_map>
@@ -167,6 +168,16 @@ std::string_view toString(DFGDiagnosticCode code) {
     return "DFG_MEMORY_EDGE_INVALID_DEPENDENCE";
   case DFGDiagnosticCode::DFG_MEMORY_EDGE_UNEXPECTED_OPERAND:
     return "DFG_MEMORY_EDGE_UNEXPECTED_OPERAND";
+  case DFGDiagnosticCode::DFG_RECURRENCE_BOUNDARY_MISSING:
+    return "DFG_RECURRENCE_BOUNDARY_MISSING";
+  case DFGDiagnosticCode::DFG_RECURRENCE_BOUNDARY_OFFSET_OUT_OF_RANGE:
+    return "DFG_RECURRENCE_BOUNDARY_OFFSET_OUT_OF_RANGE";
+  case DFGDiagnosticCode::DFG_RECURRENCE_BOUNDARY_DUPLICATE_OFFSET:
+    return "DFG_RECURRENCE_BOUNDARY_DUPLICATE_OFFSET";
+  case DFGDiagnosticCode::DFG_RECURRENCE_BOUNDARY_SOURCE_UNKNOWN:
+    return "DFG_RECURRENCE_BOUNDARY_SOURCE_UNKNOWN";
+  case DFGDiagnosticCode::DFG_RECURRENCE_BOUNDARY_TYPE_MISMATCH:
+    return "DFG_RECURRENCE_BOUNDARY_TYPE_MISMATCH";
   case DFGDiagnosticCode::DFG_LIVEOUT_UNKNOWN_SOURCE:
     return "DFG_LIVEOUT_UNKNOWN_SOURCE";
   case DFGDiagnosticCode::DFG_LIVEOUT_TYPE_MISMATCH:
@@ -611,6 +622,8 @@ private:
       add(DFGDiagnosticCode::DFG_EDGE_VALUE_TYPE_MISMATCH,
           "data edge source type does not match destination operand type", destination.id, edge.id,
           operand);
+    verifyBoundary(edge, std::get<DataEdgeInfo>(edge.info).boundary,
+                   destination.operandTypes[operand]);
   }
 
   void verifyPredicateEdge(const Edge& edge, const Node& source, const Node& destination) {
@@ -635,6 +648,60 @@ private:
       add(DFGDiagnosticCode::DFG_EDGE_VALUE_TYPE_MISMATCH,
           "predicate edge source type does not match destination operand type", destination.id,
           edge.id, operand);
+    verifyBoundary(edge, std::get<PredicateEdgeInfo>(edge.info).boundary,
+                   destination.operandTypes[operand]);
+  }
+
+  void verifyBoundary(const Edge& edge, const std::optional<RecurrenceBoundary>& boundary,
+                      const ValueType& expectedType) {
+    if (edge.distance == 0) {
+      if (boundary)
+        add(DFGDiagnosticCode::DFG_RECURRENCE_BOUNDARY_OFFSET_OUT_OF_RANGE,
+            "distance-zero edge cannot carry recurrence boundary values", std::nullopt, edge.id);
+      return;
+    }
+    if (!boundary || boundary->values.size() != edge.distance) {
+      add(DFGDiagnosticCode::DFG_RECURRENCE_BOUNDARY_MISSING,
+          "loop-carried edge requires one boundary value for every pre-seed iteration",
+          std::nullopt, edge.id);
+      return;
+    }
+    std::set<std::uint32_t> offsets;
+    for (const auto& value : boundary->values) {
+      if (value.iterationOffset >= edge.distance) {
+        add(DFGDiagnosticCode::DFG_RECURRENCE_BOUNDARY_OFFSET_OUT_OF_RANGE,
+            "recurrence boundary iteration offset is outside the edge distance", std::nullopt,
+            edge.id);
+        continue;
+      }
+      if (!offsets.insert(value.iterationOffset).second)
+        add(DFGDiagnosticCode::DFG_RECURRENCE_BOUNDARY_DUPLICATE_OFFSET,
+            "recurrence boundary repeats an iteration offset", std::nullopt, edge.id);
+      const ValueType* provided = nullptr;
+      if (std::holds_alternative<ExternalValueRef>(value.value)) {
+        const auto id = std::get<ExternalValueRef>(value.value).value;
+        const auto it = externals_.find(id);
+        if (it == externals_.end())
+          add(DFGDiagnosticCode::DFG_RECURRENCE_BOUNDARY_SOURCE_UNKNOWN,
+              "recurrence boundary references an unknown external value", std::nullopt, edge.id,
+              std::nullopt, id);
+        else
+          provided = &it->second->type;
+      } else {
+        const auto id = std::get<ConstantRef>(value.value).value;
+        const auto it = constants_.find(id);
+        if (it == constants_.end())
+          add(DFGDiagnosticCode::DFG_RECURRENCE_BOUNDARY_SOURCE_UNKNOWN,
+              "recurrence boundary references an unknown constant", std::nullopt, edge.id,
+              std::nullopt, std::nullopt, id);
+        else
+          provided = &it->second->type;
+      }
+      if (provided && *provided != expectedType)
+        add(DFGDiagnosticCode::DFG_RECURRENCE_BOUNDARY_TYPE_MISMATCH,
+            "recurrence boundary value type does not match destination operand", std::nullopt,
+            edge.id);
+    }
   }
 
   void verifyMemoryEdge(const Edge& edge, const Node& source, const Node& destination) {

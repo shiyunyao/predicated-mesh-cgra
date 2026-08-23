@@ -17,6 +17,34 @@ namespace cgra::ir {
 
 class DFGTestAccess {
 public:
+  static DFG missingBoundary() {
+    auto dfg = fixtures::recurrence();
+    std::get<DataEdgeInfo>(dfg.edges_[1].info).boundary.reset();
+    return dfg;
+  }
+
+  static DFG malformedBoundary() {
+    DFGBuilder builder("malformed_boundary");
+    const auto seed = builder.addExternal("seed", ValueType::i32());
+    const auto add =
+        builder.addNode(Opcode::Add, {ValueType::i32(), ValueType::i32()}, ValueType::i32());
+    builder.bindExternal(add, 1, seed);
+    builder.addDataEdge(
+        add, add, 0, 2,
+        RecurrenceBoundary{{{0, ExternalValueRef{seed}}, {0, ExternalValueRef{seed}}}});
+    return builder.finish();
+  }
+
+  static DFG boundaryTypeMismatch() {
+    DFGBuilder builder("boundary_type_mismatch");
+    const auto seed = builder.addExternal("seed", ValueType::f32());
+    const auto add =
+        builder.addNode(Opcode::Add, {ValueType::i32(), ValueType::i32()}, ValueType::i32());
+    builder.bindExternal(add, 1, builder.addExternal("value", ValueType::i32()));
+    builder.addDataEdge(add, add, 0, 1, RecurrenceBoundary{{{0, ExternalValueRef{seed}}}});
+    return builder.finish();
+  }
+
   static DFG duplicateProvider() {
     DFGBuilder builder("duplicate_provider");
     const auto value = builder.addExternal("value", ValueType::i32());
@@ -280,6 +308,15 @@ void testDeterminismAndReadOnly() {
   expect(first.format() == second.format(), "formatted diagnostics must be deterministic");
 }
 
+void testRecurrenceBoundaries() {
+  expectCode(DFGVerifier::verify(DFGTestAccess::missingBoundary()),
+             DFGDiagnosticCode::DFG_RECURRENCE_BOUNDARY_MISSING);
+  expectCode(DFGVerifier::verify(DFGTestAccess::malformedBoundary()),
+             DFGDiagnosticCode::DFG_RECURRENCE_BOUNDARY_DUPLICATE_OFFSET);
+  expectCode(DFGVerifier::verify(DFGTestAccess::boundaryTypeMismatch()),
+             DFGDiagnosticCode::DFG_RECURRENCE_BOUNDARY_TYPE_MISMATCH);
+}
+
 void testMalformedJsonBoundary() {
   const auto valid = dump(fixtures::simpleAdd());
   static_cast<void>(valid);
@@ -317,6 +354,7 @@ int main() {
     testStructuralCorpus();
     testFocusedOpcodeCorpus();
     testDeterminismAndReadOnly();
+    testRecurrenceBoundaries();
     testMalformedJsonBoundary();
     std::cout << "CGRA_DFG_VERIFIER_TEST_PASS\n";
     return 0;

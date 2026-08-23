@@ -68,10 +68,42 @@ Json edgeJson(const Edge& edge) {
   case Edge::Kind::Data:
     value["kind"] = "data";
     value["operand"] = std::get<DataEdgeInfo>(edge.info).dstOperand;
+    if (const auto& boundary = std::get<DataEdgeInfo>(edge.info).boundary) {
+      value["boundary"] = Json::array();
+      for (const auto& item : boundary->values) {
+        Json entry = {{"iteration_offset", item.iterationOffset}};
+        std::visit(
+            [&](const auto& source) {
+              using Source = std::decay_t<decltype(source)>;
+              if constexpr (std::is_same_v<Source, ExternalValueRef>)
+                entry["external"] = source.value;
+              else
+                entry["constant"] = source.value;
+            },
+            item.value);
+        value["boundary"].push_back(std::move(entry));
+      }
+    }
     break;
   case Edge::Kind::Predicate:
     value["kind"] = "predicate";
     value["operand"] = std::get<PredicateEdgeInfo>(edge.info).dstOperand;
+    if (const auto& boundary = std::get<PredicateEdgeInfo>(edge.info).boundary) {
+      value["boundary"] = Json::array();
+      for (const auto& item : boundary->values) {
+        Json entry = {{"iteration_offset", item.iterationOffset}};
+        std::visit(
+            [&](const auto& source) {
+              using Source = std::decay_t<decltype(source)>;
+              if constexpr (std::is_same_v<Source, ExternalValueRef>)
+                entry["external"] = source.value;
+              else
+                entry["constant"] = source.value;
+            },
+            item.value);
+        value["boundary"].push_back(std::move(entry));
+      }
+    }
     break;
   case Edge::Kind::Memory:
     value["kind"] = "memory";
@@ -79,6 +111,29 @@ Json edgeJson(const Edge& edge) {
     break;
   }
   return value;
+}
+
+std::optional<RecurrenceBoundary> parseBoundary(const Json& edge) {
+  if (!edge.contains("boundary"))
+    return std::nullopt;
+  const auto& values = edge.at("boundary");
+  if (!values.is_array())
+    throw std::invalid_argument("edge.boundary must be an array");
+  RecurrenceBoundary boundary;
+  for (const auto& value : values) {
+    const auto offset = required<std::uint32_t>(value, "iteration_offset", "edge.boundary");
+    const bool hasExternal = value.contains("external");
+    const bool hasConstant = value.contains("constant");
+    if (hasExternal == hasConstant)
+      throw std::invalid_argument("edge.boundary entry must contain exactly one source");
+    ExternalOperandBinding source =
+        hasExternal ? ExternalOperandBinding{ExternalValueRef{
+                          required<ExternalValueId>(value, "external", "edge.boundary")}}
+                    : ExternalOperandBinding{
+                          ConstantRef{required<ConstantId>(value, "constant", "edge.boundary")}};
+    boundary.values.push_back({offset, source});
+  }
+  return boundary;
 }
 
 } // namespace
@@ -152,10 +207,9 @@ DFG parse(std::string_view jsonText) {
     throw std::invalid_argument("DFG.external_values must be an array");
   for (std::size_t index = 0; index < externals.size(); ++index) {
     const auto& value = externals.at(index);
-    if (required<ExternalValueId>(value, "id", "external value") != index)
-      throw std::invalid_argument("external value IDs must be serialized in order");
-    builder.addExternal(required<std::string>(value, "name", "external value"),
-                        parseType(value.at("type"), "external value type"));
+    builder.importExternal({required<ExternalValueId>(value, "id", "external value"),
+                            parseType(value.at("type"), "external value type"),
+                            required<std::string>(value, "name", "external value")});
   }
 
   const auto& constants = root.at("constants");
@@ -163,10 +217,9 @@ DFG parse(std::string_view jsonText) {
     throw std::invalid_argument("DFG.constants must be an array");
   for (std::size_t index = 0; index < constants.size(); ++index) {
     const auto& value = constants.at(index);
-    if (required<ConstantId>(value, "id", "constant") != index)
-      throw std::invalid_argument("constant IDs must be serialized in order");
-    builder.addConstant(parseType(value.at("type"), "constant type"),
-                        required<std::uint64_t>(value, "bits", "constant"));
+    builder.importConstant({required<ConstantId>(value, "id", "constant"),
+                            parseType(value.at("type"), "constant type"),
+                            required<std::uint64_t>(value, "bits", "constant")});
   }
 
   const auto& nodes = root.at("nodes");
@@ -174,8 +227,7 @@ DFG parse(std::string_view jsonText) {
     throw std::invalid_argument("DFG.nodes must be an array");
   for (std::size_t index = 0; index < nodes.size(); ++index) {
     const auto& value = nodes.at(index);
-    if (required<NodeId>(value, "id", "node") != index)
-      throw std::invalid_argument("node IDs must be serialized in order");
+    const auto id = required<NodeId>(value, "id", "node");
     std::vector<ValueType> operandTypes;
     for (const auto& type : required<Json>(value, "operand_types", "node"))
       operandTypes.push_back(parseType(type, "node operand type"));
@@ -191,9 +243,9 @@ DFG parse(std::string_view jsonText) {
     std::optional<SourceInfo> source;
     if (value.contains("source"))
       source = SourceInfo{required<std::string>(value.at("source"), "label", "node.source")};
-    builder.addNode(opcodeFromString(required<std::string>(value, "opcode", "node")),
-                    std::move(operandTypes), parseType(value.at("result_type"), "node result"),
-                    predicate, memory, source);
+    builder.importNode({id, opcodeFromString(required<std::string>(value, "opcode", "node")),
+                        parseType(value.at("result_type"), "node result"), std::move(operandTypes),
+                        predicate, memory, source});
   }
 
   const auto liveOuts = root.value("live_outs", Json::array());
@@ -201,11 +253,10 @@ DFG parse(std::string_view jsonText) {
     throw std::invalid_argument("DFG.live_outs must be an array");
   for (std::size_t index = 0; index < liveOuts.size(); ++index) {
     const auto& value = liveOuts.at(index);
-    if (required<LiveOutId>(value, "id", "live-out") != index)
-      throw std::invalid_argument("live-out IDs must be serialized in order");
-    builder.addLiveOut(required<std::string>(value, "name", "live-out"),
-                       parseType(value.at("type"), "live-out type"),
-                       required<NodeId>(value, "node", "live-out"));
+    builder.importLiveOut({required<LiveOutId>(value, "id", "live-out"),
+                           parseType(value.at("type"), "live-out type"),
+                           required<std::string>(value, "name", "live-out"),
+                           required<NodeId>(value, "node", "live-out")});
   }
 
   const auto& bindings = root.at("external_bindings");
@@ -228,23 +279,25 @@ DFG parse(std::string_view jsonText) {
     throw std::invalid_argument("DFG.edges must be an array");
   for (std::size_t index = 0; index < edges.size(); ++index) {
     const auto& edge = edges.at(index);
-    if (required<EdgeId>(edge, "id", "edge") != index)
-      throw std::invalid_argument("edge IDs must be serialized in order");
+    const auto id = required<EdgeId>(edge, "id", "edge");
     const auto src = required<NodeId>(edge, "src", "edge");
     const auto dst = required<NodeId>(edge, "dst", "edge");
     const auto distance = required<std::uint32_t>(edge, "distance", "edge");
     const auto kind = required<std::string>(edge, "kind", "edge");
     if (kind == "data")
-      builder.addDataEdge(src, dst, required<std::uint32_t>(edge, "operand", "edge"), distance);
+      builder.importEdge(
+          {id, src, dst, distance,
+           DataEdgeInfo{required<std::uint32_t>(edge, "operand", "edge"), parseBoundary(edge)}});
     else if (kind == "predicate")
-      builder.addPredicateEdge(src, dst, required<std::uint32_t>(edge, "operand", "edge"),
-                               distance);
+      builder.importEdge({id, src, dst, distance,
+                          PredicateEdgeInfo{required<std::uint32_t>(edge, "operand", "edge"),
+                                            parseBoundary(edge)}});
     else if (kind == "memory") {
       if (edge.contains("operand"))
         throw std::invalid_argument("memory edges must not contain an operand field");
-      builder.addMemoryEdge(
-          src, dst, memoryDepKindFromString(required<std::string>(edge, "dependence", "edge")),
-          distance);
+      builder.importEdge({id, src, dst, distance,
+                          MemoryEdgeInfo{memoryDepKindFromString(
+                              required<std::string>(edge, "dependence", "edge"))}});
     } else
       throw std::invalid_argument("unknown DFG edge kind: " + kind);
   }

@@ -60,13 +60,14 @@ DFG fanout() {
 DFG recurrence() {
   DFGBuilder builder("recurrence");
   const auto address = builder.addExternal("address", ValueType::i32());
+  const auto initial = builder.addExternal("initial", ValueType::i32());
   const auto load = builder.addNode(Opcode::Load, {ValueType::i32()}, ValueType::i32(),
                                     std::nullopt, MemoryOpInfo{32, false});
   const auto add =
       builder.addNode(Opcode::Add, {ValueType::i32(), ValueType::i32()}, ValueType::i32());
   builder.bindExternal(load, 0, address);
   builder.addDataEdge(load, add, 0);
-  builder.addDataEdge(add, add, 1, 1);
+  builder.addDataEdge(add, add, 1, 1, RecurrenceBoundary{{{0, ExternalValueRef{initial}}}});
   return builder.finish();
 }
 

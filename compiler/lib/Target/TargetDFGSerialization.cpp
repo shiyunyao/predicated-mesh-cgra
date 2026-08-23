@@ -37,15 +37,71 @@ Json edgeJson(const TargetEdge& edge) {
   Json value = {{"id", edge.id}, {"src", edge.src}, {"dst", edge.dst}, {"distance", edge.distance}};
   if (edge.kind() == ir::Edge::Kind::Data) {
     value["kind"] = "data";
-    value["operand"] = std::get<ir::DataEdgeInfo>(edge.info).dstOperand;
+    const auto& info = std::get<ir::DataEdgeInfo>(edge.info);
+    value["operand"] = info.dstOperand;
+    if (info.boundary) {
+      value["boundary"] = Json::array();
+      for (const auto& item : info.boundary->values) {
+        Json entry = {{"iteration_offset", item.iterationOffset}};
+        std::visit(
+            [&](const auto& source) {
+              using Source = std::decay_t<decltype(source)>;
+              if constexpr (std::is_same_v<Source, ir::ExternalValueRef>)
+                entry["external"] = source.value;
+              else
+                entry["constant"] = source.value;
+            },
+            item.value);
+        value["boundary"].push_back(std::move(entry));
+      }
+    }
   } else if (edge.kind() == ir::Edge::Kind::Predicate) {
     value["kind"] = "predicate";
-    value["operand"] = std::get<ir::PredicateEdgeInfo>(edge.info).dstOperand;
+    const auto& info = std::get<ir::PredicateEdgeInfo>(edge.info);
+    value["operand"] = info.dstOperand;
+    if (info.boundary) {
+      value["boundary"] = Json::array();
+      for (const auto& item : info.boundary->values) {
+        Json entry = {{"iteration_offset", item.iterationOffset}};
+        std::visit(
+            [&](const auto& source) {
+              using Source = std::decay_t<decltype(source)>;
+              if constexpr (std::is_same_v<Source, ir::ExternalValueRef>)
+                entry["external"] = source.value;
+              else
+                entry["constant"] = source.value;
+            },
+            item.value);
+        value["boundary"].push_back(std::move(entry));
+      }
+    }
   } else {
     value["kind"] = "memory";
     value["dependence"] = ir::toString(std::get<ir::MemoryEdgeInfo>(edge.info).dependence);
   }
   return value;
+}
+
+std::optional<ir::RecurrenceBoundary> parseBoundary(const Json& edge) {
+  if (!edge.contains("boundary"))
+    return std::nullopt;
+  if (!edge.at("boundary").is_array())
+    throw std::invalid_argument("target DFG edge.boundary must be an array");
+  ir::RecurrenceBoundary result;
+  for (const auto& value : edge.at("boundary")) {
+    const auto offset = required<std::uint32_t>(value, "iteration_offset");
+    const bool external = value.contains("external");
+    const bool constant = value.contains("constant");
+    if (external == constant)
+      throw std::invalid_argument("target DFG boundary entry must contain one source");
+    ir::ExternalOperandBinding source =
+        external ? ir::ExternalOperandBinding{ir::ExternalValueRef{
+                       required<ir::ExternalValueId>(value, "external")}}
+                 : ir::ExternalOperandBinding{
+                       ir::ConstantRef{required<ir::ConstantId>(value, "constant")}};
+    result.values.push_back({offset, source});
+  }
+  return result;
 }
 
 } // namespace
@@ -214,9 +270,10 @@ TargetDFG parse(std::string_view jsonText) {
                     required<std::uint32_t>(value, "distance"), ir::DataEdgeInfo{}};
     const auto kind = required<std::string>(value, "kind");
     if (kind == "data")
-      edge.info = ir::DataEdgeInfo{required<std::uint32_t>(value, "operand")};
+      edge.info = ir::DataEdgeInfo{required<std::uint32_t>(value, "operand"), parseBoundary(value)};
     else if (kind == "predicate")
-      edge.info = ir::PredicateEdgeInfo{required<std::uint32_t>(value, "operand")};
+      edge.info =
+          ir::PredicateEdgeInfo{required<std::uint32_t>(value, "operand"), parseBoundary(value)};
     else if (kind == "memory")
       edge.info = ir::MemoryEdgeInfo{
           ir::memoryDepKindFromString(required<std::string>(value, "dependence"))};

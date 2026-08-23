@@ -21,9 +21,12 @@ using cgra::analysis::MIIAnalyzer;
 using cgra::analysis::MIIStatus;
 using cgra::ir::DFG;
 using cgra::ir::DFGBuilder;
+using cgra::ir::ExternalValueRef;
 using cgra::ir::MemoryDepKind;
 using cgra::ir::MemoryOpInfo;
 using cgra::ir::Opcode;
+using cgra::ir::RecurrenceBoundary;
+using cgra::ir::RecurrenceBoundaryValue;
 using cgra::ir::ValueType;
 using cgra::target::TargetDFG;
 
@@ -112,16 +115,23 @@ DFG makeAddRecurrence(unsigned distance) {
   const auto value = builder.addExternal("value", ValueType::i32());
   const auto add =
       builder.addNode(Opcode::Add, {ValueType::i32(), ValueType::i32()}, ValueType::i32());
-  builder.addDataEdge(add, add, 0, distance);
+  std::vector<RecurrenceBoundaryValue> seeds;
+  for (unsigned offset = 0; offset < distance; ++offset)
+    seeds.push_back({offset, ExternalValueRef{value}});
+  builder.addDataEdge(add, add, 0, distance, RecurrenceBoundary{std::move(seeds)});
   builder.bindExternal(add, 1, value);
   return builder.finish();
 }
 
 DFG makeLoadRecurrence(unsigned distance) {
   DFGBuilder builder("load_recurrence");
+  const auto address = builder.addExternal("address", ValueType::i32());
   const auto load = builder.addNode(Opcode::Load, {ValueType::i32()}, ValueType::i32(),
                                     std::nullopt, MemoryOpInfo{32, false});
-  builder.addDataEdge(load, load, 0, distance);
+  std::vector<RecurrenceBoundaryValue> seeds;
+  for (unsigned offset = 0; offset < distance; ++offset)
+    seeds.push_back({offset, ExternalValueRef{address}});
+  builder.addDataEdge(load, load, 0, distance, RecurrenceBoundary{std::move(seeds)});
   return builder.finish();
 }
 
@@ -135,7 +145,13 @@ DFG makeTwoNodeRecurrence(unsigned returnDistance) {
   builder.bindExternal(first, 1, value);
   builder.bindExternal(second, 1, value);
   builder.addDataEdge(first, second, 0, 0);
-  builder.addDataEdge(second, first, 0, returnDistance);
+  std::vector<RecurrenceBoundaryValue> seeds;
+  for (unsigned offset = 0; offset < returnDistance; ++offset)
+    seeds.push_back({offset, ExternalValueRef{value}});
+  if (returnDistance == 0)
+    builder.addDataEdge(second, first, 0, returnDistance);
+  else
+    builder.addDataEdge(second, first, 0, returnDistance, RecurrenceBoundary{std::move(seeds)});
   return builder.finish();
 }
 
@@ -165,8 +181,8 @@ DFG makeCompetingRecurrences() {
   const auto load = builder.addNode(Opcode::Load, {ValueType::i32()}, ValueType::i32(),
                                     std::nullopt, MemoryOpInfo{32, false});
   builder.bindExternal(add, 1, value);
-  builder.addDataEdge(add, add, 0, 1);
-  builder.addDataEdge(load, load, 0, 1);
+  builder.addDataEdge(add, add, 0, 1, RecurrenceBoundary{{{0, ExternalValueRef{value}}}});
+  builder.addDataEdge(load, load, 0, 1, RecurrenceBoundary{{{0, ExternalValueRef{value}}}});
   return builder.finish();
 }
 
