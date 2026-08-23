@@ -78,6 +78,7 @@ add_library(cgra_mapping
   lib/Mapping/ModuloResourceModel.cpp
   lib/Mapping/ResourceReservation.cpp
   lib/Mapping/ModuloMappingVerifier.cpp
+  lib/Mapping/ModuloRouteSearch.cpp
 )
 target_include_directories(cgra_mapping PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(cgra_mapping PUBLIC cgra_target cgra_ir)
@@ -133,6 +134,14 @@ set_target_properties(cgra-mii-analyze PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
 )
 
+add_executable(cgra-modulo-route-search tools/modulo-route-search/main.cpp)
+target_link_libraries(cgra-modulo-route-search PRIVATE cgra_mapping)
+cgra_enable_warnings(cgra-modulo-route-search)
+cgra_enable_sanitizers(cgra-modulo-route-search)
+set_target_properties(cgra-modulo-route-search PROPERTIES
+  RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+)
+
 if(CGRA_BUILD_TESTS)
   enable_testing()
 
@@ -172,6 +181,14 @@ if(CGRA_BUILD_TESTS)
     NAME cgra-modulo-mapping-verifier-tests
     TYPE semantic
     SOURCES tests/Mapping/ModuloMappingVerifierTest.cpp tests/IR/Fixtures.cpp
+    LIBRARIES cgra_mapping
+    DEFINITIONS CGRA_REPOSITORY_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/.."
+  )
+
+  cgra_add_test(
+    NAME cgra-modulo-route-search-tests
+    TYPE semantic
+    SOURCES tests/Mapping/ModuloRouteSearchTest.cpp tests/IR/Fixtures.cpp
     LIBRARIES cgra_mapping
     DEFINITIONS CGRA_REPOSITORY_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/.."
   )
