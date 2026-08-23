@@ -12,6 +12,7 @@
 namespace cgra::ir {
 
 class DFGBuilder;
+class DFGTestAccess;
 
 class DFG {
 public:
@@ -43,6 +44,7 @@ public:
 
 private:
   friend class DFGBuilder;
+  friend class DFGTestAccess;
 
   NodeId appendNode(Node node);
   ExternalValueId appendExternal(ExternalValue value);

@@ -239,11 +239,13 @@ DFG parse(std::string_view jsonText) {
     else if (kind == "predicate")
       builder.addPredicateEdge(src, dst, required<std::uint32_t>(edge, "operand", "edge"),
                                distance);
-    else if (kind == "memory")
+    else if (kind == "memory") {
+      if (edge.contains("operand"))
+        throw std::invalid_argument("memory edges must not contain an operand field");
       builder.addMemoryEdge(
           src, dst, memoryDepKindFromString(required<std::string>(edge, "dependence", "edge")),
           distance);
-    else
+    } else
       throw std::invalid_argument("unknown DFG edge kind: " + kind);
   }
   return builder.finish();

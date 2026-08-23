@@ -52,6 +52,7 @@ add_library(cgra_ir
   lib/IR/DFG.cpp
   lib/IR/DFGBuilder.cpp
   lib/IR/DFGSerialization.cpp
+  lib/IR/DFGVerifier.cpp
   lib/IR/Edge.cpp
   lib/IR/Opcode.cpp
   lib/IR/ValueType.cpp
@@ -66,6 +67,14 @@ target_link_libraries(cgra-target-dump PRIVATE cgra_target)
 cgra_enable_warnings(cgra-target-dump)
 cgra_enable_sanitizers(cgra-target-dump)
 set_target_properties(cgra-target-dump PROPERTIES
+  RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+)
+
+add_executable(cgra-dfg-verify tools/dfg-verify/main.cpp)
+target_link_libraries(cgra-dfg-verify PRIVATE cgra_ir)
+cgra_enable_warnings(cgra-dfg-verify)
+cgra_enable_sanitizers(cgra-dfg-verify)
+set_target_properties(cgra-dfg-verify PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
 )
 
@@ -84,6 +93,14 @@ if(CGRA_BUILD_TESTS)
     NAME cgra-ir-tests
     TYPE semantic
     SOURCES tests/IR/IRTest.cpp tests/IR/Fixtures.cpp tests/support/TestArtifacts.cpp
+    LIBRARIES cgra_ir
+    DEFINITIONS CGRA_REPOSITORY_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/.."
+  )
+
+  cgra_add_test(
+    NAME cgra-dfg-verifier-tests
+    TYPE semantic
+    SOURCES tests/IR/DFGVerifierTest.cpp tests/IR/Fixtures.cpp tests/support/TestArtifacts.cpp
     LIBRARIES cgra_ir
     DEFINITIONS CGRA_REPOSITORY_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/.."
   )

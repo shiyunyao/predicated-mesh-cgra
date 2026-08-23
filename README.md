@@ -173,6 +173,11 @@ The target-independent loop DFG is documented in
 suite covers stable IDs, cyclic recurrences, predicate and memory dependences,
 canonical fixtures, and deterministic JSON round trips.
 
+Generic DFG validity is checked independently by
+[compiler/docs/GENERIC_DFG_VERIFIER.md](compiler/docs/GENERIC_DFG_VERIFIER.md);
+the verifier has no target or LLVM dependency and emits stable diagnostic codes
+and `cgra.dfg.verification.v1` JSON reports.
+
 ## External Program Replay
 
 The compiler/framework handoff is a scheduled and target-encoded
