@@ -48,6 +48,19 @@ target_link_libraries(cgra_target PUBLIC nlohmann_json::nlohmann_json)
 cgra_enable_warnings(cgra_target)
 cgra_enable_sanitizers(cgra_target)
 
+add_library(cgra_ir
+  lib/IR/DFG.cpp
+  lib/IR/DFGBuilder.cpp
+  lib/IR/DFGSerialization.cpp
+  lib/IR/Edge.cpp
+  lib/IR/Opcode.cpp
+  lib/IR/ValueType.cpp
+)
+target_include_directories(cgra_ir PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(cgra_ir PUBLIC nlohmann_json::nlohmann_json)
+cgra_enable_warnings(cgra_ir)
+cgra_enable_sanitizers(cgra_ir)
+
 add_executable(cgra-target-dump tools/target-dump/main.cpp)
 target_link_libraries(cgra-target-dump PRIVATE cgra_target)
 cgra_enable_warnings(cgra-target-dump)
@@ -64,6 +77,14 @@ if(CGRA_BUILD_TESTS)
     TYPE semantic
     SOURCES tests/Target/TargetModelTest.cpp
     LIBRARIES cgra_target
+    DEFINITIONS CGRA_REPOSITORY_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/.."
+  )
+
+  cgra_add_test(
+    NAME cgra-ir-tests
+    TYPE semantic
+    SOURCES tests/IR/IRTest.cpp tests/IR/Fixtures.cpp tests/support/TestArtifacts.cpp
+    LIBRARIES cgra_ir
     DEFINITIONS CGRA_REPOSITORY_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/.."
   )
 

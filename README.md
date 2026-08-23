@@ -67,6 +67,7 @@ implementations are checked against that contract by regression tests.
 |-- examples/  # Pre-generated target-encoded schedules
 |-- model/     # Cycle-level golden execution model
 |-- target/    # Compiler-facing machine-readable target contract
+|-- compiler/include/cgra/IR/ # Target-independent generic loop DFG
 |-- tools/     # Manifest validation, replay, config emission, and comparison
 |-- scripts/   # Synthesis runners and report checks
 |-- synth/     # RTL filelist and ASAP7/ABC inputs
@@ -166,6 +167,11 @@ exact decode-to-encode round trips for the retained shared-memory schedule.
 Compiler CI conventions, deterministic test seeds, failure reproducer artifacts,
 metrics schemas, and the local equivalents of both GitHub Actions workflows are
 documented in [compiler/docs/CI_CONTRACT.md](compiler/docs/CI_CONTRACT.md).
+
+The target-independent loop DFG is documented in
+[compiler/docs/GENERIC_DFG_IR.md](compiler/docs/GENERIC_DFG_IR.md). Its CTest
+suite covers stable IDs, cyclic recurrences, predicate and memory dependences,
+canonical fixtures, and deterministic JSON round trips.
 
 ## External Program Replay
 
