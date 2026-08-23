@@ -5,6 +5,7 @@
 #include "cgra/Target/ControlLayout.h"
 #include "cgra/Target/TargetOperation.h"
 
+#include <cstdint>
 #include <filesystem>
 #include <string>
 #include <string_view>
@@ -93,6 +94,8 @@ public:
   const TargetOperationDesc& operation(std::string_view name) const;
   const std::vector<TargetOperationDesc>& operations() const noexcept { return operations_; }
   bool hasExecutionClass(TargetExecutionClass executionClass) const noexcept;
+  std::uint64_t executionResourceCount(TargetExecutionClass executionClass) const noexcept;
+  std::uint64_t compatibleResourceCount(const TargetOperationDesc& operation) const noexcept;
   bool isOperationExecutable(std::string_view name) const noexcept;
   bool isOperationExecutable(const TargetOperationDesc& operation) const noexcept;
   unsigned memoryDependenceSeparation(ir::MemoryDepKind kind) const noexcept;

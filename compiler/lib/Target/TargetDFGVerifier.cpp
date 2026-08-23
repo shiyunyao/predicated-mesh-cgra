@@ -365,7 +365,8 @@ TargetDFGVerifier::verify(const TargetDFG& dfg, const TargetModel& target, const
       const auto operand = std::get<ir::DataEdgeInfo>(edge.info).dstOperand;
       if (operand >= dst.operandTypes.size() || !dstOperation ||
           (operand < dstOperation->operands.size() &&
-           dstOperation->operands[operand].role != TargetOperandRole::Data) ||
+           dstOperation->operands[operand].role != TargetOperandRole::Data &&
+           dstOperation->operands[operand].role != TargetOperandRole::Address) ||
           !srcOperation || srcOperation->resultRole != TargetResultRole::Data ||
           (operand < dst.operandTypes.size() && src.resultType != dst.operandTypes[operand]))
         report.add({TargetDFGDiagnosticCode::TDFG_DATA_EDGE_INVALID,

@@ -84,6 +84,15 @@ target_link_libraries(cgra_mapping PUBLIC cgra_target cgra_ir)
 cgra_enable_warnings(cgra_mapping)
 cgra_enable_sanitizers(cgra_mapping)
 
+add_library(cgra_analysis
+  lib/Analysis/MIIAnalyzer.cpp
+  lib/Analysis/MIIResult.cpp
+)
+target_include_directories(cgra_analysis PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(cgra_analysis PUBLIC cgra_target cgra_ir)
+cgra_enable_warnings(cgra_analysis)
+cgra_enable_sanitizers(cgra_analysis)
+
 add_executable(cgra-target-dump tools/target-dump/main.cpp)
 target_link_libraries(cgra-target-dump PRIVATE cgra_target)
 cgra_enable_warnings(cgra-target-dump)
@@ -113,6 +122,14 @@ target_link_libraries(cgra-modulo-map-verify PRIVATE cgra_mapping)
 cgra_enable_warnings(cgra-modulo-map-verify)
 cgra_enable_sanitizers(cgra-modulo-map-verify)
 set_target_properties(cgra-modulo-map-verify PROPERTIES
+  RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+)
+
+add_executable(cgra-mii-analyze tools/mii-analyze/main.cpp)
+target_link_libraries(cgra-mii-analyze PRIVATE cgra_analysis)
+cgra_enable_warnings(cgra-mii-analyze)
+cgra_enable_sanitizers(cgra-mii-analyze)
+set_target_properties(cgra-mii-analyze PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
 )
 
@@ -156,6 +173,14 @@ if(CGRA_BUILD_TESTS)
     TYPE semantic
     SOURCES tests/Mapping/ModuloMappingVerifierTest.cpp tests/IR/Fixtures.cpp
     LIBRARIES cgra_mapping
+    DEFINITIONS CGRA_REPOSITORY_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/.."
+  )
+
+  cgra_add_test(
+    NAME cgra-mii-analysis-tests
+    TYPE semantic
+    SOURCES tests/Analysis/MIIAnalyzerTest.cpp tests/IR/Fixtures.cpp
+    LIBRARIES cgra_analysis
     DEFINITIONS CGRA_REPOSITORY_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/.."
   )
 

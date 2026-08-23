@@ -611,11 +611,23 @@ const TargetOperationDesc& TargetModel::operation(std::string_view name) const {
 }
 
 bool TargetModel::hasExecutionClass(TargetExecutionClass executionClass) const noexcept {
+  return executionResourceCount(executionClass) != 0;
+}
+
+std::uint64_t
+TargetModel::executionResourceCount(TargetExecutionClass executionClass) const noexcept {
   if (executionClass == TargetExecutionClass::LSU)
-    return !lsuTiles_.empty();
+    return lsuTiles_.size();
   // The current contract describes a homogeneous scalar FU fabric. A future
   // heterogeneous target can replace this with per-tile capability metadata.
-  return array_.rows != 0 && array_.cols != 0;
+  return static_cast<std::uint64_t>(array_.rows) * array_.cols;
+}
+
+std::uint64_t
+TargetModel::compatibleResourceCount(const TargetOperationDesc& operation) const noexcept {
+  // V2 has homogeneous FU capabilities; keeping this query on TargetModel
+  // gives heterogeneous contracts one source-of-truth extension point.
+  return executionResourceCount(operation.executionClass);
 }
 
 bool TargetModel::isOperationExecutable(std::string_view name) const noexcept {
