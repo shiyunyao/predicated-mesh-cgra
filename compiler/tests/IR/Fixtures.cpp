@@ -107,6 +107,25 @@ DFG predicateSelect() {
   return builder.finish();
 }
 
+DFG predicateSelectUnsigned() {
+  DFGBuilder builder("predicate_select_unsigned");
+  const auto a = builder.addExternal("a", ValueType::i32());
+  const auto b = builder.addExternal("b", ValueType::i32());
+  const auto yes = builder.addExternal("yes", ValueType::i32());
+  const auto no = builder.addExternal("no", ValueType::i32());
+  const auto cmp = builder.addNode(Opcode::ICmp, {ValueType::i32(), ValueType::i32()},
+                                   ValueType::predicate(), ICmpPredicate::ULT);
+  const auto select =
+      builder.addNode(Opcode::Select, {ValueType::predicate(), ValueType::i32(), ValueType::i32()},
+                      ValueType::i32());
+  builder.bindExternal(cmp, 0, a);
+  builder.bindExternal(cmp, 1, b);
+  builder.addPredicateEdge(cmp, select, 0);
+  builder.bindExternal(select, 1, yes);
+  builder.bindExternal(select, 2, no);
+  return builder.finish();
+}
+
 DFG predicatedStore() {
   DFGBuilder builder("predicated_store");
   const auto address = builder.addExternal("address", ValueType::i32());

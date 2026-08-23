@@ -2,6 +2,7 @@
 #pragma once
 
 #include "cgra/Target/ControlLayout.h"
+#include "cgra/Target/TargetOperation.h"
 
 #include <filesystem>
 #include <string>
@@ -83,6 +84,10 @@ public:
   const LoopExecutionDesc& loopExecution() const noexcept { return loopExecution_; }
   const ControlLayout& controlLayout() const noexcept { return controlLayout_; }
   const std::vector<LsuTileDesc>& lsuTiles() const noexcept { return lsuTiles_; }
+  bool supportsValueType(const ir::ValueType& type) const noexcept;
+  const TargetOperationDesc* findOperation(std::string_view name) const noexcept;
+  const TargetOperationDesc& operation(std::string_view name) const;
+  const std::vector<TargetOperationDesc>& operations() const noexcept { return operations_; }
 
   bool tileHasLSU(unsigned row, unsigned col) const noexcept;
   unsigned encodingValue(std::string_view domain, std::string_view name) const;
@@ -108,6 +113,8 @@ private:
   std::vector<LsuTileDesc> lsuTiles_;
   std::unordered_map<std::string, std::unordered_map<std::string, unsigned>> encodings_;
   std::unordered_map<std::string, std::unordered_map<unsigned, std::string>> reverseEncodings_;
+  std::vector<TargetOperationDesc> operations_;
+  std::unordered_map<std::string, std::size_t> operationIndices_;
 };
 
 } // namespace cgra

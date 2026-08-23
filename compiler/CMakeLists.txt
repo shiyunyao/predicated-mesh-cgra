@@ -41,6 +41,11 @@ endif()
 
 add_library(cgra_target
   lib/Target/ControlLayout.cpp
+  lib/Target/TargetDFG.cpp
+  lib/Target/TargetDFGSerialization.cpp
+  lib/Target/TargetDFGVerifier.cpp
+  lib/Target/TargetLegalizer.cpp
+  lib/Target/TargetOperation.cpp
   lib/Target/TargetModel.cpp
 )
 target_include_directories(cgra_target PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
@@ -62,6 +67,10 @@ target_link_libraries(cgra_ir PUBLIC nlohmann_json::nlohmann_json)
 cgra_enable_warnings(cgra_ir)
 cgra_enable_sanitizers(cgra_ir)
 
+# TargetLegalizer consumes the Generic DFG verifier, so expose that dependency
+# through the target library for downstream users of the legalization API.
+target_link_libraries(cgra_target PUBLIC cgra_ir)
+
 add_executable(cgra-target-dump tools/target-dump/main.cpp)
 target_link_libraries(cgra-target-dump PRIVATE cgra_target)
 cgra_enable_warnings(cgra-target-dump)
@@ -78,6 +87,14 @@ set_target_properties(cgra-dfg-verify PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
 )
 
+add_executable(cgra-target-legalize tools/target-legalize/main.cpp)
+target_link_libraries(cgra-target-legalize PRIVATE cgra_target cgra_ir)
+cgra_enable_warnings(cgra-target-legalize)
+cgra_enable_sanitizers(cgra-target-legalize)
+set_target_properties(cgra-target-legalize PROPERTIES
+  RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+)
+
 if(CGRA_BUILD_TESTS)
   enable_testing()
 
@@ -86,6 +103,22 @@ if(CGRA_BUILD_TESTS)
     TYPE semantic
     SOURCES tests/Target/TargetModelTest.cpp
     LIBRARIES cgra_target
+    DEFINITIONS CGRA_REPOSITORY_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/.."
+  )
+
+  cgra_add_test(
+    NAME cgra-target-legalizer-tests
+    TYPE semantic
+    SOURCES tests/Target/TargetLegalizerTest.cpp tests/IR/Fixtures.cpp
+    LIBRARIES cgra_target cgra_ir
+    DEFINITIONS CGRA_REPOSITORY_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/.."
+  )
+
+  cgra_add_test(
+    NAME cgra-target-dfg-verifier-tests
+    TYPE semantic
+    SOURCES tests/Target/TargetDFGVerifierTest.cpp tests/IR/Fixtures.cpp
+    LIBRARIES cgra_target cgra_ir
     DEFINITIONS CGRA_REPOSITORY_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/.."
   )
 

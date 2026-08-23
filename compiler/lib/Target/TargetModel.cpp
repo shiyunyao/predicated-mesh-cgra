@@ -216,6 +216,40 @@ TargetModel TargetModel::loadFromFile(const std::filesystem::path& path) {
   if (model.memory_.runtimeStall || model.memory_.runtimeArbitration)
     fail("memory", "runtime stall/arbitration must be disabled");
 
+  const auto& latencies = requiredObject(root, "latencies", "");
+  const auto& fuLatencies = requiredObject(latencies, "fu_ops", "latencies");
+  const auto& ops = requiredObject(root, "ops", "");
+  const auto addOperation = [&](std::string name, TargetExecutionClass executionClass,
+                                ir::ValueType resultType, std::optional<unsigned> latency,
+                                std::optional<unsigned> accessWidth = std::nullopt) {
+    if (model.operationIndices_.contains(name))
+      fail("ops", "duplicate operation " + name);
+    if (latency && *latency == 0)
+      fail("latencies." + name, "must be greater than zero");
+    model.operationIndices_.emplace(name, model.operations_.size());
+    model.operations_.push_back(
+        {std::move(name), executionClass, resultType, 1, latency, accessWidth});
+  };
+  const auto addOperationList = [&](const std::string& key, ir::ValueType resultType) {
+    const auto& list = requiredArray(ops, key, "ops");
+    for (const auto& item : list) {
+      if (!item.is_string())
+        fail("ops." + key, "operation names must be strings");
+      const auto name = item.get<std::string>();
+      if (!fuLatencies.contains(name))
+        fail("latencies.fu_ops." + name, "missing latency for target operation");
+      addOperation(name, TargetExecutionClass::FU, resultType,
+                   required<unsigned>(fuLatencies, name, "latencies.fu_ops"));
+    }
+  };
+  addOperationList("data", ir::ValueType::integer(model.array_.dataWidth));
+  addOperationList("compare", ir::ValueType::predicate());
+  addOperationList("predicate", ir::ValueType::predicate());
+  addOperation("LOAD", TargetExecutionClass::LSU, ir::ValueType::integer(model.memory_.widthBits),
+               model.memory_.loadLatency, model.memory_.widthBits);
+  addOperation("STORE", TargetExecutionClass::LSU, ir::ValueType::voidTy(), std::nullopt,
+               model.memory_.widthBits);
+
   const auto& loop = requiredObject(root, "loop_execution", "");
   model.loopExecution_.supported = required<bool>(loop, "supported", "loop_execution");
   model.loopExecution_.model = required<std::string>(loop, "model", "loop_execution");
@@ -426,6 +460,26 @@ bool TargetModel::tileHasLSU(unsigned row, unsigned col) const noexcept {
   return std::ranges::any_of(lsuTiles_, [row, col](const LsuTileDesc& tile) {
     return tile.row == row && tile.col == col;
   });
+}
+
+bool TargetModel::supportsValueType(const ir::ValueType& type) const noexcept {
+  if (type.kind == ir::ValueKind::Void)
+    return type.bitWidth == 0;
+  if (type.kind == ir::ValueKind::Predicate)
+    return type.bitWidth == array_.predicateWidth;
+  return type.kind == ir::ValueKind::Integer && type.bitWidth == array_.dataWidth;
+}
+
+const TargetOperationDesc* TargetModel::findOperation(std::string_view name) const noexcept {
+  const auto it = operationIndices_.find(std::string(name));
+  return it == operationIndices_.end() ? nullptr : &operations_[it->second];
+}
+
+const TargetOperationDesc& TargetModel::operation(std::string_view name) const {
+  const auto* result = findOperation(name);
+  if (!result)
+    throw std::out_of_range("unknown target operation: " + std::string(name));
+  return *result;
 }
 
 unsigned TargetModel::encodingValue(std::string_view domain, std::string_view name) const {

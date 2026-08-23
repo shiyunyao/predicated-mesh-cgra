@@ -14,6 +14,7 @@ DFG fanout();
 DFG recurrence();
 DFG loadAddStore();
 DFG predicateSelect();
+DFG predicateSelectUnsigned();
 DFG predicatedStore();
 DFG memoryDependence();
 std::vector<DFG> all();

@@ -178,6 +178,20 @@ Generic DFG validity is checked independently by
 the verifier has no target or LLVM dependency and emits stable diagnostic codes
 and `cgra.dfg.verification.v1` JSON reports.
 
+Target legalization is the next explicit compiler boundary. It maps a verified
+Generic DFG one-to-one onto target-semantic operations, attaches target latency
+and issue occupancy from `TargetModel`, preserves dependence distances and
+provenance, and leaves placement, routing, registers, and control encoding to
+later passes. See [compiler/docs/TARGET_LEGALIZATION.md](compiler/docs/TARGET_LEGALIZATION.md).
+
+The standalone legalizer CLI is built with the compiler targets:
+
+```bash
+compiler/build/bin/cgra-target-legalize \
+  input.dfg.json --target target/cgra_v2.json \
+  -o output.target_dfg.json --dump-text
+```
+
 ## External Program Replay
 
 The compiler/framework handoff is a scheduled and target-encoded
