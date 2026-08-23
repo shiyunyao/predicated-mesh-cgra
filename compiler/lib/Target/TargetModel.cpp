@@ -223,54 +223,155 @@ TargetModel TargetModel::loadFromFile(const std::filesystem::path& path) {
   if (model.memory_.runtimeStall || model.memory_.runtimeArbitration)
     fail("memory", "runtime stall/arbitration must be disabled");
 
+  // The legacy latency/op capability views remain part of the v2 contract for
+  // control-word and RTL consistency checks. Operation semantics themselves
+  // are reconstructed exclusively from the complete per-operation descriptors.
   const auto& latencies = requiredObject(root, "latencies", "");
-  const auto& fuLatencies = requiredObject(latencies, "fu_ops", "latencies");
-  const auto& outputOffsets =
+  const auto& legacyFuLatencies = requiredObject(latencies, "fu_ops", "latencies");
+  const auto& legacyOffsets =
       requiredObject(latencies, "producer_output_ready_offsets", "latencies");
-  const auto fuOutputReadyOffset =
-      required<unsigned>(outputOffsets, "fu", "latencies.producer_output_ready_offsets");
-  const auto loadOutputReadyOffset =
-      required<unsigned>(outputOffsets, "load", "latencies.producer_output_ready_offsets");
-  const auto& occupancies = requiredObject(latencies, "issue_occupancy", "latencies");
-  const auto fuOccupancy = required<unsigned>(occupancies, "fu", "latencies.issue_occupancy");
-  const auto loadOccupancy = required<unsigned>(occupancies, "load", "latencies.issue_occupancy");
-  const auto storeOccupancy = required<unsigned>(occupancies, "store", "latencies.issue_occupancy");
-  if (fuOccupancy == 0 || loadOccupancy == 0 || storeOccupancy == 0)
-    fail("latencies.issue_occupancy", "all issue occupancies must be positive");
-  const auto& ops = requiredObject(root, "ops", "");
-  const auto addOperation = [&](std::string name, TargetExecutionClass executionClass,
-                                ir::ValueType resultType, std::optional<unsigned> latency,
-                                std::optional<unsigned> outputReadyOffset, unsigned issueOccupancy,
-                                std::optional<unsigned> accessWidth = std::nullopt) {
-    if (model.operationIndices_.contains(name))
-      fail("ops", "duplicate operation " + name);
-    if (latency && *latency == 0)
-      fail("latencies." + name, "must be greater than zero");
-    model.operationIndices_.emplace(name, model.operations_.size());
-    model.operations_.push_back({std::move(name), executionClass, resultType, issueOccupancy,
-                                 latency, outputReadyOffset, accessWidth});
-  };
-  const auto addOperationList = [&](const std::string& key, ir::ValueType resultType) {
-    const auto& list = requiredArray(ops, key, "ops");
-    for (const auto& item : list) {
+  const auto& legacyOccupancies = requiredObject(latencies, "issue_occupancy", "latencies");
+  static_cast<void>(
+      required<unsigned>(legacyOffsets, "fu", "latencies.producer_output_ready_offsets"));
+  static_cast<void>(
+      required<unsigned>(legacyOffsets, "load", "latencies.producer_output_ready_offsets"));
+  static_cast<void>(positiveUnsigned(legacyOccupancies, "fu", "latencies.issue_occupancy"));
+  static_cast<void>(positiveUnsigned(legacyOccupancies, "load", "latencies.issue_occupancy"));
+  static_cast<void>(positiveUnsigned(legacyOccupancies, "store", "latencies.issue_occupancy"));
+  const auto& legacyOps = requiredObject(root, "ops", "");
+  for (const auto& key : {"data", "compare", "predicate"}) {
+    const auto& names = requiredArray(legacyOps, key, "ops");
+    for (const auto& item : names) {
       if (!item.is_string())
-        fail("ops." + key, "operation names must be strings");
+        fail("ops." + std::string(key), "operation names must be strings");
       const auto name = item.get<std::string>();
-      if (!fuLatencies.contains(name))
-        fail("latencies.fu_ops." + name, "missing latency for target operation");
-      addOperation(name, TargetExecutionClass::FU, resultType,
-                   required<unsigned>(fuLatencies, name, "latencies.fu_ops"), fuOutputReadyOffset,
-                   fuOccupancy);
+      if (!legacyFuLatencies.contains(name))
+        fail("latencies.fu_ops." + name, "missing latency for legacy operation");
     }
-  };
-  addOperationList("data", ir::ValueType::integer(model.array_.dataWidth));
-  addOperationList("compare", ir::ValueType::predicate());
-  addOperationList("predicate", ir::ValueType::predicate());
-  addOperation("LOAD", TargetExecutionClass::LSU, ir::ValueType::integer(model.memory_.widthBits),
-               model.memory_.loadLatency, loadOutputReadyOffset, loadOccupancy,
-               model.memory_.widthBits);
-  addOperation("STORE", TargetExecutionClass::LSU, ir::ValueType::voidTy(), std::nullopt,
-               std::nullopt, storeOccupancy, model.memory_.widthBits);
+  }
+  const auto& operationCompatibility = requiredObject(root, "operation_compatibility", "");
+  if (required<std::string>(operationCompatibility, "status", "operation_compatibility") !=
+          "legacy_compatibility_view" ||
+      required<std::string>(operationCompatibility, "authoritative_section",
+                            "operation_compatibility") != "operations")
+    fail("operation_compatibility", "must identify operations as the authoritative section");
+
+  const auto& operationJson = requiredObject(root, "operations", "");
+  if (operationJson.empty())
+    fail("operations", "must not be empty");
+  for (const auto& [name, descriptorJson] : operationJson.items()) {
+    const auto context = "operations." + name;
+    if (name.empty())
+      fail("operations", "operation names must not be empty");
+    if (!descriptorJson.is_object())
+      fail(context, "must be an object");
+    TargetExecutionClass executionClass;
+    try {
+      executionClass = targetExecutionClassFromString(
+          required<std::string>(descriptorJson, "execution_class", context));
+    } catch (const std::exception& error) {
+      fail(context + ".execution_class", error.what());
+    }
+    const auto& operandJson = requiredArray(descriptorJson, "operands", context);
+    std::vector<TargetOperandDesc> operands;
+    operands.reserve(operandJson.size());
+    bool optionalSeen = false;
+    for (std::size_t index = 0; index < operandJson.size(); ++index) {
+      const auto operandContext = context + ".operands[" + std::to_string(index) + "]";
+      if (!operandJson[index].is_object())
+        fail(operandContext, "must be an object");
+      TargetOperandDesc operand;
+      try {
+        operand.role = targetOperandRoleFromString(
+            required<std::string>(operandJson[index], "role", operandContext));
+      } catch (const std::exception& error) {
+        fail(operandContext + ".role", error.what());
+      }
+      if (operandJson[index].contains("optional"))
+        operand.optional = required<bool>(operandJson[index], "optional", operandContext);
+      if (operand.optional)
+        optionalSeen = true;
+      else if (optionalSeen)
+        fail(operandContext, "required operand follows optional operand");
+      operands.push_back(operand);
+    }
+    const auto& resultJson = requiredObject(descriptorJson, "result", context);
+    TargetResultRole resultRole;
+    try {
+      resultRole = targetResultRoleFromString(
+          required<std::string>(resultJson, "role", context + ".result"));
+    } catch (const std::exception& error) {
+      fail(context + ".result.role", error.what());
+    }
+    const auto issueOccupancy = positiveUnsigned(descriptorJson, "issue_occupancy", context);
+    std::optional<unsigned> resultLatency;
+    std::optional<unsigned> outputReadyOffset;
+    if (descriptorJson.contains("result_latency"))
+      resultLatency = positiveUnsigned(descriptorJson, "result_latency", context);
+    if (descriptorJson.contains("producer_output_ready_offset"))
+      outputReadyOffset =
+          required<unsigned>(descriptorJson, "producer_output_ready_offset", context);
+    std::optional<unsigned> accessWidth;
+    if (descriptorJson.contains("memory_access_width_bits"))
+      accessWidth = positiveUnsigned(descriptorJson, "memory_access_width_bits", context);
+
+    if (resultRole == TargetResultRole::Void) {
+      if (resultLatency || outputReadyOffset)
+        fail(context, "void operation must not define result latency/output readiness");
+    } else if (!resultLatency || !outputReadyOffset) {
+      fail(context, "value-producing operation requires result_latency and "
+                    "producer_output_ready_offset");
+    }
+    if ((executionClass == TargetExecutionClass::LSU) != accessWidth.has_value())
+      fail(context,
+           "LSU operations require memory_access_width_bits and FU operations must omit it");
+    if (resultRole == TargetResultRole::Data)
+      model.operations_.push_back({name, executionClass, std::move(operands), resultRole,
+                                   ir::ValueType::integer(model.array_.dataWidth), issueOccupancy,
+                                   resultLatency, outputReadyOffset, accessWidth});
+    else if (resultRole == TargetResultRole::Predicate)
+      model.operations_.push_back({name, executionClass, std::move(operands), resultRole,
+                                   ir::ValueType::predicate(), issueOccupancy, resultLatency,
+                                   outputReadyOffset, accessWidth});
+    else
+      model.operations_.push_back({name, executionClass, std::move(operands), resultRole,
+                                   ir::ValueType::voidTy(), issueOccupancy, resultLatency,
+                                   outputReadyOffset, accessWidth});
+    model.operationIndices_.emplace(name, model.operations_.size() - 1);
+  }
+  const auto* loadOperationPtr = model.findOperation("LOAD");
+  if (!loadOperationPtr)
+    fail("operations.LOAD", "required operation descriptor is missing");
+  const auto& loadOperation = *loadOperationPtr;
+  if (loadOperation.executionClass != TargetExecutionClass::LSU ||
+      loadOperation.resultType != ir::ValueType::integer(model.memory_.widthBits) ||
+      loadOperation.accessWidthBits != model.memory_.widthBits)
+    fail("operations.LOAD", "does not match memory width/execution contract");
+  const auto* storeOperationPtr = model.findOperation("STORE");
+  if (!storeOperationPtr)
+    fail("operations.STORE", "required operation descriptor is missing");
+  const auto& storeOperation = *storeOperationPtr;
+  if (storeOperation.executionClass != TargetExecutionClass::LSU ||
+      storeOperation.resultType != ir::ValueType::voidTy() ||
+      storeOperation.accessWidthBits != model.memory_.widthBits)
+    fail("operations.STORE", "does not match memory width/execution contract");
+
+  // Legacy RTL/control views remain checked compatibility projections. They
+  // cannot define compiler semantics, but silently drifting copies are unsafe.
+  for (const auto& [name, latencyJson] : legacyFuLatencies.items()) {
+    if (!latencyJson.is_number_unsigned() && !latencyJson.is_number_integer())
+      fail("latencies.fu_ops." + name, "must be an unsigned integer");
+    if (latencyJson.get<std::int64_t>() < 0)
+      fail("latencies.fu_ops." + name, "must not be negative");
+    const auto* operation = model.findOperation(name);
+    if (!operation)
+      continue;
+    const auto legacyLatency = latencyJson.get<unsigned>();
+    if (!operation->resultLatency || *operation->resultLatency != legacyLatency)
+      fail("latencies", "legacy operation timing disagrees with operations." + name);
+  }
+  if (!loadOperation.resultLatency || *loadOperation.resultLatency != model.memory_.loadLatency)
+    fail("latencies", "legacy LOAD/STORE timing disagrees with operations descriptors");
 
   const auto& loop = requiredObject(root, "loop_execution", "");
   model.loopExecution_.supported = required<bool>(loop, "supported", "loop_execution");
@@ -514,6 +615,23 @@ const TargetOperationDesc& TargetModel::operation(std::string_view name) const {
   if (!result)
     throw std::out_of_range("unknown target operation: " + std::string(name));
   return *result;
+}
+
+bool TargetModel::hasExecutionClass(TargetExecutionClass executionClass) const noexcept {
+  if (executionClass == TargetExecutionClass::LSU)
+    return !lsuTiles_.empty();
+  // The current contract describes a homogeneous scalar FU fabric. A future
+  // heterogeneous target can replace this with per-tile capability metadata.
+  return array_.rows != 0 && array_.cols != 0;
+}
+
+bool TargetModel::isOperationExecutable(std::string_view name) const noexcept {
+  const auto* operationDesc = findOperation(name);
+  return operationDesc != nullptr && isOperationExecutable(*operationDesc);
+}
+
+bool TargetModel::isOperationExecutable(const TargetOperationDesc& operationDesc) const noexcept {
+  return hasExecutionClass(operationDesc.executionClass);
 }
 
 unsigned TargetModel::encodingValue(std::string_view domain, std::string_view name) const {

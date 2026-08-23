@@ -27,6 +27,8 @@ struct TargetNode {
   unsigned issueOccupancy = 1;
   std::optional<unsigned> resultLatency;
   std::vector<ir::NodeId> genericOrigins;
+  std::optional<unsigned> producerOutputReadyOffset;
+  std::optional<unsigned> accessWidthBits;
 
   friend bool operator==(const TargetNode&, const TargetNode&) = default;
 };

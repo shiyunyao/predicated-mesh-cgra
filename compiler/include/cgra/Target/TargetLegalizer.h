@@ -18,6 +18,7 @@ enum class LegalizationStatus {
   UnsupportedOperation,
   UnsupportedComparePredicate,
   UnsupportedMemoryAccessWidth,
+  NoCompatibleExecutionResource,
   TargetContractError,
   InternalError,
 };

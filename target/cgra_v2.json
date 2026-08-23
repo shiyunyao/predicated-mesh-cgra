@@ -153,6 +153,33 @@
     "compare": ["CMP_EQ", "CMP_NE", "CMP_ULT", "CMP_ULE"],
     "predicate": ["PPASS", "PNOT", "PAND", "POR"]
   },
+  "operations": {
+    "NOP": {"execution_class": "FU", "operands": [], "result": {"role": "data"}, "issue_occupancy": 1, "result_latency": 1, "producer_output_ready_offset": 0},
+    "PASS": {"execution_class": "FU", "operands": [{"role": "data"}], "result": {"role": "data"}, "issue_occupancy": 1, "result_latency": 1, "producer_output_ready_offset": 0},
+    "ADD": {"execution_class": "FU", "operands": [{"role": "data"}, {"role": "data"}], "result": {"role": "data"}, "issue_occupancy": 1, "result_latency": 1, "producer_output_ready_offset": 0},
+    "SUB": {"execution_class": "FU", "operands": [{"role": "data"}, {"role": "data"}], "result": {"role": "data"}, "issue_occupancy": 1, "result_latency": 1, "producer_output_ready_offset": 0},
+    "MUL": {"execution_class": "FU", "operands": [{"role": "data"}, {"role": "data"}], "result": {"role": "data"}, "issue_occupancy": 1, "result_latency": 1, "producer_output_ready_offset": 0},
+    "AND": {"execution_class": "FU", "operands": [{"role": "data"}, {"role": "data"}], "result": {"role": "data"}, "issue_occupancy": 1, "result_latency": 1, "producer_output_ready_offset": 0},
+    "OR": {"execution_class": "FU", "operands": [{"role": "data"}, {"role": "data"}], "result": {"role": "data"}, "issue_occupancy": 1, "result_latency": 1, "producer_output_ready_offset": 0},
+    "XOR": {"execution_class": "FU", "operands": [{"role": "data"}, {"role": "data"}], "result": {"role": "data"}, "issue_occupancy": 1, "result_latency": 1, "producer_output_ready_offset": 0},
+    "SHL": {"execution_class": "FU", "operands": [{"role": "data"}, {"role": "data"}], "result": {"role": "data"}, "issue_occupancy": 1, "result_latency": 1, "producer_output_ready_offset": 0},
+    "LSHR": {"execution_class": "FU", "operands": [{"role": "data"}, {"role": "data"}], "result": {"role": "data"}, "issue_occupancy": 1, "result_latency": 1, "producer_output_ready_offset": 0},
+    "SELECT": {"execution_class": "FU", "operands": [{"role": "predicate"}, {"role": "data"}, {"role": "data"}], "result": {"role": "data"}, "issue_occupancy": 1, "result_latency": 1, "producer_output_ready_offset": 0},
+    "CMP_EQ": {"execution_class": "FU", "operands": [{"role": "data"}, {"role": "data"}], "result": {"role": "predicate"}, "issue_occupancy": 1, "result_latency": 1, "producer_output_ready_offset": 0},
+    "CMP_NE": {"execution_class": "FU", "operands": [{"role": "data"}, {"role": "data"}], "result": {"role": "predicate"}, "issue_occupancy": 1, "result_latency": 1, "producer_output_ready_offset": 0},
+    "CMP_ULT": {"execution_class": "FU", "operands": [{"role": "data"}, {"role": "data"}], "result": {"role": "predicate"}, "issue_occupancy": 1, "result_latency": 1, "producer_output_ready_offset": 0},
+    "CMP_ULE": {"execution_class": "FU", "operands": [{"role": "data"}, {"role": "data"}], "result": {"role": "predicate"}, "issue_occupancy": 1, "result_latency": 1, "producer_output_ready_offset": 0},
+    "PPASS": {"execution_class": "FU", "operands": [{"role": "predicate"}], "result": {"role": "predicate"}, "issue_occupancy": 1, "result_latency": 1, "producer_output_ready_offset": 0},
+    "PNOT": {"execution_class": "FU", "operands": [{"role": "predicate"}], "result": {"role": "predicate"}, "issue_occupancy": 1, "result_latency": 1, "producer_output_ready_offset": 0},
+    "PAND": {"execution_class": "FU", "operands": [{"role": "predicate"}, {"role": "predicate"}], "result": {"role": "predicate"}, "issue_occupancy": 1, "result_latency": 1, "producer_output_ready_offset": 0},
+    "POR": {"execution_class": "FU", "operands": [{"role": "predicate"}, {"role": "predicate"}], "result": {"role": "predicate"}, "issue_occupancy": 1, "result_latency": 1, "producer_output_ready_offset": 0},
+    "LOAD": {"execution_class": "LSU", "operands": [{"role": "address"}], "result": {"role": "data"}, "issue_occupancy": 1, "result_latency": 2, "producer_output_ready_offset": 2, "memory_access_width_bits": 32},
+    "STORE": {"execution_class": "LSU", "operands": [{"role": "address"}, {"role": "data"}, {"role": "predicate", "optional": true}], "result": {"role": "void"}, "issue_occupancy": 1, "memory_access_width_bits": 32}
+  },
+  "operation_compatibility": {
+    "status": "legacy_compatibility_view",
+    "authoritative_section": "operations"
+  },
   "enums": {
     "data_sources": ["ZERO", "DATA_RF_A", "DATA_RF_B", "NORTH_DATA_IN", "SOUTH_DATA_IN", "EAST_DATA_IN", "WEST_DATA_IN", "CONST_DATA", "LSU_LOAD_DATA"],
     "predicate_sources": ["CONST_FALSE", "CONST_TRUE", "PRED_RF_A", "PRED_RF_B", "NORTH_PRED_IN", "SOUTH_PRED_IN", "EAST_PRED_IN", "WEST_PRED_IN"],

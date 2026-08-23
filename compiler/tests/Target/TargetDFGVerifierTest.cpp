@@ -5,9 +5,13 @@
 #include "cgra/Target/TargetDFGVerifier.h"
 #include "cgra/Target/TargetLegalizer.h"
 
+#include <nlohmann/json.hpp>
+
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <stdexcept>
+#include <string>
 
 namespace cgra::target {
 
@@ -43,6 +47,31 @@ public:
 namespace {
 
 const std::filesystem::path RepositoryRoot = CGRA_REPOSITORY_ROOT;
+
+using Json = nlohmann::json;
+
+Json loadTargetJson() {
+  std::ifstream stream(RepositoryRoot / "target/cgra_v2.json");
+  Json target;
+  stream >> target;
+  return target;
+}
+
+class TemporaryTarget {
+public:
+  explicit TemporaryTarget(const Json& target) {
+    static unsigned serial = 0;
+    path_ = std::filesystem::temp_directory_path() /
+            ("cgra-target-dfg-verifier-test-" + std::to_string(serial++) + ".json");
+    std::ofstream stream(path_);
+    stream << target.dump(2) << '\n';
+  }
+  ~TemporaryTarget() { std::filesystem::remove(path_); }
+  const auto& path() const { return path_; }
+
+private:
+  std::filesystem::path path_;
+};
 
 void expect(bool condition, const char* message) {
   if (!condition)
@@ -82,6 +111,11 @@ void testOperationMetadata(const cgra::TargetModel& target) {
   dfg = legalize(cgra::ir::fixtures::simpleAdd(), target);
   cgra::target::TargetDFGTestAccess::node(dfg, 0).resultLatency = 4;
   expectCode(dfg, target, cgra::target::TargetDFGDiagnosticCode::TDFG_RESULT_LATENCY_MISMATCH);
+
+  dfg = legalize(cgra::ir::fixtures::simpleAdd(), target);
+  cgra::target::TargetDFGTestAccess::node(dfg, 0).producerOutputReadyOffset = 4;
+  expectCode(dfg, target,
+             cgra::target::TargetDFGDiagnosticCode::TDFG_PRODUCER_OUTPUT_READY_MISMATCH);
 
   dfg = legalize(cgra::ir::fixtures::simpleAdd(), target);
   cgra::target::TargetDFGTestAccess::node(dfg, 0).resultType = cgra::ir::ValueType::i16();
@@ -148,12 +182,46 @@ void testMemoryNodeRules(const cgra::TargetModel& target) {
   expectCode(dfg, target, cgra::target::TargetDFGDiagnosticCode::TDFG_OPERATION_OPERAND_INVALID);
 }
 
+void testDescriptorDrivenShape(const cgra::TargetModel& target) {
+  auto json = loadTargetJson();
+  json["operations"]["ADD"]["operands"][0]["role"] = "predicate";
+  TemporaryTarget file(json);
+  const auto mutatedTarget = cgra::TargetModel::loadFromFile(file.path());
+  const auto dfg = legalize(cgra::ir::fixtures::simpleAdd(), target);
+  expectCode(dfg, mutatedTarget,
+             cgra::target::TargetDFGDiagnosticCode::TDFG_OPERATION_OPERAND_INVALID);
+
+  auto noLsuJson = loadTargetJson();
+  noLsuJson["lsu"]["enabled_tiles"] = Json::array();
+  TemporaryTarget noLsuFile(noLsuJson);
+  const auto noLsuTarget = cgra::TargetModel::loadFromFile(noLsuFile.path());
+  const auto loadDfg = legalize(cgra::ir::fixtures::recurrence(), target);
+  expectCode(loadDfg, noLsuTarget,
+             cgra::target::TargetDFGDiagnosticCode::TDFG_NO_COMPATIBLE_EXECUTION_RESOURCE);
+}
+
 void testIndependentSparseIds() {
   cgra::target::TargetDFGBuilder builder("sparse", "cgra_v2_shared4p");
-  builder.addNode(
-      {10, "NOP", cgra::TargetExecutionClass::FU, cgra::ir::ValueType::i32(), {}, 1, 1, {7}});
-  builder.addNode(
-      {42, "NOP", cgra::TargetExecutionClass::FU, cgra::ir::ValueType::i32(), {}, 1, 1, {8}});
+  builder.addNode({10,
+                   "NOP",
+                   cgra::TargetExecutionClass::FU,
+                   cgra::ir::ValueType::i32(),
+                   {},
+                   1,
+                   1,
+                   {7},
+                   0,
+                   std::nullopt});
+  builder.addNode({42,
+                   "NOP",
+                   cgra::TargetExecutionClass::FU,
+                   cgra::ir::ValueType::i32(),
+                   {},
+                   1,
+                   1,
+                   {8},
+                   0,
+                   std::nullopt});
   const auto dfg = builder.finish();
   expect(cgra::target::parse(cgra::target::toJson(dfg)) == dfg,
          "Target DFG preserves independent sparse IDs");
@@ -167,6 +235,7 @@ int main() {
     testOperationMetadata(target);
     testProvidersAndEdges(target);
     testMemoryNodeRules(target);
+    testDescriptorDrivenShape(target);
     testIndependentSparseIds();
     std::cout << "CGRA_TARGET_DFG_VERIFIER_TEST_PASS\n";
     return 0;

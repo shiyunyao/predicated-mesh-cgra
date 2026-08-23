@@ -22,16 +22,42 @@ bool isData(const ir::ValueType& type) {
   return type.kind == ir::ValueKind::Integer || type.kind == ir::ValueKind::Float;
 }
 
-bool isBinaryDataOperation(std::string_view operation) {
-  return operation == "ADD" || operation == "SUB" || operation == "MUL" || operation == "AND" ||
-         operation == "OR" || operation == "XOR";
+bool roleMatches(TargetOperandRole role, const ir::ValueType& type) {
+  switch (role) {
+  case TargetOperandRole::Data:
+    return isData(type);
+  case TargetOperandRole::Predicate:
+    return isPredicate(type);
+  case TargetOperandRole::Address:
+    return type.kind == ir::ValueKind::Integer;
+  }
+  return false;
 }
 
-bool isShiftOperation(std::string_view operation) {
-  return operation == "SHL" || operation == "LSHR" || operation == "ASHR";
+bool resultRoleMatches(TargetResultRole role, const ir::ValueType& type) {
+  switch (role) {
+  case TargetResultRole::Data:
+    return isData(type);
+  case TargetResultRole::Predicate:
+    return isPredicate(type);
+  case TargetResultRole::Void:
+    return type == ir::ValueType::voidTy();
+  }
+  return false;
 }
 
-bool isCompareOperation(std::string_view operation) { return operation.starts_with("CMP_"); }
+bool isLoadLike(const TargetOperationDesc& operation) {
+  return operation.executionClass == TargetExecutionClass::LSU &&
+         operation.resultRole == TargetResultRole::Data && operation.operands.size() == 1 &&
+         operation.operands.front().role == TargetOperandRole::Address;
+}
+
+bool isStoreLike(const TargetOperationDesc& operation) {
+  return operation.executionClass == TargetExecutionClass::LSU &&
+         operation.resultRole == TargetResultRole::Void && operation.operands.size() >= 2 &&
+         operation.operands[0].role == TargetOperandRole::Address &&
+         operation.operands[1].role == TargetOperandRole::Data;
+}
 
 } // namespace
 
@@ -57,12 +83,18 @@ std::string_view toString(TargetDFGDiagnosticCode code) {
     return "TDFG_UNKNOWN_EDGE_DESTINATION";
   case TargetDFGDiagnosticCode::TDFG_UNKNOWN_OPERATION:
     return "TDFG_UNKNOWN_OPERATION";
+  case TargetDFGDiagnosticCode::TDFG_NO_COMPATIBLE_EXECUTION_RESOURCE:
+    return "TDFG_NO_COMPATIBLE_EXECUTION_RESOURCE";
   case TargetDFGDiagnosticCode::TDFG_EXECUTION_CLASS_MISMATCH:
     return "TDFG_EXECUTION_CLASS_MISMATCH";
   case TargetDFGDiagnosticCode::TDFG_ISSUE_OCCUPANCY_MISMATCH:
     return "TDFG_ISSUE_OCCUPANCY_MISMATCH";
   case TargetDFGDiagnosticCode::TDFG_RESULT_LATENCY_MISMATCH:
     return "TDFG_RESULT_LATENCY_MISMATCH";
+  case TargetDFGDiagnosticCode::TDFG_PRODUCER_OUTPUT_READY_MISMATCH:
+    return "TDFG_PRODUCER_OUTPUT_READY_MISMATCH";
+  case TargetDFGDiagnosticCode::TDFG_MEMORY_ACCESS_WIDTH_MISMATCH:
+    return "TDFG_MEMORY_ACCESS_WIDTH_MISMATCH";
   case TargetDFGDiagnosticCode::TDFG_RESULT_TYPE_MISMATCH:
     return "TDFG_RESULT_TYPE_MISMATCH";
   case TargetDFGDiagnosticCode::TDFG_UNSUPPORTED_TYPE:
@@ -242,6 +274,9 @@ TargetDFGVerifier::verify(const TargetDFG& dfg, const TargetModel& target, const
                   "target operation is absent from TargetModel", node.id});
       continue;
     }
+    if (!target.isOperationExecutable(*operation))
+      report.add({TargetDFGDiagnosticCode::TDFG_NO_COMPATIBLE_EXECUTION_RESOURCE,
+                  "target operation has no compatible execution resource", node.id});
     if (operation->executionClass != node.executionClass)
       report.add({TargetDFGDiagnosticCode::TDFG_EXECUTION_CLASS_MISMATCH,
                   "node execution class disagrees with TargetModel", node.id});
@@ -251,9 +286,32 @@ TargetDFGVerifier::verify(const TargetDFG& dfg, const TargetModel& target, const
     if (operation->resultLatency != node.resultLatency)
       report.add({TargetDFGDiagnosticCode::TDFG_RESULT_LATENCY_MISMATCH,
                   "node result latency disagrees with TargetModel", node.id});
+    if (operation->producerOutputReadyOffset != node.producerOutputReadyOffset)
+      report.add({TargetDFGDiagnosticCode::TDFG_PRODUCER_OUTPUT_READY_MISMATCH,
+                  "node producer output readiness disagrees with TargetModel", node.id});
+    if (operation->accessWidthBits != node.accessWidthBits)
+      report.add({TargetDFGDiagnosticCode::TDFG_MEMORY_ACCESS_WIDTH_MISMATCH,
+                  "node memory access width disagrees with TargetModel", node.id});
     if (operation->resultType != node.resultType)
       report.add({TargetDFGDiagnosticCode::TDFG_RESULT_TYPE_MISMATCH,
                   "node result type disagrees with TargetModel", node.id});
+    if (!resultRoleMatches(operation->resultRole, node.resultType))
+      report.add({TargetDFGDiagnosticCode::TDFG_RESULT_TYPE_MISMATCH,
+                  "node result type does not satisfy TargetModel result role", node.id});
+    if (isStoreLike(*operation) && node.resultType != ir::ValueType::voidTy())
+      report.add({TargetDFGDiagnosticCode::TDFG_STORE_RESULT_INVALID,
+                  "target store-like operation must have void result", node.id});
+    if (isLoadLike(*operation) &&
+        (node.resultType == ir::ValueType::voidTy() || !node.resultLatency))
+      report.add({TargetDFGDiagnosticCode::TDFG_LOAD_RESULT_INVALID,
+                  "target load-like operation must have a value result and latency", node.id});
+    const auto requiredOperands =
+        std::count_if(operation->operands.begin(), operation->operands.end(),
+                      [](const auto& operand) { return !operand.optional; });
+    if (node.operandTypes.size() < static_cast<std::size_t>(requiredOperands) ||
+        node.operandTypes.size() > operation->operands.size())
+      report.add({TargetDFGDiagnosticCode::TDFG_OPERATION_ARITY_INVALID,
+                  "target operation operand count disagrees with TargetModel descriptor", node.id});
     if (!target.supportsValueType(node.resultType))
       report.add({TargetDFGDiagnosticCode::TDFG_UNSUPPORTED_TYPE,
                   "node result type is not supported by TargetModel", node.id});
@@ -262,74 +320,11 @@ TargetDFGVerifier::verify(const TargetDFG& dfg, const TargetModel& target, const
         report.add({TargetDFGDiagnosticCode::TDFG_UNSUPPORTED_TYPE,
                     "node operand type is not supported by TargetModel", node.id, std::nullopt,
                     operand});
-      if (operation->executionClass == TargetExecutionClass::LSU && node.operation == "STORE" &&
-          operand == 2 && !isPredicate(node.operandTypes[operand]))
-        report.add({TargetDFGDiagnosticCode::TDFG_RESULT_TYPE_MISMATCH,
-                    "Store commit operand must be predicate", node.id, std::nullopt, operand});
-    }
-    if (node.operation == "STORE" && node.resultType != ir::ValueType::voidTy())
-      report.add({TargetDFGDiagnosticCode::TDFG_STORE_RESULT_INVALID,
-                  "Target STORE must have void result", node.id});
-    if (node.operation == "LOAD") {
-      if (node.operandTypes.size() != 1 || node.resultType == ir::ValueType::voidTy() ||
-          !node.resultLatency)
-        report.add({TargetDFGDiagnosticCode::TDFG_LOAD_RESULT_INVALID,
-                    "Target LOAD must have one address operand, a non-void result, and a result "
-                    "latency",
-                    node.id});
-      else if (node.operandTypes[0].kind != ir::ValueKind::Integer)
+      if (operand >= operation->operands.size() ||
+          !roleMatches(operation->operands[operand].role, node.operandTypes[operand]))
         report.add({TargetDFGDiagnosticCode::TDFG_OPERATION_OPERAND_INVALID,
-                    "Target LOAD address operand must be an integer", node.id, std::nullopt, 0});
-    }
-    if (node.operation == "STORE" && (node.operandTypes.size() < 2 || node.operandTypes.size() > 3))
-      report.add({TargetDFGDiagnosticCode::TDFG_STORE_RESULT_INVALID,
-                  "Target STORE must have address, value, and optional predicate operands",
-                  node.id});
-    if (node.operation == "STORE" && node.operandTypes.size() >= 2) {
-      if (node.operandTypes[0].kind != ir::ValueKind::Integer)
-        report.add({TargetDFGDiagnosticCode::TDFG_OPERATION_OPERAND_INVALID,
-                    "Target STORE address operand must be an integer", node.id, std::nullopt, 0});
-      if (!isData(node.operandTypes[1]))
-        report.add({TargetDFGDiagnosticCode::TDFG_OPERATION_OPERAND_INVALID,
-                    "Target STORE value operand must be a data value", node.id, std::nullopt, 1});
-    }
-
-    const auto operandCount = node.operandTypes.size();
-    const auto expectArity = [&](std::size_t expected) {
-      if (operandCount != expected)
-        report.add({TargetDFGDiagnosticCode::TDFG_OPERATION_ARITY_INVALID,
-                    "target operation has an invalid operand count", node.id});
-    };
-    if (isBinaryDataOperation(node.operation)) {
-      expectArity(2);
-      if (operandCount == 2 &&
-          (!isData(node.operandTypes[0]) || node.operandTypes[0] != node.operandTypes[1] ||
-           node.operandTypes[0] != node.resultType))
-        report.add({TargetDFGDiagnosticCode::TDFG_OPERATION_OPERAND_INVALID,
-                    "binary target operation operands and result must have the same data type",
-                    node.id});
-    } else if (isShiftOperation(node.operation)) {
-      expectArity(2);
-      if (operandCount == 2 && (!isData(node.operandTypes[0]) || !isData(node.operandTypes[1]) ||
-                                node.operandTypes[0] != node.resultType))
-        report.add({TargetDFGDiagnosticCode::TDFG_OPERATION_OPERAND_INVALID,
-                    "shift target operation has invalid value, amount, or result type", node.id});
-    } else if (isCompareOperation(node.operation)) {
-      expectArity(2);
-      if (operandCount == 2 &&
-          (!isData(node.operandTypes[0]) || node.operandTypes[0] != node.operandTypes[1] ||
-           !isPredicate(node.resultType)))
-        report.add({TargetDFGDiagnosticCode::TDFG_OPERATION_OPERAND_INVALID,
-                    "compare target operation must compare equal data types and produce a "
-                    "predicate",
-                    node.id});
-    } else if (node.operation == "SELECT") {
-      expectArity(3);
-      if (operandCount == 3 &&
-          (!isPredicate(node.operandTypes[0]) || node.operandTypes[1] != node.operandTypes[2] ||
-           node.operandTypes[1] != node.resultType))
-        report.add({TargetDFGDiagnosticCode::TDFG_OPERATION_OPERAND_INVALID,
-                    "SELECT requires a predicate and matching value/result types", node.id});
+                    "node operand type does not satisfy TargetModel operand role", node.id,
+                    std::nullopt, operand});
     }
     if (node.genericOrigins.empty())
       report.add({TargetDFGDiagnosticCode::TDFG_PROVENANCE_EMPTY,
@@ -364,29 +359,39 @@ TargetDFGVerifier::verify(const TargetDFG& dfg, const TargetModel& target, const
     }
     const auto& src = *srcIt->second;
     const auto& dst = *dstIt->second;
+    const auto* srcOperation = target.findOperation(src.operation);
+    const auto* dstOperation = target.findOperation(dst.operation);
     if (edge.kind() == ir::Edge::Kind::Data) {
       const auto operand = std::get<ir::DataEdgeInfo>(edge.info).dstOperand;
-      if (operand >= dst.operandTypes.size() || src.resultType.kind == ir::ValueKind::Void ||
-          src.resultType.kind == ir::ValueKind::Predicate ||
+      if (operand >= dst.operandTypes.size() || !dstOperation ||
+          (operand < dstOperation->operands.size() &&
+           dstOperation->operands[operand].role != TargetOperandRole::Data) ||
+          !srcOperation || srcOperation->resultRole != TargetResultRole::Data ||
           (operand < dst.operandTypes.size() && src.resultType != dst.operandTypes[operand]))
         report.add({TargetDFGDiagnosticCode::TDFG_DATA_EDGE_INVALID,
                     "Target data edge has invalid source, operand, or type", dst.id, edge.id,
                     operand});
     } else if (edge.kind() == ir::Edge::Kind::Predicate) {
       const auto operand = std::get<ir::PredicateEdgeInfo>(edge.info).dstOperand;
-      if (operand >= dst.operandTypes.size() || !isPredicate(src.resultType) ||
+      if (operand >= dst.operandTypes.size() || !dstOperation ||
+          (operand < dstOperation->operands.size() &&
+           dstOperation->operands[operand].role != TargetOperandRole::Predicate) ||
+          !srcOperation || srcOperation->resultRole != TargetResultRole::Predicate ||
           !isPredicate(dst.operandTypes[operand]))
         report.add({TargetDFGDiagnosticCode::TDFG_PREDICATE_EDGE_INVALID,
                     "Target predicate edge has invalid source or destination", dst.id, edge.id,
                     operand});
     } else {
       const auto dependence = std::get<ir::MemoryEdgeInfo>(edge.info).dependence;
-      const bool valid = (dependence == ir::MemoryDepKind::RAW && src.operation == "STORE" &&
-                          dst.operation == "LOAD") ||
-                         (dependence == ir::MemoryDepKind::WAR && src.operation == "LOAD" &&
-                          dst.operation == "STORE") ||
-                         (dependence == ir::MemoryDepKind::WAW && src.operation == "STORE" &&
-                          dst.operation == "STORE");
+      const auto* srcOperation = target.findOperation(src.operation);
+      const auto* dstOperation = target.findOperation(dst.operation);
+      const bool srcStore = srcOperation && isStoreLike(*srcOperation);
+      const bool srcLoad = srcOperation && isLoadLike(*srcOperation);
+      const bool dstStore = dstOperation && isStoreLike(*dstOperation);
+      const bool dstLoad = dstOperation && isLoadLike(*dstOperation);
+      const bool valid = (dependence == ir::MemoryDepKind::RAW && srcStore && dstLoad) ||
+                         (dependence == ir::MemoryDepKind::WAR && srcLoad && dstStore) ||
+                         (dependence == ir::MemoryDepKind::WAW && srcStore && dstStore);
       if (!valid)
         report.add({TargetDFGDiagnosticCode::TDFG_MEMORY_EDGE_INVALID,
                     "Target memory edge has invalid endpoint operations", dst.id, edge.id});

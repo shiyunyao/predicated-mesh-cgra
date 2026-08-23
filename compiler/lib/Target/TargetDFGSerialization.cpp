@@ -67,6 +67,16 @@ std::string dump(const TargetDFG& dfg) {
       output << *node.resultLatency;
     else
       output << "none";
+    output << " output_ready=";
+    if (node.producerOutputReadyOffset)
+      output << *node.producerOutputReadyOffset;
+    else
+      output << "none";
+    output << " access_width=";
+    if (node.accessWidthBits)
+      output << *node.accessWidthBits;
+    else
+      output << "none";
     output << "\n";
   }
   output << "\nedges:\n";
@@ -117,6 +127,14 @@ std::string toJson(const TargetDFG& dfg) {
       value["result_latency"] = *node.resultLatency;
     else
       value["result_latency"] = nullptr;
+    if (node.producerOutputReadyOffset)
+      value["producer_output_ready_offset"] = *node.producerOutputReadyOffset;
+    else
+      value["producer_output_ready_offset"] = nullptr;
+    if (node.accessWidthBits)
+      value["memory_access_width_bits"] = *node.accessWidthBits;
+    else
+      value["memory_access_width_bits"] = nullptr;
     for (const auto& type : node.operandTypes)
       value["operand_types"].push_back(typeJson(type));
     root["nodes"].push_back(std::move(value));
@@ -166,6 +184,12 @@ TargetDFG parse(std::string_view jsonText) {
     node.issueOccupancy = required<unsigned>(value, "issue_occupancy");
     if (!value.at("result_latency").is_null())
       node.resultLatency = value.at("result_latency").get<unsigned>();
+    if (value.contains("producer_output_ready_offset") &&
+        !value.at("producer_output_ready_offset").is_null())
+      node.producerOutputReadyOffset = value.at("producer_output_ready_offset").get<unsigned>();
+    if (value.contains("memory_access_width_bits") &&
+        !value.at("memory_access_width_bits").is_null())
+      node.accessWidthBits = value.at("memory_access_width_bits").get<unsigned>();
     for (const auto& type : value.at("operand_types"))
       node.operandTypes.push_back(parseType(type));
     node.genericOrigins = value.at("generic_origins").get<std::vector<ir::NodeId>>();

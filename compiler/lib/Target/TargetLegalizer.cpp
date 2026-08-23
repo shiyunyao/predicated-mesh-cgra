@@ -3,6 +3,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <sstream>
 
 namespace cgra::target {
@@ -49,18 +50,55 @@ std::string operationFor(const ir::Node& node) {
     case ir::ICmpPredicate::ULE:
       return "CMP_ULE";
     case ir::ICmpPredicate::UGT:
+      return "CMP_UGT";
     case ir::ICmpPredicate::UGE:
+      return "CMP_UGE";
     case ir::ICmpPredicate::SLT:
+      return "CMP_SLT";
     case ir::ICmpPredicate::SLE:
+      return "CMP_SLE";
     case ir::ICmpPredicate::SGT:
+      return "CMP_SGT";
     case ir::ICmpPredicate::SGE:
-      return {};
+      return "CMP_SGE";
     }
   }
   return {};
 }
 
 std::string opcodeName(const ir::Node& node) { return std::string(ir::toString(node.opcode)); }
+
+bool isPredicate(const ir::ValueType& type) {
+  return type.kind == ir::ValueKind::Predicate && type.bitWidth == 1;
+}
+
+bool isData(const ir::ValueType& type) {
+  return type.kind == ir::ValueKind::Integer || type.kind == ir::ValueKind::Float;
+}
+
+bool roleMatches(TargetOperandRole role, const ir::ValueType& type) {
+  switch (role) {
+  case TargetOperandRole::Data:
+    return isData(type);
+  case TargetOperandRole::Predicate:
+    return isPredicate(type);
+  case TargetOperandRole::Address:
+    return type.kind == ir::ValueKind::Integer;
+  }
+  return false;
+}
+
+bool resultRoleMatches(TargetResultRole role, const ir::ValueType& type) {
+  switch (role) {
+  case TargetResultRole::Data:
+    return isData(type);
+  case TargetResultRole::Predicate:
+    return isPredicate(type);
+  case TargetResultRole::Void:
+    return type == ir::ValueType::voidTy();
+  }
+  return false;
+}
 
 void addDiagnostic(TargetLegalizationResult& result, LegalizationStatus status, std::string code,
                    std::string message, std::optional<ir::NodeId> node = std::nullopt) {
@@ -83,6 +121,8 @@ std::string_view toString(LegalizationStatus status) {
     return "unsupported_compare_predicate";
   case LegalizationStatus::UnsupportedMemoryAccessWidth:
     return "unsupported_memory_access_width";
+  case LegalizationStatus::NoCompatibleExecutionResource:
+    return "no_compatible_execution_resource";
   case LegalizationStatus::TargetContractError:
     return "target_contract_error";
   case LegalizationStatus::InternalError:
@@ -155,14 +195,6 @@ TargetLegalizationResult TargetLegalizer::legalize(const ir::DFG& generic,
       continue;
     }
 
-    if ((node.opcode == ir::Opcode::Load || node.opcode == ir::Opcode::Store) &&
-        (!node.memoryInfo || node.memoryInfo->accessWidthBits != target.memory().widthBits)) {
-      addDiagnostic(result, LegalizationStatus::UnsupportedMemoryAccessWidth,
-                    "TLEG_UNSUPPORTED_MEMORY_ACCESS_WIDTH",
-                    "memory operation width is not supported by target", node.id);
-      continue;
-    }
-
     const auto operationName = operationFor(node);
     if (operationName.empty()) {
       const auto code = node.opcode == ir::Opcode::ICmp ? "TLEG_UNSUPPORTED_ICMP_PREDICATE"
@@ -176,9 +208,51 @@ TargetLegalizationResult TargetLegalizer::legalize(const ir::DFG& generic,
     }
     const auto* operation = target.findOperation(operationName);
     if (!operation) {
-      addDiagnostic(result, LegalizationStatus::UnsupportedOperation,
-                    "TLEG_MISSING_TARGET_OPERATION",
+      const bool compare = node.opcode == ir::Opcode::ICmp;
+      addDiagnostic(result,
+                    compare ? LegalizationStatus::UnsupportedComparePredicate
+                            : LegalizationStatus::UnsupportedOperation,
+                    compare ? "TLEG_UNSUPPORTED_ICMP_PREDICATE" : "TLEG_MISSING_TARGET_OPERATION",
                     "target does not provide operation " + operationName, node.id);
+      continue;
+    }
+    if (!target.isOperationExecutable(*operation)) {
+      addDiagnostic(result, LegalizationStatus::NoCompatibleExecutionResource,
+                    "TLEG_NO_COMPATIBLE_EXECUTION_RESOURCE",
+                    "target operation " + operationName + " has no compatible execution resource",
+                    node.id);
+      continue;
+    }
+    if ((node.opcode == ir::Opcode::Load || node.opcode == ir::Opcode::Store) &&
+        (!node.memoryInfo || !operation->accessWidthBits ||
+         node.memoryInfo->accessWidthBits != *operation->accessWidthBits)) {
+      addDiagnostic(result, LegalizationStatus::UnsupportedMemoryAccessWidth,
+                    "TLEG_UNSUPPORTED_MEMORY_ACCESS_WIDTH",
+                    "memory operation width is not supported by target", node.id);
+      continue;
+    }
+    const auto requiredOperands = static_cast<std::size_t>(
+        std::count_if(operation->operands.begin(), operation->operands.end(),
+                      [](const auto& operand) { return !operand.optional; }));
+    if (node.operandTypes.size() < static_cast<std::size_t>(requiredOperands) ||
+        node.operandTypes.size() > operation->operands.size()) {
+      addDiagnostic(
+          result, LegalizationStatus::TargetContractError, "TLEG_INVALID_TARGET_OPERATION_DESC",
+          "target operation " + operationName + " has an incompatible operand count", node.id);
+      continue;
+    }
+    bool operandSignatureValid = true;
+    for (std::size_t operand = 0; operand < node.operandTypes.size(); ++operand) {
+      if (!roleMatches(operation->operands[operand].role, node.operandTypes[operand])) {
+        operandSignatureValid = false;
+        break;
+      }
+    }
+    if (!operandSignatureValid || !resultRoleMatches(operation->resultRole, node.resultType)) {
+      addDiagnostic(
+          result, LegalizationStatus::TargetContractError, "TLEG_INVALID_TARGET_OPERATION_DESC",
+          "target operation " + operationName + " semantic signature does not match Generic DFG",
+          node.id);
       continue;
     }
     if (operation->resultType != node.resultType) {
@@ -219,7 +293,9 @@ TargetLegalizationResult TargetLegalizer::legalize(const ir::DFG& generic,
                                                 source.operandTypes,
                                                 operation.issueOccupancy,
                                                 operation.resultLatency,
-                                                {source.id}});
+                                                {source.id},
+                                                operation.producerOutputReadyOffset,
+                                                operation.accessWidthBits});
     result.map.genericToTarget[item.genericNode].push_back(targetId);
   }
   TargetEdgeId nextEdge = 0;

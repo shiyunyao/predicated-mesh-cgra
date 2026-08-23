@@ -30,14 +30,25 @@ numeric control encodings. The operation descriptor comes from `TargetModel`
 and supplies:
 
 * execution class (`FU` or `LSU`);
-* target-supported result and operand types;
+* semantic operand roles (`data`, `predicate`, or `address`) and result role;
 * issue occupancy;
 * result latency, omitted for `STORE`;
+* producer output readiness offset;
 * memory access width for `LOAD` and `STORE`.
 
 For the canonical target, integer FU results and comparisons have latency 1,
-loads have latency 2, and all operations have issue occupancy 1. These values
-are queried from the target contract; legalization does not duplicate them.
+loads have latency 2, and all operations have issue occupancy 1. FU output
+readiness is offset 0 and load output readiness is offset 2. These values are
+queried from the complete `operations` descriptors in the target contract;
+legalization does not duplicate them. An operation can be defined in the
+contract while not executable on a concrete topology: LSU operations require
+at least one enabled LSU tile, as reported by `TargetModel`.
+
+The current `cgra.target.v2` file requires this complete `operations` section.
+The older `ops` and `latencies` sections remain only as explicitly marked
+`legacy_compatibility_view` data for control/RTL consumers; they are not used
+to construct compiler operation semantics. A v2 target without the complete
+section is rejected rather than silently receiving compiler defaults.
 
 The current one-to-one operation selection is:
 

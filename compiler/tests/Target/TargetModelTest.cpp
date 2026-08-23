@@ -149,6 +149,43 @@ void testModuloTimingContract(const cgra::TargetModel& target) {
         "memory dependence separation");
 }
 
+void testOperationSchema(const cgra::TargetModel& target) {
+  const auto& add = target.operation("ADD");
+  check(add.executionClass == cgra::TargetExecutionClass::FU &&
+            add.resultRole == cgra::TargetResultRole::Data && add.operands.size() == 2 &&
+            add.operands[0].role == cgra::TargetOperandRole::Data &&
+            add.operands[1].role == cgra::TargetOperandRole::Data && !add.operands[0].optional &&
+            !add.operands[1].optional,
+        "ADD semantic operand/result descriptor");
+
+  const auto& compare = target.operation("CMP_ULT");
+  check(compare.resultRole == cgra::TargetResultRole::Predicate && compare.operands.size() == 2,
+        "compare semantic result descriptor");
+
+  const auto& select = target.operation("SELECT");
+  check(select.operands.size() == 3 &&
+            select.operands[0].role == cgra::TargetOperandRole::Predicate &&
+            select.operands[1].role == cgra::TargetOperandRole::Data &&
+            select.operands[2].role == cgra::TargetOperandRole::Data,
+        "SELECT semantic operand descriptor");
+
+  const auto& load = target.operation("LOAD");
+  check(load.executionClass == cgra::TargetExecutionClass::LSU && load.operands.size() == 1 &&
+            load.operands[0].role == cgra::TargetOperandRole::Address &&
+            load.resultRole == cgra::TargetResultRole::Data && load.accessWidthBits == 32,
+        "LOAD semantic descriptor");
+
+  const auto& store = target.operation("STORE");
+  check(store.resultRole == cgra::TargetResultRole::Void && store.operands.size() == 3 &&
+            store.operands[0].role == cgra::TargetOperandRole::Address &&
+            store.operands[1].role == cgra::TargetOperandRole::Data &&
+            store.operands[2].role == cgra::TargetOperandRole::Predicate &&
+            store.operands[2].optional,
+        "STORE semantic descriptor");
+  check(target.isOperationExecutable("ADD") && target.isOperationExecutable("LOAD"),
+        "canonical operations are executable");
+}
+
 void testEncodingConsistency(const cgra::TargetModel& target) {
   const std::map<std::string, std::map<std::string, unsigned>> expected = {
       {"op",
@@ -353,6 +390,44 @@ void testMalformedTargets(const Json& canonical) {
       canonical,
       [](Json& json) { json["lsu"]["enabled_tiles"][1] = json["lsu"]["enabled_tiles"][0]; },
       "duplicates an enabled LSU tile");
+  expectRejected(
+      canonical, [](Json& json) { json["operations"]["ADD"].erase("issue_occupancy"); },
+      "operations.ADD");
+  expectRejected(
+      canonical, [](Json& json) { json["operation_compatibility"].erase("authoritative_section"); },
+      "operation_compatibility.authoritative_section");
+  expectRejected(
+      canonical, [](Json& json) { json["operations"]["ADD"]["issue_occupancy"] = 0; },
+      "operations.ADD.issue_occupancy");
+  expectRejected(
+      canonical, [](Json& json) { json["operations"]["ADD"]["operands"][0]["role"] = "bogus"; },
+      "unknown target operand role");
+  expectRejected(
+      canonical, [](Json& json) { json["operations"]["ADD"].erase("result_latency"); },
+      "value-producing operation requires");
+  expectRejected(
+      canonical,
+      [](Json& json) { json["operations"]["ADD"].erase("producer_output_ready_offset"); },
+      "value-producing operation requires");
+  expectRejected(
+      canonical, [](Json& json) { json["operations"]["ADD"]["result"]["role"] = "bogus"; },
+      "unknown target result role");
+  expectRejected(
+      canonical,
+      [](Json& json) { json["operations"]["STORE"]["producer_output_ready_offset"] = 0; },
+      "void operation must not define");
+}
+
+void testExecutionAvailability(const Json& canonical) {
+  auto noLsu = canonical;
+  noLsu["lsu"]["enabled_tiles"] = Json::array();
+  const TemporaryTarget file(noLsu);
+  const auto target = cgra::TargetModel::loadFromFile(file.path());
+  check(target.hasExecutionClass(cgra::TargetExecutionClass::FU), "FU execution class exists");
+  check(!target.hasExecutionClass(cgra::TargetExecutionClass::LSU), "zero-LSU target has no LSU");
+  check(target.isOperationExecutable("ADD"), "FU operation remains executable without LSU");
+  check(!target.isOperationExecutable("LOAD") && !target.isOperationExecutable("STORE"),
+        "memory operation unavailable without LSU tiles");
 }
 
 void testPaddingRejected(const cgra::TargetModel& target) {
@@ -374,10 +449,12 @@ int main() {
     const auto target = cgra::TargetModel::loadFromFile(TargetPath);
     testCanonicalResources(target);
     testModuloTimingContract(target);
+    testOperationSchema(target);
     testEncodingConsistency(target);
     testKnownControl(target);
     testManifestRoundTrip(target);
     testMalformedTargets(loadJson(TargetPath));
+    testExecutionAvailability(loadJson(TargetPath));
     testPaddingRejected(target);
   } catch (const std::exception& error) {
     std::cerr << "UNCAUGHT TEST ERROR: " << error.what() << '\n';
