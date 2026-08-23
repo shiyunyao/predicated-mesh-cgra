@@ -71,6 +71,17 @@ cgra_enable_sanitizers(cgra_ir)
 # through the target library for downstream users of the legalization API.
 target_link_libraries(cgra_target PUBLIC cgra_ir)
 
+add_library(cgra_mapping
+  lib/Mapping/ModuloMapping.cpp
+  lib/Mapping/ModuloMappingSerialization.cpp
+  lib/Mapping/ModuloResourceModel.cpp
+  lib/Mapping/ResourceReservation.cpp
+)
+target_include_directories(cgra_mapping PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(cgra_mapping PUBLIC cgra_target cgra_ir)
+cgra_enable_warnings(cgra_mapping)
+cgra_enable_sanitizers(cgra_mapping)
+
 add_executable(cgra-target-dump tools/target-dump/main.cpp)
 target_link_libraries(cgra-target-dump PRIVATE cgra_target)
 cgra_enable_warnings(cgra-target-dump)
@@ -119,6 +130,14 @@ if(CGRA_BUILD_TESTS)
     TYPE semantic
     SOURCES tests/Target/TargetDFGVerifierTest.cpp tests/IR/Fixtures.cpp
     LIBRARIES cgra_target cgra_ir
+    DEFINITIONS CGRA_REPOSITORY_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/.."
+  )
+
+  cgra_add_test(
+    NAME cgra-modulo-mapping-tests
+    TYPE semantic
+    SOURCES tests/Mapping/ModuloMappingTest.cpp tests/IR/Fixtures.cpp
+    LIBRARIES cgra_mapping
     DEFINITIONS CGRA_REPOSITORY_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/.."
   )
 

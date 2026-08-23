@@ -26,6 +26,7 @@ struct TargetOperationDesc {
   ir::ValueType resultType = ir::ValueType::voidTy();
   unsigned issueOccupancy = 1;
   std::optional<unsigned> resultLatency;
+  std::optional<unsigned> producerOutputReadyOffset;
   std::optional<unsigned> accessWidthBits;
 
   friend bool operator==(const TargetOperationDesc&, const TargetOperationDesc&) = default;

@@ -113,7 +113,10 @@ void testCanonicalResources(const cgra::TargetModel& target) {
             target.memory().addressUnit == "word" && target.memory().depth == 4096 &&
             target.memory().ports == 4 && target.memory().loadLatency == 2 &&
             target.memory().maxIssuePerLsuPerCycle == 1 &&
-            target.memory().maxIssuePerPortPerCycle == 1 && !target.memory().runtimeStall &&
+            target.memory().maxIssuePerPortPerCycle == 1 &&
+            target.memory().rawDependenceSeparation == 1 &&
+            target.memory().warDependenceSeparation == 1 &&
+            target.memory().wawDependenceSeparation == 1 && !target.memory().runtimeStall &&
             !target.memory().runtimeArbitration,
         "shared memory resources and timing");
   check(
@@ -132,6 +135,18 @@ void testCanonicalResources(const cgra::TargetModel& target) {
     check(!target.tileHasLSU(row, 1), "non-left-column LSU disabled");
     check(target.lsuTiles().at(row).portId == row, "row-major LSU port assignment");
   }
+}
+
+void testModuloTimingContract(const cgra::TargetModel& target) {
+  check(target.operation("ADD").producerOutputReadyOffset == 0, "FU output-ready offset");
+  check(target.operation("CMP_ULT").producerOutputReadyOffset == 0,
+        "predicate output-ready offset");
+  check(target.operation("LOAD").producerOutputReadyOffset == 2, "LOAD output-ready offset");
+  check(!target.operation("STORE").producerOutputReadyOffset, "STORE has no output-ready offset");
+  check(target.memoryDependenceSeparation(cgra::ir::MemoryDepKind::RAW) == 1 &&
+            target.memoryDependenceSeparation(cgra::ir::MemoryDepKind::WAR) == 1 &&
+            target.memoryDependenceSeparation(cgra::ir::MemoryDepKind::WAW) == 1,
+        "memory dependence separation");
 }
 
 void testEncodingConsistency(const cgra::TargetModel& target) {
@@ -358,6 +373,7 @@ int main() {
   try {
     const auto target = cgra::TargetModel::loadFromFile(TargetPath);
     testCanonicalResources(target);
+    testModuloTimingContract(target);
     testEncodingConsistency(target);
     testKnownControl(target);
     testManifestRoundTrip(target);

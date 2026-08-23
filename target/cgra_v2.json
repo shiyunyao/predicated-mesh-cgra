@@ -89,6 +89,7 @@
     "load_latency": 2,
     "max_issue_per_lsu_per_cycle": 1,
     "max_issue_per_port_per_cycle": 1,
+    "dependence_separation": {"RAW": 1, "WAR": 1, "WAW": 1},
     "same_address_policy": "multi_load_only",
     "runtime_stall": false,
     "runtime_arbitration": false,
@@ -121,6 +122,8 @@
     "same_address_rf_read_write_recurrence": false
   },
   "latencies": {
+    "producer_output_ready_offsets": {"fu": 0, "load": 2},
+    "issue_occupancy": {"fu": 1, "load": 1, "store": 1},
     "fu_ops": {
       "NOP": 1,
       "PASS": 1,

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 
+#include "cgra/IR/Edge.h"
 #include "cgra/Target/ControlLayout.h"
 #include "cgra/Target/TargetOperation.h"
 
@@ -49,6 +50,9 @@ struct MemoryDesc {
   unsigned loadLatency = 0;
   unsigned maxIssuePerLsuPerCycle = 0;
   unsigned maxIssuePerPortPerCycle = 0;
+  unsigned rawDependenceSeparation = 0;
+  unsigned warDependenceSeparation = 0;
+  unsigned wawDependenceSeparation = 0;
   std::string sameAddressPolicy;
   bool runtimeStall = false;
   bool runtimeArbitration = false;
@@ -88,6 +92,7 @@ public:
   const TargetOperationDesc* findOperation(std::string_view name) const noexcept;
   const TargetOperationDesc& operation(std::string_view name) const;
   const std::vector<TargetOperationDesc>& operations() const noexcept { return operations_; }
+  unsigned memoryDependenceSeparation(ir::MemoryDepKind kind) const noexcept;
 
   bool tileHasLSU(unsigned row, unsigned col) const noexcept;
   unsigned encodingValue(std::string_view domain, std::string_view name) const;

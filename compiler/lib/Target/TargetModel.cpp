@@ -204,6 +204,13 @@ TargetModel TargetModel::loadFromFile(const std::filesystem::path& path) {
       positiveUnsigned(memory, "max_issue_per_lsu_per_cycle", "memory");
   model.memory_.maxIssuePerPortPerCycle =
       positiveUnsigned(memory, "max_issue_per_port_per_cycle", "memory");
+  const auto& separation = requiredObject(memory, "dependence_separation", "memory");
+  model.memory_.rawDependenceSeparation =
+      positiveUnsigned(separation, "RAW", "memory.dependence_separation");
+  model.memory_.warDependenceSeparation =
+      positiveUnsigned(separation, "WAR", "memory.dependence_separation");
+  model.memory_.wawDependenceSeparation =
+      positiveUnsigned(separation, "WAW", "memory.dependence_separation");
   model.memory_.sameAddressPolicy = required<std::string>(memory, "same_address_policy", "memory");
   model.memory_.runtimeStall = required<bool>(memory, "runtime_stall", "memory");
   model.memory_.runtimeArbitration = required<bool>(memory, "runtime_arbitration", "memory");
@@ -218,17 +225,30 @@ TargetModel TargetModel::loadFromFile(const std::filesystem::path& path) {
 
   const auto& latencies = requiredObject(root, "latencies", "");
   const auto& fuLatencies = requiredObject(latencies, "fu_ops", "latencies");
+  const auto& outputOffsets =
+      requiredObject(latencies, "producer_output_ready_offsets", "latencies");
+  const auto fuOutputReadyOffset =
+      required<unsigned>(outputOffsets, "fu", "latencies.producer_output_ready_offsets");
+  const auto loadOutputReadyOffset =
+      required<unsigned>(outputOffsets, "load", "latencies.producer_output_ready_offsets");
+  const auto& occupancies = requiredObject(latencies, "issue_occupancy", "latencies");
+  const auto fuOccupancy = required<unsigned>(occupancies, "fu", "latencies.issue_occupancy");
+  const auto loadOccupancy = required<unsigned>(occupancies, "load", "latencies.issue_occupancy");
+  const auto storeOccupancy = required<unsigned>(occupancies, "store", "latencies.issue_occupancy");
+  if (fuOccupancy == 0 || loadOccupancy == 0 || storeOccupancy == 0)
+    fail("latencies.issue_occupancy", "all issue occupancies must be positive");
   const auto& ops = requiredObject(root, "ops", "");
   const auto addOperation = [&](std::string name, TargetExecutionClass executionClass,
                                 ir::ValueType resultType, std::optional<unsigned> latency,
+                                std::optional<unsigned> outputReadyOffset, unsigned issueOccupancy,
                                 std::optional<unsigned> accessWidth = std::nullopt) {
     if (model.operationIndices_.contains(name))
       fail("ops", "duplicate operation " + name);
     if (latency && *latency == 0)
       fail("latencies." + name, "must be greater than zero");
     model.operationIndices_.emplace(name, model.operations_.size());
-    model.operations_.push_back(
-        {std::move(name), executionClass, resultType, 1, latency, accessWidth});
+    model.operations_.push_back({std::move(name), executionClass, resultType, issueOccupancy,
+                                 latency, outputReadyOffset, accessWidth});
   };
   const auto addOperationList = [&](const std::string& key, ir::ValueType resultType) {
     const auto& list = requiredArray(ops, key, "ops");
@@ -239,16 +259,18 @@ TargetModel TargetModel::loadFromFile(const std::filesystem::path& path) {
       if (!fuLatencies.contains(name))
         fail("latencies.fu_ops." + name, "missing latency for target operation");
       addOperation(name, TargetExecutionClass::FU, resultType,
-                   required<unsigned>(fuLatencies, name, "latencies.fu_ops"));
+                   required<unsigned>(fuLatencies, name, "latencies.fu_ops"), fuOutputReadyOffset,
+                   fuOccupancy);
     }
   };
   addOperationList("data", ir::ValueType::integer(model.array_.dataWidth));
   addOperationList("compare", ir::ValueType::predicate());
   addOperationList("predicate", ir::ValueType::predicate());
   addOperation("LOAD", TargetExecutionClass::LSU, ir::ValueType::integer(model.memory_.widthBits),
-               model.memory_.loadLatency, model.memory_.widthBits);
-  addOperation("STORE", TargetExecutionClass::LSU, ir::ValueType::voidTy(), std::nullopt,
+               model.memory_.loadLatency, loadOutputReadyOffset, loadOccupancy,
                model.memory_.widthBits);
+  addOperation("STORE", TargetExecutionClass::LSU, ir::ValueType::voidTy(), std::nullopt,
+               std::nullopt, storeOccupancy, model.memory_.widthBits);
 
   const auto& loop = requiredObject(root, "loop_execution", "");
   model.loopExecution_.supported = required<bool>(loop, "supported", "loop_execution");
@@ -460,6 +482,18 @@ bool TargetModel::tileHasLSU(unsigned row, unsigned col) const noexcept {
   return std::ranges::any_of(lsuTiles_, [row, col](const LsuTileDesc& tile) {
     return tile.row == row && tile.col == col;
   });
+}
+
+unsigned TargetModel::memoryDependenceSeparation(ir::MemoryDepKind kind) const noexcept {
+  switch (kind) {
+  case ir::MemoryDepKind::RAW:
+    return memory_.rawDependenceSeparation;
+  case ir::MemoryDepKind::WAR:
+    return memory_.warDependenceSeparation;
+  case ir::MemoryDepKind::WAW:
+    return memory_.wawDependenceSeparation;
+  }
+  return 0;
 }
 
 bool TargetModel::supportsValueType(const ir::ValueType& type) const noexcept {

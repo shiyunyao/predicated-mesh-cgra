@@ -184,6 +184,12 @@ and issue occupancy from `TargetModel`, preserves dependence distances and
 provenance, and leaves placement, routing, registers, and control encoding to
 later passes. See [compiler/docs/TARGET_LEGALIZATION.md](compiler/docs/TARGET_LEGALIZATION.md).
 
+The mapper foundation is the finite modulo resource model and stage-free
+`ModuloMapping` IR. It replicates FU, LSU, and directional Data/Predicate link
+resources over exactly `[0, II)`, uses relative transport elapsed time and
+explicit `VirtualHold` storage events, and does not perform placement or route
+search. See [compiler/docs/MODULO_RESOURCE_MODEL.md](compiler/docs/MODULO_RESOURCE_MODEL.md).
+
 The standalone legalizer CLI is built with the compiler targets:
 
 ```bash
