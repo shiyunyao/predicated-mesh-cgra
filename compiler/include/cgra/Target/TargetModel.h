@@ -10,6 +10,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace cgra {
@@ -101,6 +102,8 @@ public:
   unsigned memoryDependenceSeparation(ir::MemoryDepKind kind) const noexcept;
 
   bool tileHasLSU(unsigned row, unsigned col) const noexcept;
+  bool tileSupportsOperation(unsigned row, unsigned col, std::string_view operation) const noexcept;
+  std::vector<std::pair<unsigned, unsigned>> compatibleTiles(std::string_view operation) const;
   unsigned encodingValue(std::string_view domain, std::string_view name) const;
   std::string encodingName(std::string_view domain, unsigned value) const;
   unsigned opcodeValue(std::string_view name) const { return encodingValue("op", name); }
@@ -126,6 +129,8 @@ private:
   std::unordered_map<std::string, std::unordered_map<unsigned, std::string>> reverseEncodings_;
   std::vector<TargetOperationDesc> operations_;
   std::unordered_map<std::string, std::size_t> operationIndices_;
+  std::unordered_set<std::string> defaultFuOperations_;
+  std::unordered_map<std::uint64_t, std::unordered_set<std::string>> tileOperationOverrides_;
 };
 
 } // namespace cgra

@@ -7,6 +7,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -76,6 +77,19 @@ DFG makeFUPressure(unsigned count) {
   for (unsigned index = 0; index < count; ++index) {
     const auto node =
         builder.addNode(Opcode::Add, {ValueType::i32(), ValueType::i32()}, ValueType::i32());
+    builder.bindExternal(node, 0, lhs);
+    builder.bindExternal(node, 1, rhs);
+  }
+  return builder.finish();
+}
+
+DFG makeMulPressure(unsigned count) {
+  DFGBuilder builder("mul_pressure");
+  const auto lhs = builder.addExternal("lhs", ValueType::i32());
+  const auto rhs = builder.addExternal("rhs", ValueType::i32());
+  for (unsigned index = 0; index < count; ++index) {
+    const auto node =
+        builder.addNode(Opcode::Mul, {ValueType::i32(), ValueType::i32()}, ValueType::i32());
     builder.bindExternal(node, 0, lhs);
     builder.bindExternal(node, 1, rhs);
   }
@@ -273,6 +287,23 @@ void testTargetMutations(const cgra::TargetModel& canonical) {
       MIIAnalyzer::analyze(legalize(makeLSUPressure(1), canonical), noLsuTarget);
   expect(noLsuResult.status == MIIStatus::NoCompatibleResource,
          "zero LSU capacity is an explicit MII failure");
+
+  auto capabilityJson = loadTargetJson();
+  auto& defaultOperations = capabilityJson["tile_capabilities"]["default_fu_operations"];
+  defaultOperations.erase(
+      std::remove(defaultOperations.begin(), defaultOperations.end(), Json("MUL")),
+      defaultOperations.end());
+  capabilityJson["tile_capabilities"]["overrides"] =
+      Json::array({{{"row", 0}, {"col", 0}, {"operations", Json::array({"MUL"})}},
+                   {{"row", 1}, {"col", 0}, {"operations", Json::array({"MUL"})}}});
+  TemporaryTarget capabilityFile(capabilityJson);
+  const auto capabilityTarget = cgra::TargetModel::loadFromFile(capabilityFile.path());
+  expect(capabilityTarget.compatibleTiles("MUL").size() == 2,
+         "per-operation tile capability is target-described");
+  const auto mulResult =
+      MIIAnalyzer::analyze(legalize(makeMulPressure(5), capabilityTarget), capabilityTarget);
+  expect(mulResult.ok() && mulResult.resourceBreakdown.perOperationMII == 3,
+         "per-operation compatible capacity contributes to resource MII");
 }
 
 } // namespace

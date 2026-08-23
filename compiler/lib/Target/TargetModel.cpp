@@ -134,6 +134,10 @@ void parseNetworkDomain(const Json& network, const std::string& key, Interconnec
          "only one compiler-routed channel is supported");
 }
 
+std::uint64_t tileKey(unsigned row, unsigned col) {
+  return (static_cast<std::uint64_t>(row) << 32) | col;
+}
+
 } // namespace
 
 TargetModel TargetModel::loadFromFile(const std::filesystem::path& path) {
@@ -338,6 +342,50 @@ TargetModel TargetModel::loadFromFile(const std::filesystem::path& path) {
                                    ir::ValueType::voidTy(), issueOccupancy, resultLatency,
                                    outputReadyOffset, accessWidth});
     model.operationIndices_.emplace(name, model.operations_.size() - 1);
+  }
+  for (const auto& operation : model.operations_)
+    if (operation.executionClass == TargetExecutionClass::FU)
+      model.defaultFuOperations_.insert(operation.id);
+  if (root.contains("tile_capabilities")) {
+    const auto& capabilities = requiredObject(root, "tile_capabilities", "");
+    const auto& defaults =
+        requiredArray(capabilities, "default_fu_operations", "tile_capabilities");
+    model.defaultFuOperations_.clear();
+    for (const auto& item : defaults) {
+      if (!item.is_string())
+        fail("tile_capabilities.default_fu_operations", "operation names must be strings");
+      const auto name = item.get<std::string>();
+      const auto* operation = model.findOperation(name);
+      if (!operation || operation->executionClass != TargetExecutionClass::FU)
+        fail("tile_capabilities.default_fu_operations", "operation is not a FU operation: " + name);
+      if (!model.defaultFuOperations_.insert(name).second)
+        fail("tile_capabilities.default_fu_operations", "duplicate operation: " + name);
+    }
+    const auto& overrides = requiredArray(capabilities, "overrides", "tile_capabilities");
+    for (const auto& item : overrides) {
+      if (!item.is_object())
+        fail("tile_capabilities.overrides", "entries must be objects");
+      const auto row = required<unsigned>(item, "row", "tile_capabilities.overrides");
+      const auto col = required<unsigned>(item, "col", "tile_capabilities.overrides");
+      if (row >= model.array_.rows || col >= model.array_.cols)
+        fail("tile_capabilities.overrides", "tile coordinate is outside the array");
+      const auto key = tileKey(row, col);
+      if (model.tileOperationOverrides_.contains(key))
+        fail("tile_capabilities.overrides", "duplicate tile override");
+      const auto& operationJson = requiredArray(item, "operations", "tile_capabilities.overrides");
+      auto& supported = model.tileOperationOverrides_[key];
+      for (const auto& operationValue : operationJson) {
+        if (!operationValue.is_string())
+          fail("tile_capabilities.overrides.operations", "operation names must be strings");
+        const auto name = operationValue.get<std::string>();
+        const auto* operation = model.findOperation(name);
+        if (!operation || operation->executionClass != TargetExecutionClass::FU)
+          fail("tile_capabilities.overrides.operations",
+               "operation is not a FU operation: " + name);
+        if (!supported.insert(name).second)
+          fail("tile_capabilities.overrides.operations", "duplicate operation: " + name);
+      }
+    }
   }
   const auto* loadOperationPtr = model.findOperation("LOAD");
   if (!loadOperationPtr)
@@ -578,6 +626,31 @@ bool TargetModel::tileHasLSU(unsigned row, unsigned col) const noexcept {
   });
 }
 
+bool TargetModel::tileSupportsOperation(unsigned row, unsigned col,
+                                        std::string_view operationName) const noexcept {
+  if (row >= array_.rows || col >= array_.cols)
+    return false;
+  const auto* operation = findOperation(operationName);
+  if (!operation)
+    return false;
+  if (operation->executionClass == TargetExecutionClass::LSU)
+    return tileHasLSU(row, col);
+  const auto overrideIt = tileOperationOverrides_.find(tileKey(row, col));
+  const auto& supported =
+      overrideIt == tileOperationOverrides_.end() ? defaultFuOperations_ : overrideIt->second;
+  return supported.contains(operation->id);
+}
+
+std::vector<std::pair<unsigned, unsigned>>
+TargetModel::compatibleTiles(std::string_view operationName) const {
+  std::vector<std::pair<unsigned, unsigned>> result;
+  for (unsigned row = 0; row < array_.rows; ++row)
+    for (unsigned col = 0; col < array_.cols; ++col)
+      if (tileSupportsOperation(row, col, operationName))
+        result.emplace_back(row, col);
+  return result;
+}
+
 unsigned TargetModel::memoryDependenceSeparation(ir::MemoryDepKind kind) const noexcept {
   switch (kind) {
   case ir::MemoryDepKind::RAW:
@@ -625,9 +698,14 @@ TargetModel::executionResourceCount(TargetExecutionClass executionClass) const n
 
 std::uint64_t
 TargetModel::compatibleResourceCount(const TargetOperationDesc& operation) const noexcept {
-  // V2 has homogeneous FU capabilities; keeping this query on TargetModel
-  // gives heterogeneous contracts one source-of-truth extension point.
-  return executionResourceCount(operation.executionClass);
+  if (operation.executionClass == TargetExecutionClass::LSU)
+    return lsuTiles_.size();
+  std::uint64_t count = 0;
+  for (unsigned row = 0; row < array_.rows; ++row)
+    for (unsigned col = 0; col < array_.cols; ++col)
+      if (tileSupportsOperation(row, col, operation.id))
+        ++count;
+  return count;
 }
 
 bool TargetModel::isOperationExecutable(std::string_view name) const noexcept {
@@ -636,7 +714,7 @@ bool TargetModel::isOperationExecutable(std::string_view name) const noexcept {
 }
 
 bool TargetModel::isOperationExecutable(const TargetOperationDesc& operationDesc) const noexcept {
-  return hasExecutionClass(operationDesc.executionClass);
+  return compatibleResourceCount(operationDesc) != 0;
 }
 
 unsigned TargetModel::encodingValue(std::string_view domain, std::string_view name) const {

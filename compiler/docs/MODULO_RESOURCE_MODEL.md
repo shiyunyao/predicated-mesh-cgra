@@ -43,7 +43,10 @@ cycle `t` arrives after the TargetModel mesh hop latency; V0 assumes the
 canonical one-cycle link. Reverse direction and Data/Predicate domains are
 different resources.
 
-Operation footprints query TargetModel operation descriptors. They reserve the
+Operation footprints query TargetModel operation descriptors and per-tile
+capabilities. The canonical v2 target defaults all FU operations to every tile
+and uses explicit LSU tile ownership; future contracts can restrict operation
+sets per tile without changing this resource API. They reserve the
 operation's execution resource for `issueOccupancy` consecutive modulo slots,
 including wraparound. If a footprint revisits the same resource because its
 occupancy is greater than II, construction fails rather than silently

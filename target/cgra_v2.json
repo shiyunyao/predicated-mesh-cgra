@@ -176,6 +176,10 @@
     "LOAD": {"execution_class": "LSU", "operands": [{"role": "address"}], "result": {"role": "data"}, "issue_occupancy": 1, "result_latency": 2, "producer_output_ready_offset": 2, "memory_access_width_bits": 32},
     "STORE": {"execution_class": "LSU", "operands": [{"role": "address"}, {"role": "data"}, {"role": "predicate", "optional": true}], "result": {"role": "void"}, "issue_occupancy": 1, "memory_access_width_bits": 32}
   },
+  "tile_capabilities": {
+    "default_fu_operations": ["NOP", "PASS", "ADD", "SUB", "MUL", "AND", "OR", "XOR", "SHL", "LSHR", "SELECT", "CMP_EQ", "CMP_NE", "CMP_ULT", "CMP_ULE", "PPASS", "PNOT", "PAND", "POR"],
+    "overrides": []
+  },
   "operation_compatibility": {
     "status": "legacy_compatibility_view",
     "authoritative_section": "operations"

@@ -82,6 +82,33 @@ ResourceKind kindOf(const ModuloResource& resource) noexcept {
       resource);
 }
 
+std::size_t
+ModuloResourceModel::ResourceKeyHash::operator()(const ResourceKey& key) const noexcept {
+  std::size_t hash = static_cast<std::size_t>(key.kind);
+  hash = hash * 31 + static_cast<std::size_t>(key.domain);
+  hash = hash * 31 + key.tile.row;
+  hash = hash * 31 + key.tile.col;
+  hash = hash * 31 + static_cast<std::size_t>(key.direction);
+  hash = hash * 31 + key.slot.value();
+  return hash;
+}
+
+ModuloResourceModel::ResourceKey
+ModuloResourceModel::keyFor(const ModuloResource& resource) noexcept {
+  return std::visit(
+      [](const auto& value) -> ResourceKey {
+        using T = std::decay_t<decltype(value)>;
+        if constexpr (std::is_same_v<T, FUResource>)
+          return {ResourceKind::FU, NetworkDomain::Data, value.tile, Direction::North, value.slot};
+        else if constexpr (std::is_same_v<T, LSUResource>)
+          return {ResourceKind::LSU, NetworkDomain::Data, value.tile, Direction::North, value.slot};
+        else
+          return {kindOf(ModuloResource{value}), value.domain, value.source, value.direction,
+                  value.slot};
+      },
+      resource);
+}
+
 ModuloResourceModel::ModuloResourceModel(const cgra::TargetModel& target, std::uint32_t ii)
     : target_(&target), time_(ii) {
   stats_.ii = ii;
@@ -125,6 +152,7 @@ ResourceId ModuloResourceModel::addResource(ModuloResource resource) {
     break;
   }
   resources_.push_back(std::move(resource));
+  resourceIds_.emplace(keyFor(resources_.back()), id);
   return id;
 }
 
@@ -135,10 +163,10 @@ const ModuloResource& ModuloResourceModel::resource(ResourceId id) const {
 }
 
 ResourceId ModuloResourceModel::findResource(const ModuloResource& requested) const {
-  const auto found = std::find(resources_.begin(), resources_.end(), requested);
-  if (found == resources_.end())
+  const auto found = resourceIds_.find(keyFor(requested));
+  if (found == resourceIds_.end())
     throw std::out_of_range("requested modulo resource does not exist");
-  return static_cast<ResourceId>(std::distance(resources_.begin(), found));
+  return found->second;
 }
 
 bool ModuloResourceModel::hasFU(TileCoord tile) const noexcept {
@@ -156,7 +184,7 @@ bool ModuloResourceModel::supportsOperation(TileCoord tile,
   const auto* operation = target_->findOperation(node.operation);
   if (!operation)
     return false;
-  return operation->executionClass == cgra::TargetExecutionClass::FU ? hasFU(tile) : hasLSU(tile);
+  return target_->tileSupportsOperation(tile.row, tile.col, operation->id);
 }
 
 ResourceId ModuloResourceModel::fuResource(TileCoord tile, ModuloSlot slot) const {

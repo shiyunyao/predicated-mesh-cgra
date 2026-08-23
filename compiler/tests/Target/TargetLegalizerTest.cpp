@@ -252,6 +252,9 @@ void testTargetMutation(const cgra::ir::DFG& fixture) {
 
   targetJson = loadTargetJson();
   targetJson["operations"].erase("ADD");
+  auto& addCapabilities = targetJson["tile_capabilities"]["default_fu_operations"];
+  addCapabilities.erase(std::remove(addCapabilities.begin(), addCapabilities.end(), Json("ADD")),
+                        addCapabilities.end());
   TemporaryTarget missingOperation(targetJson);
   const auto noAddTarget = cgra::TargetModel::loadFromFile(missingOperation.path());
   const auto failed = cgra::target::TargetLegalizer::legalize(fixture, noAddTarget);
@@ -261,6 +264,7 @@ void testTargetMutation(const cgra::ir::DFG& fixture) {
 void testTargetDrivenOperations() {
   auto targetJson = loadTargetJson();
   targetJson["operations"]["ASHR"] = targetJson["operations"]["LSHR"];
+  targetJson["tile_capabilities"]["default_fu_operations"].push_back("ASHR");
   TemporaryTarget ashrFile(targetJson);
   const auto ashrTarget = cgra::TargetModel::loadFromFile(ashrFile.path());
   cgra::ir::DFGBuilder ashrBuilder("ashr_target_driven");
@@ -275,6 +279,7 @@ void testTargetDrivenOperations() {
 
   targetJson = loadTargetJson();
   targetJson["operations"]["CMP_SLT"] = targetJson["operations"]["CMP_ULT"];
+  targetJson["tile_capabilities"]["default_fu_operations"].push_back("CMP_SLT");
   TemporaryTarget sltFile(targetJson);
   const auto sltTarget = cgra::TargetModel::loadFromFile(sltFile.path());
   cgra::ir::DFGBuilder sltBuilder("slt_target_driven");
@@ -290,6 +295,10 @@ void testTargetDrivenOperations() {
 
   targetJson = loadTargetJson();
   targetJson["operations"].erase("CMP_ULT");
+  auto& ultCapabilities = targetJson["tile_capabilities"]["default_fu_operations"];
+  ultCapabilities.erase(
+      std::remove(ultCapabilities.begin(), ultCapabilities.end(), Json("CMP_ULT")),
+      ultCapabilities.end());
   TemporaryTarget noUltFile(targetJson);
   const auto noUltTarget = cgra::TargetModel::loadFromFile(noUltFile.path());
   const auto unsignedResult = cgra::target::TargetLegalizer::legalize(

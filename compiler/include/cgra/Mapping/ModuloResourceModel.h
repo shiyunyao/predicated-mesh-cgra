@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <optional>
 #include <span>
+#include <unordered_map>
 #include <vector>
 
 namespace cgra::mapping {
@@ -45,12 +46,28 @@ public:
                                              ModuloSlot issueSlot) const;
 
 private:
+  struct ResourceKey {
+    ResourceKind kind = ResourceKind::FU;
+    NetworkDomain domain = NetworkDomain::Data;
+    TileCoord tile;
+    Direction direction = Direction::North;
+    ModuloSlot slot;
+
+    friend bool operator==(const ResourceKey&, const ResourceKey&) = default;
+  };
+
+  struct ResourceKeyHash {
+    std::size_t operator()(const ResourceKey& key) const noexcept;
+  };
+
   const cgra::TargetModel* target_;
   ModuloTimeDomain time_;
   std::vector<ModuloResource> resources_;
+  std::unordered_map<ResourceKey, ResourceId, ResourceKeyHash> resourceIds_;
   ModuloResourceStats stats_;
 
   ResourceId addResource(ModuloResource resource);
+  static ResourceKey keyFor(const ModuloResource& resource) noexcept;
   ResourceId findResource(const ModuloResource& resource) const;
 };
 
