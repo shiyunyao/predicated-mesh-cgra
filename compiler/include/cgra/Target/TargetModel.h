@@ -131,6 +131,8 @@ private:
   std::unordered_map<std::string, std::size_t> operationIndices_;
   std::unordered_set<std::string> defaultFuOperations_;
   std::unordered_map<std::uint64_t, std::unordered_set<std::string>> tileOperationOverrides_;
+
+  bool hasValidEncoding(const TargetOperationDesc& operation) const noexcept;
 };
 
 } // namespace cgra

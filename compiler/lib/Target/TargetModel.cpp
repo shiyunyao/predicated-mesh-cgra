@@ -723,6 +723,8 @@ TargetModel::executionResourceCount(TargetExecutionClass executionClass) const n
 
 std::uint64_t
 TargetModel::compatibleResourceCount(const TargetOperationDesc& operation) const noexcept {
+  if (!hasValidEncoding(operation))
+    return 0;
   if (operation.executionClass == TargetExecutionClass::LSU)
     return lsuTiles_.size();
   std::uint64_t count = 0;
@@ -740,6 +742,15 @@ bool TargetModel::isOperationExecutable(std::string_view name) const noexcept {
 
 bool TargetModel::isOperationExecutable(const TargetOperationDesc& operationDesc) const noexcept {
   return compatibleResourceCount(operationDesc) != 0;
+}
+
+bool TargetModel::hasValidEncoding(const TargetOperationDesc& operation) const noexcept {
+  const auto* registered = findOperation(operation.id);
+  if (!registered || *registered != operation || !operation.encoding)
+    return false;
+
+  const auto domainIt = encodings_.find(operation.encoding->domain);
+  return domainIt != encodings_.end() && domainIt->second.contains(operation.encoding->symbol);
 }
 
 unsigned TargetModel::encodingValue(std::string_view domain, std::string_view name) const {
