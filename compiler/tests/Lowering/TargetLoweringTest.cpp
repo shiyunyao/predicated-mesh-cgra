@@ -2,6 +2,7 @@
 #include "../IR/Fixtures.h"
 
 #include "cgra/IR/DFGBuilder.h"
+#include "cgra/Lowering/ConstantAllocator.h"
 #include "cgra/Lowering/TargetLowering.h"
 #include "cgra/Mapping/ModuloMapper.h"
 #include "cgra/RegisterAllocation/RFAllocator.h"
@@ -49,6 +50,27 @@ cgra::ir::DFG constantAdd() {
   builder.bindConstant(add, 0, lhs);
   builder.bindConstant(add, 1, rhs);
   return builder.finish();
+}
+
+cgra::ir::DFG sparseConstantAdd() {
+  cgra::ir::DFGBuilder builder("sparse_constant_add");
+  const auto lhs = builder.importConstant({100, cgra::ir::ValueType::i32(), 7});
+  const auto rhs = builder.importConstant({500, cgra::ir::ValueType::i32(), 11});
+  const auto add = builder.addNode(cgra::ir::Opcode::Add,
+                                   {cgra::ir::ValueType::i32(), cgra::ir::ValueType::i32()},
+                                   cgra::ir::ValueType::i32());
+  builder.bindConstant(add, 0, lhs);
+  builder.bindConstant(add, 1, rhs);
+  return builder.finish();
+}
+
+void testConstantAllocationDecouplesSemanticIds(const cgra::TargetModel& model) {
+  const auto legal = cgra::target::TargetLegalizer::legalize(sparseConstantAdd(), model);
+  expect(legal.ok(), "sparse constants legalize");
+  const auto image = cgra::lowering::ConstantAllocator::allocate(*legal.dfg, model);
+  expect(image.entries.size() == 2, "distinct sparse constants are allocated");
+  expect(image.address(100) == 0 && image.address(500) == 1,
+         "semantic constant IDs are not physical addresses");
 }
 
 void testDescriptorAndIdleRoundTrip(const cgra::TargetModel& model) {
@@ -136,6 +158,7 @@ int main() {
   try {
     const auto model = target();
     testDescriptorAndIdleRoundTrip(model);
+    testConstantAllocationDecouplesSemanticIds(model);
     testConstantLoweringAndManifest(model);
     testExternalProviderIsExplicitFailure(model);
     std::cout << "target lowering tests passed\n";
