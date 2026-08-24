@@ -97,6 +97,18 @@ cgra_enable_sanitizers(cgra_analysis)
 
 target_link_libraries(cgra_mapping PUBLIC cgra_analysis)
 
+add_library(cgra_schedule
+  lib/Schedule/StagedMapping.cpp
+  lib/Schedule/StageSchedulingResult.cpp
+  lib/Schedule/StageScheduler.cpp
+  lib/Schedule/StageAssignmentVerifier.cpp
+  lib/Schedule/StagedMappingSerialization.cpp
+)
+target_include_directories(cgra_schedule PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(cgra_schedule PUBLIC cgra_mapping cgra_target cgra_ir)
+cgra_enable_warnings(cgra_schedule)
+cgra_enable_sanitizers(cgra_schedule)
+
 add_executable(cgra-target-dump tools/target-dump/main.cpp)
 target_link_libraries(cgra-target-dump PRIVATE cgra_target)
 cgra_enable_warnings(cgra-target-dump)
@@ -150,6 +162,14 @@ target_link_libraries(cgra-modulo-map PRIVATE cgra_mapping)
 cgra_enable_warnings(cgra-modulo-map)
 cgra_enable_sanitizers(cgra-modulo-map)
 set_target_properties(cgra-modulo-map PROPERTIES
+  RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+)
+
+add_executable(cgra-stage-schedule tools/stage-schedule/main.cpp)
+target_link_libraries(cgra-stage-schedule PRIVATE cgra_schedule)
+cgra_enable_warnings(cgra-stage-schedule)
+cgra_enable_sanitizers(cgra-stage-schedule)
+set_target_properties(cgra-stage-schedule PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
 )
 
@@ -217,6 +237,14 @@ if(CGRA_BUILD_TESTS)
     TYPE semantic
     SOURCES tests/Analysis/MIIAnalyzerTest.cpp tests/IR/Fixtures.cpp
     LIBRARIES cgra_analysis
+    DEFINITIONS CGRA_REPOSITORY_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/.."
+  )
+
+  cgra_add_test(
+    NAME cgra-stage-scheduler-tests
+    TYPE semantic
+    SOURCES tests/Schedule/StageSchedulerTest.cpp tests/IR/Fixtures.cpp
+    LIBRARIES cgra_schedule
     DEFINITIONS CGRA_REPOSITORY_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/.."
   )
 
