@@ -19,12 +19,16 @@ RFAllocatedMapping::RFAllocatedMapping(cgra::schedule::StagedMapping staged,
 }
 
 PhysicalRegister RFAllocatedMapping::registerFor(StorageSegmentId segment) const {
+  return allocationFor(segment).reg;
+}
+
+const StorageAllocation& RFAllocatedMapping::allocationFor(StorageSegmentId segment) const {
   const auto found = std::lower_bound(
       allocations_.begin(), allocations_.end(), segment,
       [](const auto& allocation, const auto id) { return allocation.segment < id; });
   if (found == allocations_.end() || found->segment != segment)
     throw std::out_of_range("storage segment has no physical register allocation");
-  return found->reg;
+  return *found;
 }
 
 std::optional<PhysicalRegister>

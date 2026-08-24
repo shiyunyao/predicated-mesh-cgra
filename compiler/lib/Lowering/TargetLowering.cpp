@@ -366,29 +366,30 @@ struct Lowerer {
                sink == TargetControlSink::LsuCommitPredicate)
                   ? (constant->bits != 0 ? "CONST_TRUE" : "CONST_FALSE")
                   : "CONST_DATA";
-          builder.constant(constantId);
+          builder.constant(options.constantImage.address(constantId));
         } else if (edge) {
           if (edge->kind() == ir::Edge::Kind::Memory)
             throw LoweringError(TargetLoweringStatus::UnsupportedValueSource,
                                 "memory dependence cannot provide an operand value");
           const auto* segment = segmentForEdgeAtTile(mapping, edge->id, *event.tile);
           if (segment) {
-            const auto reg = mapping.registerFor(segment->id);
+            const auto& allocation = mapping.allocationFor(segment->id);
+            const auto reg = allocation.reg;
             const auto* bank = target.registerBank(segment->domain, reg.tile.row, reg.tile.col);
-            if (!bank || index >= bank->readPorts)
+            if (!bank || allocation.readPort >= bank->readPorts)
               throw LoweringError(TargetLoweringStatus::RFAccessPortViolation,
                                   "RF read operand exceeds target read-port contract");
-            source = rfSource(segment->domain, index > 0);
+            source = rfSource(segment->domain, allocation.readPort == 1);
             builder.mergeUnsigned(
                 segment->domain == RegisterBankDomain::Data
-                    ? (index == 0 ? "dataRfReadAddrA" : "dataRfReadAddrB")
-                    : (index == 0 ? "predicateRfReadAddrA" : "predicateRfReadAddrB"),
+                    ? (allocation.readPort == 0 ? "dataRfReadAddrA" : "dataRfReadAddrB")
+                    : (allocation.readPort == 0 ? "predicateRfReadAddrA" : "predicateRfReadAddrB"),
                 reg.index,
                 segment->domain == RegisterBankDomain::Data
-                    ? (index == 0 ? builder.control.dataRfReadAddrA
-                                  : builder.control.dataRfReadAddrB)
-                    : (index == 0 ? builder.control.predicateRfReadAddrA
-                                  : builder.control.predicateRfReadAddrB));
+                    ? (allocation.readPort == 0 ? builder.control.dataRfReadAddrA
+                                                : builder.control.dataRfReadAddrB)
+                    : (allocation.readPort == 0 ? builder.control.predicateRfReadAddrA
+                                                : builder.control.predicateRfReadAddrB));
           } else {
             const auto& dep = mappedEdge(mapping, edge->id);
             if (!dep.transport || dep.transport->actions.empty())
@@ -437,7 +438,7 @@ struct Lowerer {
         if (!segment)
           throw LoweringError(TargetLoweringStatus::UnsupportedValueSource,
                               "hold has no physical register");
-        source = rfSource(segment->domain, false);
+        source = rfSource(segment->domain, mapping.allocationFor(segment->id).readPort == 1);
       } else if (actionIndex > 0 && std::holds_alternative<LinkStep>(actions[actionIndex - 1])) {
         const auto& prior = std::get<LinkStep>(actions[actionIndex - 1]);
         source = edge.kind() == ir::Edge::Kind::Predicate ? predicateInput(prior.direction)
@@ -456,7 +457,6 @@ struct Lowerer {
       const auto& segment = mapping.storageRequirements().segment(*event.segment);
       const auto& edge = dfg.edge(*event.edge);
       std::string source;
-      unsigned port = 1;
       for (const auto& origin : segment.origins) {
         if (origin.kind == StorageOriginKind::ExplicitVirtualHold && origin.transportActionIndex) {
           const auto& actions = mappedEdge(mapping, edge.id).transport->actions;
@@ -481,8 +481,7 @@ struct Lowerer {
           source = resultSource(target.operation(dfg.node(edge.src).operation).resultSource);
         }
       }
-      if (source == "FU_DATA_RESULT" || source == "FU_PRED_RESULT")
-        port = 0;
+      const auto port = mapping.allocationFor(segment.id).writePort;
       if (segment.domain == RegisterBankDomain::Data)
         builder.dataWrite(port, event.physicalRegister->index, source);
       else
@@ -589,18 +588,25 @@ Json chunks(const EncodedControl& control) {
 Json buildManifestJson(const TargetDFG& dfg, const TargetModel& target,
                        const TargetControlProgram& program, const EncodedTargetProgram& encoded,
                        const TargetLoweringOptions& options) {
+  (void)dfg;
   const auto prologue = encoded.prologue.cycles.size();
   const auto epilogue = encoded.epilogue.cycles.size();
   const auto ii = program.ii();
   const auto kernelRepeats = encoded.kernel.repeatCount;
-  const auto runCycles = prologue + kernelRepeats * static_cast<std::uint64_t>(ii) + epilogue;
+  // The retained v1 replay contract requires a positive loop repeat count.
+  // When T011 has no common periodic window, all semantic events are already
+  // in the explicit boundary image; one idle kernel iteration preserves that
+  // image without duplicating an event.
+  const auto replayTripCount = kernelRepeats == 0 ? std::uint64_t{1} : kernelRepeats;
+  const auto runCycles = prologue + replayTripCount * static_cast<std::uint64_t>(ii) + epilogue;
   Json root;
   root["schema"] = "cgra.program_manifest.v1";
   root["name"] = options.programName;
   root["version"] = 1;
-  root["target"] = Json{{"schema", "cgra.target.v2"},
-                        {"name", std::string(target.name())},
-                        {"path", options.targetPath}};
+  root["target"] =
+      Json{{"schema", std::string("cgra.target.v") + std::to_string(target.contractVersion())},
+           {"name", std::string(target.name())},
+           {"path", options.targetPath}};
   root["run"] = Json{
       {"run_cycles", runCycles},
       {"result_observation", Json{{"mode", "trace_only"}, {"description", options.observation}}}};
@@ -610,7 +616,7 @@ Json buildManifestJson(const TargetDFG& dfg, const TargetModel& target,
                       // The v1 loop descriptor repeats the compact kernel image.  Its
                       // repeat count may differ from the source trip count when boundary
                       // instances are already represented in the prologue/epilogue.
-                      {"trip_count", kernelRepeats},
+                      {"trip_count", replayTripCount},
                       {"epilogue_cycles", epilogue}};
   Json tiles = Json::array();
   const auto addCycle = [&](Json& controls, std::uint64_t pc, const EncodedTargetCycle& cycle) {
@@ -635,10 +641,10 @@ Json buildManifestJson(const TargetDFG& dfg, const TargetModel& target,
   for (const auto& cycle : encoded.epilogue.cycles)
     addCycle(controls, pc++, cycle);
   Json constants = Json::array();
-  for (const auto& constant : dfg.constants()) {
+  for (const auto& allocation : options.constantImage.entries) {
     char text[11];
-    std::snprintf(text, sizeof(text), "0x%08x", static_cast<unsigned>(constant.bits));
-    constants.push_back(Json{{"addr", constant.id}, {"value", text}});
+    std::snprintf(text, sizeof(text), "0x%08x", static_cast<unsigned>(allocation.bits));
+    constants.push_back(Json{{"addr", allocation.location.address}, {"value", text}});
   }
   Json scratchpad = Json::array();
   for (const auto& [address, value] : options.scratchpadPreload) {
@@ -803,7 +809,13 @@ TargetLoweringResult TargetLowering::lower(const TargetDFG& dfg, const TargetMod
     if (!MaterializedScheduleVerifier::verify(dfg, target, mapping, request, schedule).ok())
       throw LoweringError(TargetLoweringStatus::InvalidMaterializedSchedule,
                           "materialized schedule verification failed");
-    Lowerer lowerer{dfg, target, mapping, schedule, options, {}};
+    auto loweringOptions = options;
+    try {
+      loweringOptions.constantImage = ConstantAllocator::allocate(dfg, target);
+    } catch (const std::exception& error) {
+      throw LoweringError(TargetLoweringStatus::ConstantCapacityExceeded, error.what());
+    }
+    Lowerer lowerer{dfg, target, mapping, schedule, loweringOptions, {}};
     auto controls = lowerer.run();
     std::string verificationError;
     if (!TargetControlProgramVerifier::verify(dfg, target, mapping, schedule, controls,
@@ -813,7 +825,9 @@ TargetLoweringResult TargetLowering::lower(const TargetDFG& dfg, const TargetMod
     result.status = TargetLoweringStatus::Success;
     result.controls = controls;
     result.encoded = encoded;
-    result.manifest = ProgramManifestBuilder::build(dfg, target, controls, encoded, options);
+    result.manifest =
+        ProgramManifestBuilder::build(dfg, target, controls, encoded, loweringOptions);
+    result.constantImage = loweringOptions.constantImage;
     result.stats = lowerer.stats;
     return result;
   } catch (const LoweringError& error) {

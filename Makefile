@@ -172,7 +172,7 @@ compiler-e2e:
 	cmake --build "$(COMPILER_BUILD_DIR)" --target cgrac-compile-dfg
 	mkdir -p "$(COMPILER_E2E_DIR)/compiler"
 	"$(COMPILER_BUILD_DIR)/bin/cgrac-compile-dfg" "$(COMPILER_E2E_DFG)" \
-		--target target/cgra_v2.json --trip-count 4 --min-ii 5 --max-ii 8 --no-virtual-hold \
+		--target target/cgra_v3.json --trip-count 4 --max-ii 8 \
 		--scratchpad-preload "$(COMPILER_E2E_PRELOAD)" \
 		--artifact-dir "$(COMPILER_E2E_DIR)/compiler" -o "$(COMPILER_E2E_MANIFEST)"
 	$(MAKE) --no-print-directory program BUILD_DIR="$(COMPILER_E2E_PROGRAM_DIR)" PROGRAM_MANIFEST="$(COMPILER_E2E_MANIFEST)"
@@ -182,7 +182,7 @@ compiler-e2e:
 		--rtl "$(COMPILER_E2E_PROGRAM_DIR)/program/program_manifest/rtl_trace.csv"
 	python3 tools/write_compiler_e2e_report.py \
 		--fixture fixed_addr_load_add_store --dfg "$(COMPILER_E2E_DFG)" \
-		--target target/cgra_v2.json --manifest "$(COMPILER_E2E_MANIFEST)" \
+		--target target/cgra_v3.json --manifest "$(COMPILER_E2E_MANIFEST)" \
 		--compiler-artifacts "$(COMPILER_E2E_DIR)/compiler" \
 		--program-dir "$(COMPILER_E2E_PROGRAM_DIR)/program/program_manifest" \
 		--output "$(COMPILER_E2E_DIR)/e2e_result.json"

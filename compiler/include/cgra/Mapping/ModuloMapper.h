@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 
+#include "cgra/Mapping/CompleteMappingChecker.h"
 #include "cgra/Mapping/ModuloMapperBudget.h"
 #include "cgra/Mapping/ModuloMapperResult.h"
 #include "cgra/Mapping/ModuloRouteSearch.h"
@@ -14,6 +15,7 @@ struct ModuloMapperOptions {
   std::uint32_t minII = 0;
   ModuloMapperBudget budget;
   RouteSearchOptions routeOptions;
+  CompleteMappingChecker completeMappingChecker;
 };
 
 class ModuloMapper {

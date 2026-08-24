@@ -80,6 +80,7 @@ add_library(cgra_mapping
   lib/Mapping/ModuloMappingVerifier.cpp
   lib/Mapping/ModuloRouteSearch.cpp
   lib/Mapping/ModuloMapper.cpp
+  lib/Mapping/ExactModuloOracle.cpp
 )
 target_include_directories(cgra_mapping PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(cgra_mapping PUBLIC cgra_target cgra_ir)
@@ -138,6 +139,7 @@ cgra_enable_warnings(cgra_schedule_materialization)
 cgra_enable_sanitizers(cgra_schedule_materialization)
 
 add_library(cgra_lowering
+  lib/Lowering/ConstantAllocator.cpp
   lib/Lowering/TargetLowering.cpp
 )
 target_include_directories(cgra_lowering PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
@@ -148,6 +150,7 @@ cgra_enable_sanitizers(cgra_lowering)
 
 add_library(cgra_pipeline
   lib/Pipeline/CompileDFG.cpp
+  lib/Pipeline/BackendFeasibilityChecker.cpp
 )
 target_include_directories(cgra_pipeline PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(cgra_pipeline PUBLIC cgra_lowering cgra_schedule_materialization

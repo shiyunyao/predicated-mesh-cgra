@@ -19,6 +19,11 @@ struct ModuloMapperStats {
   std::uint64_t backtracks = 0;
   std::uint64_t maxSearchDepth = 0;
   std::uint64_t totalRouteStateExpansions = 0;
+  std::uint64_t completedModuloMappings = 0;
+  std::uint64_t postMappingRejected = 0;
+  std::uint64_t stageRejected = 0;
+  std::uint64_t rfRejected = 0;
+  std::uint64_t postMappingAbort = 0;
 };
 
 } // namespace cgra::mapping

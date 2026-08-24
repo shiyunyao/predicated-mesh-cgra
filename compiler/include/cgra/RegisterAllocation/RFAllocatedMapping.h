@@ -23,6 +23,10 @@ struct PhysicalRegister {
 struct StorageAllocation {
   StorageSegmentId segment = 0;
   PhysicalRegister reg;
+  // Exact target access ports selected by T010. They are part of the
+  // allocation, rather than a lowering-time convention.
+  std::uint32_t readPort = 0;
+  std::uint32_t writePort = 0;
 
   friend bool operator==(const StorageAllocation&, const StorageAllocation&) = default;
 };
@@ -33,6 +37,7 @@ public:
   const StorageRequirements& storageRequirements() const noexcept { return requirements_; }
   std::span<const StorageAllocation> allocations() const noexcept { return allocations_; }
   PhysicalRegister registerFor(StorageSegmentId segment) const;
+  const StorageAllocation& allocationFor(StorageSegmentId segment) const;
   std::optional<PhysicalRegister> registerForVirtualHold(cgra::target::TargetEdgeId edge,
                                                          std::uint32_t transportActionIndex) const;
   std::optional<PhysicalRegister> registerForTerminalSlack(cgra::target::TargetEdgeId edge) const;

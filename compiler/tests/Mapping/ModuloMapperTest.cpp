@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 #include "../IR/Fixtures.h"
 
+#include "cgra/Mapping/ExactModuloOracle.h"
 #include "cgra/Mapping/ModuloMapper.h"
 #include "cgra/Mapping/ModuloMappingSerialization.h"
 #include "cgra/Mapping/ModuloMappingVerifier.h"
@@ -129,6 +130,70 @@ void testBudgetAndMaxII(const cgra::TargetModel& target) {
     throw std::runtime_error("maxII below MII is rejected before search: " + below.format());
 }
 
+void testCompletionBacktracking(const cgra::TargetModel& target) {
+  const auto dfg = legalize(cgra::ir::fixtures::simpleAdd(), target);
+  auto retry = options(3);
+  std::uint64_t checks = 0;
+  retry.completeMappingChecker = [&checks](const cgra::target::TargetDFG&, const cgra::TargetModel&,
+                                           const ModuloMapping&) {
+    ++checks;
+    if (checks == 1)
+      return CompleteMappingCheckResult{CompleteMappingDecision::Reject, "rf_infeasible",
+                                        "directed first-candidate rejection"};
+    return CompleteMappingCheckResult{CompleteMappingDecision::Accept, {}, {}};
+  };
+  const auto result = ModuloMapper::map(dfg, target, retry);
+  expect(result.ok(), "mapper must recover from a rejected complete mapping");
+  expect(checks >= 2 && result.stats.completedModuloMappings >= 2,
+         "completion rejection must trigger same-II search continuation");
+  expect(result.stats.postMappingRejected == 1 && result.stats.rfRejected == 1,
+         "completion rejection statistics are not recorded");
+
+  auto abort = options(3);
+  abort.completeMappingChecker = [](const cgra::target::TargetDFG&, const cgra::TargetModel&,
+                                    const ModuloMapping&) {
+    return CompleteMappingCheckResult{CompleteMappingDecision::Abort, "budget_rf",
+                                      "directed completion budget"};
+  };
+  const auto aborted = ModuloMapper::map(dfg, target, abort);
+  expect(aborted.status == ModuloMapperStatus::BudgetExceeded && !aborted.mapping,
+         "completion budget abort must not become candidate infeasibility");
+  expect(aborted.stats.iiAttempts == 1 && aborted.stats.postMappingAbort == 1,
+         "completion abort must stop before II escalation");
+}
+
+void testTinyExactOracle(const cgra::TargetModel& target) {
+  const auto dfg = legalize(cgra::ir::fixtures::memoryDependence(), target);
+  const auto oracle = ExactModuloOracle::solve(dfg, target, 1);
+  expect(oracle.status == ExactOracleStatus::Feasible && oracle.mapping,
+         "independent tiny oracle must find the memory-only fixture");
+  expect(ModuloMappingVerifier::verify(dfg, target, *oracle.mapping).ok(),
+         "oracle witness must pass the independent mapping verifier");
+  const auto routed = legalize(cgra::ir::fixtures::arithmeticChain(), target);
+  expect(ExactModuloOracle::solve(routed, target, 1).status ==
+             ExactOracleStatus::UnsupportedOracleSize,
+         "tiny oracle must not delegate value routing to the heuristic mapper");
+
+  // Fixed-seed target mutations provide a small deterministic CI-100 corpus:
+  // one LSU tile cannot issue the store/load pair in the same modulo slot.
+  std::ifstream input(Root / "target/cgra_v2.json");
+  nlohmann::json targetJson;
+  input >> targetJson;
+  targetJson["lsu"]["enabled_tiles"] =
+      nlohmann::json::array({{{"row", 0}, {"col", 0}, {"port_id", 0}}});
+  const auto path = std::filesystem::temp_directory_path() / "cgra-exact-oracle-infeasible.json";
+  {
+    std::ofstream output(path);
+    output << targetJson.dump(2) << '\n';
+  }
+  const auto constrainedTarget = cgra::TargetModel::loadFromFile(path);
+  std::filesystem::remove(path);
+  const auto constrainedDfg = legalize(cgra::ir::fixtures::memoryDependence(), constrainedTarget);
+  const auto infeasible = ExactModuloOracle::solve(constrainedDfg, constrainedTarget, 1);
+  expect(infeasible.status == ExactOracleStatus::Infeasible,
+         "independent tiny oracle must classify a constrained memory fixture as infeasible");
+}
+
 } // namespace
 
 int main() {
@@ -137,6 +202,8 @@ int main() {
     testCanonicalGraphs(target);
     testCyclicAndDeterministic(target);
     testBudgetAndMaxII(target);
+    testCompletionBacktracking(target);
+    testTinyExactOracle(target);
     std::cout << "modulo mapper tests passed\n";
     return 0;
   } catch (const std::exception& error) {

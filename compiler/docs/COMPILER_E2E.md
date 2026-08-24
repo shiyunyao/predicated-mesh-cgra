@@ -32,8 +32,8 @@ To stop after manifest generation, invoke the compiler executable directly:
 ```sh
 build/compiler/bin/cgrac-compile-dfg \
   compiler/tests/e2e/fixtures/fixed_addr_load_add_store/generic_dfg.json \
-  --target target/cgra_v2.json --trip-count 4 --min-ii 5 --max-ii 8 \
-  --no-virtual-hold --scratchpad-preload \
+  --target target/cgra_v3.json --trip-count 4 --max-ii 8 \
+  --scratchpad-preload \
   compiler/tests/e2e/fixtures/fixed_addr_load_add_store/scratchpad_preload.json \
   --artifact-dir build/compiler-e2e/debug/compiler \
   -o build/compiler-e2e/debug/program_manifest.json

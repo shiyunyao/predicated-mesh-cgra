@@ -7,6 +7,7 @@
 #include "cgra/Target/TargetDFGVerifier.h"
 
 #include <algorithm>
+#include <functional>
 #include <limits>
 #include <map>
 #include <set>
@@ -43,6 +44,65 @@ void add(RFAllocationResult& result, RFAllocationDiagnosticCode code, std::strin
 const cgra::RegisterFileDesc* bankFor(const cgra::TargetModel& target,
                                       const StorageSegment& segment) {
   return target.registerBank(segment.domain, segment.tile.row, segment.tile.col);
+}
+
+std::string incomingSource(cgra::mapping::Direction direction, cgra::RegisterBankDomain domain) {
+  const auto incoming = cgra::mapping::opposite(direction);
+  const char* directionName = nullptr;
+  switch (incoming) {
+  case cgra::mapping::Direction::North:
+    directionName = "NORTH";
+    break;
+  case cgra::mapping::Direction::South:
+    directionName = "SOUTH";
+    break;
+  case cgra::mapping::Direction::East:
+    directionName = "EAST";
+    break;
+  case cgra::mapping::Direction::West:
+    directionName = "WEST";
+    break;
+  }
+  return std::string(directionName) +
+         (domain == cgra::RegisterBankDomain::Data ? "_DATA_IN" : "_PRED_IN");
+}
+
+std::string resultSource(cgra::TargetResultSource source) {
+  switch (source) {
+  case cgra::TargetResultSource::FuDataResult:
+    return "FU_DATA_RESULT";
+  case cgra::TargetResultSource::FuPredicateResult:
+    return "FU_PRED_RESULT";
+  case cgra::TargetResultSource::LsuLoadData:
+    return "LSU_LOAD_DATA";
+  case cgra::TargetResultSource::None:
+    break;
+  }
+  return "";
+}
+
+std::string storageWriteSource(const cgra::target::TargetDFG& dfg, const cgra::TargetModel& target,
+                               const cgra::schedule::StagedMapping& mapping,
+                               const StorageSegment& segment) {
+  const auto& edge = dfg.edge(segment.edge);
+  const auto& transport = mapping.modulo().dependence(edge.id).transport;
+  if (!transport)
+    return {};
+  for (const auto& origin : segment.origins) {
+    if (origin.kind != StorageOriginKind::ExplicitVirtualHold || !origin.transportActionIndex)
+      continue;
+    const auto index = *origin.transportActionIndex;
+    if (index > 0 && std::holds_alternative<cgra::mapping::LinkStep>(transport->actions[index - 1]))
+      return incomingSource(
+          std::get<cgra::mapping::LinkStep>(transport->actions[index - 1]).direction,
+          segment.domain);
+    return resultSource(target.operation(dfg.node(edge.src).operation).resultSource);
+  }
+  if (!transport->actions.empty() &&
+      std::holds_alternative<cgra::mapping::LinkStep>(transport->actions.back()))
+    return incomingSource(std::get<cgra::mapping::LinkStep>(transport->actions.back()).direction,
+                          segment.domain);
+  return {};
 }
 
 struct BudgetState {
@@ -293,7 +353,82 @@ RFAllocationResult RFAllocator::allocate(const cgra::target::TargetDFG& dfg,
   std::vector<StorageAllocation> allocations;
   allocations.reserve(requirements.segments().size());
   for (const auto& segment : requirements.segments())
-    allocations.push_back({segment.id, {segment.tile, banks[segment.id]->id, *colors[segment.id]}});
+    allocations.push_back(
+        {segment.id, {segment.tile, banks[segment.id]->id, *colors[segment.id]}, 0, 0});
+
+  // Assign exact physical ports independently for every modulo slot.  The
+  // matching is deliberately bipartite rather than first-fit: a future target
+  // may expose asymmetric read sinks or a non-trivial write-source matrix.
+  using PortKey = std::tuple<BankKey, std::uint32_t>;
+  std::map<PortKey, std::vector<SegmentIndex>> readEvents;
+  std::map<PortKey, std::vector<SegmentIndex>> writeEvents;
+  for (const auto& segment : requirements.segments()) {
+    readEvents[{BankKey{segment.tile, banks[segment.id]->id},
+                static_cast<std::uint32_t>(segment.readTime % ii)}]
+        .push_back(segment.id);
+    writeEvents[{BankKey{segment.tile, banks[segment.id]->id},
+                 static_cast<std::uint32_t>(segment.writeTime % ii)}]
+        .push_back(segment.id);
+  }
+
+  const auto assignPorts = [&](const auto& events, bool writes) -> bool {
+    for (const auto& [key, eventIds] : events) {
+      const auto* bank = banks[eventIds.front()];
+      const auto portCount = writes ? bank->writePorts : bank->readPorts;
+      std::vector<SegmentIndex> matched(portCount, requirements.segments().size());
+      std::vector<SegmentIndex> order = eventIds;
+      std::ranges::sort(order);
+      const auto candidates = [&](SegmentIndex segmentId, unsigned port) {
+        if (!writes)
+          return true;
+        const auto source =
+            storageWriteSource(dfg, target, mapping, requirements.segment(segmentId));
+        const auto it = bank->writePortSources.find("W" + std::to_string(port));
+        return it != bank->writePortSources.end() &&
+               std::ranges::find(it->second, source) != it->second.end();
+      };
+      std::function<bool(SegmentIndex, std::vector<bool>&)> augment =
+          [&](SegmentIndex segmentId, std::vector<bool>& visited) {
+            for (unsigned port = 0; port < portCount; ++port) {
+              if (visited[port] || !candidates(segmentId, port))
+                continue;
+              visited[port] = true;
+              if (matched[port] == requirements.segments().size() ||
+                  augment(matched[port], visited)) {
+                matched[port] = segmentId;
+                return true;
+              }
+            }
+            return false;
+          };
+      for (const auto segmentId : order) {
+        std::vector<bool> visited(portCount, false);
+        if (!augment(segmentId, visited)) {
+          result.status =
+              writes ? RFAllocationStatus::WritePortConflict : RFAllocationStatus::ReadPortConflict;
+          add(result,
+              writes ? RFAllocationDiagnosticCode::RFA_WRITE_PORT_CONFLICT
+                     : RFAllocationDiagnosticCode::RFA_READ_PORT_CONFLICT,
+              writes ? "no source-compatible physical RF write-port matching exists"
+                     : "no compatible physical RF read-port matching exists",
+              requirements.segment(segmentId).edge, segmentId, std::get<0>(key).tile,
+              std::get<0>(key).bank);
+          return false;
+        }
+      }
+      for (unsigned port = 0; port < portCount; ++port) {
+        if (matched[port] == requirements.segments().size())
+          continue;
+        if (writes)
+          allocations[matched[port]].writePort = port;
+        else
+          allocations[matched[port]].readPort = port;
+      }
+    }
+    return true;
+  };
+  if (!assignPorts(readEvents, false) || !assignPorts(writeEvents, true))
+    return result;
 
   struct RegisterEventCounts {
     std::uint32_t reads = 0;

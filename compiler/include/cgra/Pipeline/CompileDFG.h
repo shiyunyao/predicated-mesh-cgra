@@ -58,6 +58,11 @@ struct CompileDFGStats {
   std::uint32_t mappedII = 0;
   std::uint64_t nodeCandidateAttempts = 0;
   std::uint64_t routeStateExpansions = 0;
+  std::uint64_t completedModuloMappings = 0;
+  std::uint64_t postMappingRejected = 0;
+  std::uint64_t stageRejected = 0;
+  std::uint64_t rfRejected = 0;
+  std::uint64_t postMappingAbort = 0;
   std::uint64_t maxStage = 0;
   std::uint64_t storageSegments = 0;
   std::uint64_t prologueCycles = 0;

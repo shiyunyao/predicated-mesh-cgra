@@ -7,6 +7,7 @@
 #include "cgra/Lowering/TargetLowering.h"
 #include "cgra/Mapping/ModuloMappingSerialization.h"
 #include "cgra/Mapping/ModuloMappingVerifier.h"
+#include "cgra/Pipeline/BackendFeasibilityChecker.h"
 #include "cgra/RegisterAllocation/RFAllocatedMappingSerialization.h"
 #include "cgra/RegisterAllocation/RFAllocationVerifier.h"
 #include "cgra/RegisterAllocation/RFAllocator.h"
@@ -129,6 +130,11 @@ std::string CompileDFGResult::toJson() const {
                {"mapped_ii", stats.mappedII},
                {"node_candidate_attempts", stats.nodeCandidateAttempts},
                {"route_state_expansions", stats.routeStateExpansions},
+               {"completed_modulo_mappings", stats.completedModuloMappings},
+               {"post_mapping_rejected", stats.postMappingRejected},
+               {"stage_rejected", stats.stageRejected},
+               {"rf_rejected", stats.rfRejected},
+               {"post_mapping_abort", stats.postMappingAbort},
                {"max_stage", stats.maxStage},
                {"storage_segments", stats.storageSegments},
                {"prologue_cycles", stats.prologueCycles},
@@ -173,10 +179,23 @@ CompileDFGResult compileGenericDFG(const ir::DFG& dfg, const TargetModel& target
       return failure(result, CompileDFGStatus::MIIAnalysisFailure, mii.format(), artifacts);
     result.stats.mii = mii.mii;
 
-    const auto mapped = mapping::ModuloMapper::map(targetDFG, target, options.mapper);
+    auto mapperOptions = options.mapper;
+    BackendFeasibilityChecker completionChecker(options.rfAllocation);
+    mapperOptions.completeMappingChecker =
+        [&completionChecker](const target::TargetDFG& candidateDFG,
+                             const TargetModel& candidateTarget,
+                             const mapping::ModuloMapping& candidate) {
+          return completionChecker.check(candidateDFG, candidateTarget, candidate);
+        };
+    const auto mapped = mapping::ModuloMapper::map(targetDFG, target, mapperOptions);
     artifacts.write("06_mapper_report.json", mapped.toJson());
     result.stats.nodeCandidateAttempts = mapped.stats.nodeCandidateAttempts;
     result.stats.routeStateExpansions = mapped.stats.totalRouteStateExpansions;
+    result.stats.completedModuloMappings = mapped.stats.completedModuloMappings;
+    result.stats.postMappingRejected = mapped.stats.postMappingRejected;
+    result.stats.stageRejected = mapped.stats.stageRejected;
+    result.stats.rfRejected = mapped.stats.rfRejected;
+    result.stats.postMappingAbort = mapped.stats.postMappingAbort;
     if (!mapped.ok())
       return failure(result, CompileDFGStatus::MappingFailure, mapped.format(), artifacts);
     result.stats.mappedII = mapped.mapping->ii();

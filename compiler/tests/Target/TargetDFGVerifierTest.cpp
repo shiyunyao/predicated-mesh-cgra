@@ -185,6 +185,7 @@ void testMemoryNodeRules(const cgra::TargetModel& target) {
 void testDescriptorDrivenShape(const cgra::TargetModel& target) {
   auto json = loadTargetJson();
   json["operations"]["ADD"]["operands"][0]["role"] = "predicate";
+  json["operations"]["ADD"]["lowering"]["operand_sinks"][0] = "fu_pred_0";
   TemporaryTarget file(json);
   const auto mutatedTarget = cgra::TargetModel::loadFromFile(file.path());
   const auto dfg = legalize(cgra::ir::fixtures::simpleAdd(), target);

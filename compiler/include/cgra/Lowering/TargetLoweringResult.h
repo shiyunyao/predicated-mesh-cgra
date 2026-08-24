@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 
+#include "cgra/Lowering/ConstantAllocator.h"
 #include "cgra/Lowering/TargetControlProgram.h"
 #include "cgra/Target/ControlLayout.h"
 
@@ -41,6 +42,7 @@ enum class TargetLoweringStatus {
   UnsupportedValueSource,
   UnsupportedBoundaryProvider,
   UnsupportedExternalProvider,
+  ConstantCapacityExceeded,
   ControlFieldConflict,
   SourceConnectivityViolation,
   RFAccessPortViolation,
@@ -78,6 +80,7 @@ struct TargetLoweringOptions {
   std::string targetPath;
   std::string observation = "semantic schedule";
   std::vector<std::pair<std::uint32_t, std::uint32_t>> scratchpadPreload;
+  ConstantImage constantImage;
 };
 
 struct TargetLoweringResult {
@@ -87,6 +90,7 @@ struct TargetLoweringResult {
   std::optional<ProgramManifest> manifest;
   TargetLoweringStats stats;
   std::vector<TargetLoweringDiagnostic> diagnostics;
+  ConstantImage constantImage;
 
   bool ok() const noexcept { return status == TargetLoweringStatus::Success; }
 };

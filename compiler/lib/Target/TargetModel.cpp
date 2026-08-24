@@ -208,10 +208,11 @@ TargetModel TargetModel::loadFromFile(const std::filesystem::path& path) {
 
   TargetModel model;
   const auto schema = required<std::string>(root, "schema", "");
-  if (schema != "cgra.target.v2")
+  if (schema != "cgra.target.v2" && schema != "cgra.target.v3")
     fail("schema", "unsupported schema " + schema);
+  const bool explicitLoweringContract = schema == "cgra.target.v3";
   model.contractVersion_ = positiveUnsigned(root, "target_contract_version", "");
-  if (model.contractVersion_ != 2)
+  if (model.contractVersion_ != (explicitLoweringContract ? 3U : 2U))
     fail("target_contract_version",
          "unsupported contract version " + std::to_string(model.contractVersion_));
   model.name_ = required<std::string>(root, "name", "");
@@ -224,6 +225,10 @@ TargetModel TargetModel::loadFromFile(const std::filesystem::path& path) {
   model.array_.dataWidth = positiveUnsigned(array, "data_width", "array");
   model.array_.predicateWidth = positiveUnsigned(array, "predicate_width", "array");
   model.array_.hardwareBranch = required<bool>(array, "hardware_branch", "array");
+  if (root.contains("parameters") && root.at("parameters").is_object() &&
+      root.at("parameters").contains("const_mem_depth"))
+    model.constantMemoryDepth_ =
+        positiveUnsigned(root.at("parameters"), "const_mem_depth", "parameters");
 
   model.dataRF_ = parseRegisterFile(root, "data_rf", RegisterBankDomain::Data, model.array_.rows,
                                     model.array_.cols);
@@ -395,6 +400,8 @@ TargetModel TargetModel::loadFromFile(const std::filesystem::path& path) {
         fail(context + ".lowering.result_source", error.what());
       }
     } else {
+      if (explicitLoweringContract)
+        fail(context + ".lowering", "canonical v3 operation is missing explicit lowering");
       // Legacy target files predate the explicit lowering contract.  Derive the
       // canonical current-target sinks once at load time so all consumers still
       // use typed descriptors rather than operation-name checks.
@@ -708,6 +715,8 @@ TargetModel TargetModel::loadFromFile(const std::filesystem::path& path) {
   }
   if (std::ranges::find(covered, false) != covered.end())
     fail("control_layout.fields", "must cover every raw control bit exactly once");
+  if (model.constantMemoryDepth_ == 0)
+    model.constantMemoryDepth_ = 1U << parsedLayout.field("constantAddr").width;
 
   const auto& lsu = requiredObject(root, "lsu", "");
   const auto portAssignment = required<std::string>(lsu, "port_assignment", "lsu");

@@ -41,6 +41,7 @@ enum class SearchOutcome {
   RouteBudgetExceeded,
   VerificationFailure,
   InternalError,
+  PostMappingAbort,
 };
 
 struct Candidate {
@@ -341,6 +342,32 @@ private:
       }
       return SearchOutcome::VerificationFailure;
     }
+    ++result_.stats.completedModuloMappings;
+    if (options_.completeMappingChecker) {
+      const auto check = options_.completeMappingChecker(dfg_, target_, *mapping_);
+      if (check.decision == CompleteMappingDecision::Reject) {
+        ++result_.stats.postMappingRejected;
+        if (check.reasonCode.starts_with("stage"))
+          ++result_.stats.stageRejected;
+        if (check.reasonCode.starts_with("rf"))
+          ++result_.stats.rfRejected;
+        addDiagnostic(result_, ModuloMapperDiagnosticCode::MAP_POST_MAPPING_REJECTED,
+                      check.reasonCode + (check.message.empty() ? "" : ": " + check.message), ii_);
+        mapping_.reset();
+        return SearchOutcome::Exhausted;
+      }
+      if (check.decision == CompleteMappingDecision::Abort) {
+        ++result_.stats.postMappingAbort;
+        addDiagnostic(result_, ModuloMapperDiagnosticCode::MAP_INTERNAL_ERROR,
+                      check.reasonCode + (check.message.empty() ? "" : ": " + check.message), ii_);
+        mapping_.reset();
+        if (check.reasonCode.starts_with("budget"))
+          return SearchOutcome::BudgetExceeded;
+        if (check.reasonCode.starts_with("verification"))
+          return SearchOutcome::VerificationFailure;
+        return SearchOutcome::InternalError;
+      }
+    }
     return SearchOutcome::Success;
   }
 
@@ -382,7 +409,8 @@ private:
       if (childOutcome == SearchOutcome::BudgetExceeded ||
           childOutcome == SearchOutcome::RouteBudgetExceeded ||
           childOutcome == SearchOutcome::VerificationFailure ||
-          childOutcome == SearchOutcome::InternalError)
+          childOutcome == SearchOutcome::InternalError ||
+          childOutcome == SearchOutcome::PostMappingAbort)
         return childOutcome;
       if (result_.stats.backtracks >= options_.budget.maxBacktracks) {
         addDiagnostic(result_, ModuloMapperDiagnosticCode::MAP_GLOBAL_BUDGET_EXCEEDED,
@@ -435,6 +463,8 @@ std::string_view toString(ModuloMapperDiagnosticCode code) noexcept {
     return "MAP_ROUTE_NO_PATH";
   case ModuloMapperDiagnosticCode::MAP_ROUTE_BUDGET_EXCEEDED:
     return "MAP_ROUTE_BUDGET_EXCEEDED";
+  case ModuloMapperDiagnosticCode::MAP_POST_MAPPING_REJECTED:
+    return "MAP_POST_MAPPING_REJECTED";
   case ModuloMapperDiagnosticCode::MAP_GLOBAL_BUDGET_EXCEEDED:
     return "MAP_GLOBAL_BUDGET_EXCEEDED";
   case ModuloMapperDiagnosticCode::MAP_NO_MAPPING_WITHIN_II_LIMIT:
@@ -477,7 +507,12 @@ std::string ModuloMapperResult::toJson() const {
                  {"route_budget_exceeded", stats.routeBudgetExceeded},
                  {"backtracks", stats.backtracks},
                  {"max_search_depth", stats.maxSearchDepth},
-                 {"total_route_state_expansions", stats.totalRouteStateExpansions}}},
+                 {"total_route_state_expansions", stats.totalRouteStateExpansions},
+                 {"completed_modulo_mappings", stats.completedModuloMappings},
+                 {"post_mapping_rejected", stats.postMappingRejected},
+                 {"stage_rejected", stats.stageRejected},
+                 {"rf_rejected", stats.rfRejected},
+                 {"post_mapping_abort", stats.postMappingAbort}}},
                {"diagnostics", Json::array()}};
   if (mapping)
     root["mapping"] = {{"target", mapping->targetName()}, {"ii", mapping->ii()}};

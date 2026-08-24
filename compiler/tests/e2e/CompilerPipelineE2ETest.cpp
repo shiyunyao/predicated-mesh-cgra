@@ -46,13 +46,11 @@ std::string shellQuote(const std::string& value) {
 cgra::pipeline::CompileDFGOptions options(const std::filesystem::path& artifacts) {
   cgra::pipeline::CompileDFGOptions result;
   result.tripCount = 4;
-  result.targetPath = Root / "target/cgra_v2.json";
+  result.targetPath = Root / "target/cgra_v3.json";
   result.artifactDirectory = artifacts;
   result.programName = "e2e_fixed_addr_load_add_store";
   result.scratchpadPreload = {{0, 7}, {1, 11}, {2, 0}};
-  result.mapper.minII = 5;
   result.mapper.maxII = 8;
-  result.mapper.routeOptions.allowVirtualHold = false;
   result.mapper.budget.maxNodeCandidateAttempts = 100'000;
   result.mapper.budget.maxBacktracks = 50'000;
   result.mapper.budget.maxRouteSearchCalls = 100'000;
@@ -107,7 +105,7 @@ void checkSemanticManifest(const std::string& manifestText) {
   const auto manifest = Json::parse(manifestText);
   expect(manifest.at("schema") == "cgra.program_manifest.v1", "wrong manifest schema");
   expect(manifest.at("loop").at("trip_count") > 0, "manifest kernel repeat count is empty");
-  expect(manifest.at("loop").at("ii") >= 5, "fixture did not use the RF-feasible II");
+  expect(manifest.at("loop").at("ii") >= 1, "manifest II is invalid");
   expect(manifest.at("program").at("tiles").size() == 16, "manifest is not a 4x4 tile image");
 
   std::size_t preloadEntries = 0;
@@ -183,7 +181,7 @@ int main() {
   try {
     const auto fixture = Root / "compiler/tests/e2e/fixtures/fixed_addr_load_add_store";
     const auto generic = cgra::ir::readJson(fixture / "generic_dfg.json");
-    const auto target = cgra::TargetModel::loadFromFile(Root / "target/cgra_v2.json");
+    const auto target = cgra::TargetModel::loadFromFile(Root / "target/cgra_v3.json");
 
     const auto firstArtifacts = uniqueDirectory("cgra-compiler-e2e-first");
     auto firstOptions = options(firstArtifacts);

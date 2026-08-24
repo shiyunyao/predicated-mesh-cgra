@@ -67,9 +67,9 @@ void testAdjacentDataAndT005(const cgra::TargetModel& target) {
 
   ModuloResourceModel wrappedResources(target, 4);
   ResourceReservationTable wrappedReservations(wrappedResources);
-  const auto wrapped = ModuloRouteSearch::search(
-      dfg, target, wrappedResources, wrappedReservations,
-      {0, {0, {0, 0}, ModuloSlot(3)}, {1, {0, 1}, ModuloSlot(0)}});
+  const auto wrapped =
+      ModuloRouteSearch::search(dfg, target, wrappedResources, wrappedReservations,
+                                {0, {0, {0, 0}, ModuloSlot(3)}, {1, {0, 1}, ModuloSlot(0)}});
   expect(wrapped.ok() && wrapped.plan->requiredSeparationCycles == 1 &&
              std::get<LinkStep>(wrapped.plan->actions.front()).elapsedFromProducerIssue == 0,
          "route crosses the modulo slot boundary without an absolute-time layer");

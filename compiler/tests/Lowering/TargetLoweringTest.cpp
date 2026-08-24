@@ -83,8 +83,8 @@ void testConstantLoweringAndManifest(const cgra::TargetModel& model) {
   expect(materialized.ok(), "constant ADD materializes");
   const auto lowered = cgra::lowering::TargetLowering::lower(
       *legal.dfg, model, *allocated.mapping, *materialized.schedule,
-      cgra::lowering::TargetLoweringOptions{"constant-add", (Root / "target/cgra_v2.json").string(),
-                                            "test", {}});
+      cgra::lowering::TargetLoweringOptions{
+          "constant-add", (Root / "target/cgra_v2.json").string(), "test", {}, {}});
   if (!lowered.ok())
     throw std::runtime_error(lowered.diagnostics.front().message);
   expect(lowered.controls->kernel().body.size() == lowered.controls->ii(),

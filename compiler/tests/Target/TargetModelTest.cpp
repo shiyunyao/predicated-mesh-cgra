@@ -456,6 +456,25 @@ void testPaddingRejected(const cgra::TargetModel& target) {
   }
 }
 
+void testExplicitV3Contract() {
+  const auto v3Path = RepositoryRoot / "target/cgra_v3.json";
+  const auto target = cgra::TargetModel::loadFromFile(v3Path);
+  check(target.contractVersion() == 3, "v3 target contract version");
+  check(target.operation("ADD").operandSinks.size() == 2,
+        "v3 target carries explicit ADD operand sinks");
+
+  auto json = loadJson(v3Path);
+  json["operations"]["ADD"].erase("lowering");
+  const TemporaryTarget malformed(json);
+  try {
+    static_cast<void>(cgra::TargetModel::loadFromFile(malformed.path()));
+    check(false, "v3 target without lowering unexpectedly loaded");
+  } catch (const std::exception& error) {
+    check(std::string(error.what()).find("missing explicit lowering") != std::string::npos,
+          "v3 missing lowering diagnostic");
+  }
+}
+
 } // namespace
 
 int main() {
@@ -470,6 +489,7 @@ int main() {
     testMalformedTargets(loadJson(TargetPath));
     testExecutionAvailability(loadJson(TargetPath));
     testPaddingRejected(target);
+    testExplicitV3Contract();
   } catch (const std::exception& error) {
     std::cerr << "UNCAUGHT TEST ERROR: " << error.what() << '\n';
     return 1;

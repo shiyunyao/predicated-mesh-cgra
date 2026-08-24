@@ -88,19 +88,19 @@ std::string_view toString(TargetControlSink sink) {
 }
 
 TargetControlSink targetControlSinkFromString(std::string_view value) {
-  if (value == "FU_SRC_A")
+  if (value == "FU_SRC_A" || value == "fu_data_a")
     return TargetControlSink::FuDataA;
-  if (value == "FU_SRC_B")
+  if (value == "FU_SRC_B" || value == "fu_data_b")
     return TargetControlSink::FuDataB;
-  if (value == "FU_PRED_0")
+  if (value == "FU_PRED_0" || value == "fu_pred_0")
     return TargetControlSink::FuPredicate0;
-  if (value == "FU_PRED_1")
+  if (value == "FU_PRED_1" || value == "fu_pred_1")
     return TargetControlSink::FuPredicate1;
-  if (value == "LSU_ADDR")
+  if (value == "LSU_ADDR" || value == "lsu_address")
     return TargetControlSink::LsuAddress;
-  if (value == "LSU_STORE_DATA")
+  if (value == "LSU_STORE_DATA" || value == "lsu_store_data")
     return TargetControlSink::LsuStoreData;
-  if (value == "LSU_COMMIT_PRED")
+  if (value == "LSU_COMMIT_PRED" || value == "lsu_commit_predicate")
     return TargetControlSink::LsuCommitPredicate;
   throw std::invalid_argument("unknown target control sink: " + std::string(value));
 }
@@ -120,13 +120,13 @@ std::string_view toString(TargetResultSource source) {
 }
 
 TargetResultSource targetResultSourceFromString(std::string_view value) {
-  if (value == "NONE")
+  if (value == "NONE" || value == "none")
     return TargetResultSource::None;
-  if (value == "FU_DATA_RESULT")
+  if (value == "FU_DATA_RESULT" || value == "fu_data_result")
     return TargetResultSource::FuDataResult;
-  if (value == "FU_PRED_RESULT")
+  if (value == "FU_PRED_RESULT" || value == "fu_pred_result")
     return TargetResultSource::FuPredicateResult;
-  if (value == "LSU_LOAD_DATA")
+  if (value == "LSU_LOAD_DATA" || value == "lsu_load_data")
     return TargetResultSource::LsuLoadData;
   throw std::invalid_argument("unknown target result source: " + std::string(value));
 }

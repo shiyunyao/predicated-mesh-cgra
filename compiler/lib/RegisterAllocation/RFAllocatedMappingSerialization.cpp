@@ -63,15 +63,18 @@ std::string RFAllocatedMappingSerialization::toJson(const RFAllocatedMapping& ma
                {"storage_segments", Json::array()}};
   for (const auto& segment : mapping.storageRequirements().segments()) {
     const auto allocation = mapping.registerFor(segment.id);
-    root["storage_segments"].push_back({{"id", segment.id},
-                                        {"edge", segment.edge},
-                                        {"tile", tileJson(segment.tile)},
-                                        {"bank", allocation.bank},
-                                        {"domain", domainName(segment.domain)},
-                                        {"write_time", segment.writeTime},
-                                        {"read_time", segment.readTime},
-                                        {"origins", Json::array()},
-                                        {"register", allocation.index}});
+    root["storage_segments"].push_back(
+        {{"id", segment.id},
+         {"edge", segment.edge},
+         {"tile", tileJson(segment.tile)},
+         {"bank", allocation.bank},
+         {"domain", domainName(segment.domain)},
+         {"write_time", segment.writeTime},
+         {"read_time", segment.readTime},
+         {"origins", Json::array()},
+         {"register", allocation.index},
+         {"read_port", mapping.allocationFor(segment.id).readPort},
+         {"write_port", mapping.allocationFor(segment.id).writePort}});
     for (const auto& origin : segment.origins) {
       Json originJson = {{"kind", origin.kind == StorageOriginKind::ExplicitVirtualHold
                                       ? "virtual_hold"
@@ -122,7 +125,9 @@ RFAllocatedMapping RFAllocatedMappingSerialization::parse(std::string_view jsonT
                                     std::move(origins)});
     allocations.push_back(
         {id,
-         {tile, required<std::string>(entry, "bank"), required<std::uint32_t>(entry, "register")}});
+         {tile, required<std::string>(entry, "bank"), required<std::uint32_t>(entry, "register")},
+         entry.contains("read_port") ? entry.at("read_port").get<std::uint32_t>() : 0U,
+         entry.contains("write_port") ? entry.at("write_port").get<std::uint32_t>() : 0U});
   }
   StorageRequirements requirements(staged.modulo().ii(), std::move(requirementsSegments));
   return RFAllocatedMapping(staged, std::move(requirements), std::move(allocations));

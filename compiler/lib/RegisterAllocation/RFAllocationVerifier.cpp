@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <map>
+#include <set>
 #include <sstream>
 #include <tuple>
 
@@ -18,6 +19,53 @@ void add(RFAllocationVerificationReport& report, RFAllocationVerificationCode co
          std::string message, std::optional<StorageSegmentId> segment = std::nullopt,
          std::optional<StorageSegmentId> conflicting = std::nullopt) {
   report.add({code, std::move(message), segment, conflicting});
+}
+
+std::string incomingSource(cgra::mapping::Direction direction, cgra::RegisterBankDomain domain) {
+  const auto incoming = cgra::mapping::opposite(direction);
+  const char* name = incoming == cgra::mapping::Direction::North   ? "NORTH"
+                     : incoming == cgra::mapping::Direction::South ? "SOUTH"
+                     : incoming == cgra::mapping::Direction::East  ? "EAST"
+                                                                   : "WEST";
+  return std::string(name) + (domain == cgra::RegisterBankDomain::Data ? "_DATA_IN" : "_PRED_IN");
+}
+
+std::string resultSource(cgra::TargetResultSource source) {
+  switch (source) {
+  case cgra::TargetResultSource::FuDataResult:
+    return "FU_DATA_RESULT";
+  case cgra::TargetResultSource::FuPredicateResult:
+    return "FU_PRED_RESULT";
+  case cgra::TargetResultSource::LsuLoadData:
+    return "LSU_LOAD_DATA";
+  case cgra::TargetResultSource::None:
+    return {};
+  }
+  return {};
+}
+
+std::string storageWriteSource(const cgra::target::TargetDFG& dfg, const cgra::TargetModel& target,
+                               const cgra::schedule::StagedMapping& mapping,
+                               const StorageSegment& segment) {
+  const auto& edge = dfg.edge(segment.edge);
+  const auto& transport = mapping.modulo().dependence(edge.id).transport;
+  if (!transport)
+    return {};
+  for (const auto& origin : segment.origins) {
+    if (origin.kind != StorageOriginKind::ExplicitVirtualHold || !origin.transportActionIndex)
+      continue;
+    const auto index = *origin.transportActionIndex;
+    if (index > 0 && std::holds_alternative<cgra::mapping::LinkStep>(transport->actions[index - 1]))
+      return incomingSource(
+          std::get<cgra::mapping::LinkStep>(transport->actions[index - 1]).direction,
+          segment.domain);
+    return resultSource(target.operation(dfg.node(edge.src).operation).resultSource);
+  }
+  if (!transport->actions.empty() &&
+      std::holds_alternative<cgra::mapping::LinkStep>(transport->actions.back()))
+    return incomingSource(std::get<cgra::mapping::LinkStep>(transport->actions.back()).direction,
+                          segment.domain);
+  return {};
 }
 
 } // namespace
@@ -129,6 +177,8 @@ RFAllocationVerificationReport RFAllocationVerifier::verify(const cgra::target::
     }
   };
   std::map<PortKey, PortCounts> ports;
+  std::map<PortKey, std::set<std::uint32_t>> readAssignments;
+  std::map<PortKey, std::set<std::uint32_t>> writeAssignments;
   for (const auto& segment : mapping.storageRequirements().segments()) {
     const auto& allocation = *allocations.at(segment.id);
     const auto* bank = target.registerBank(segment.domain, segment.tile.row, segment.tile.col);
@@ -144,6 +194,27 @@ RFAllocationVerificationReport RFAllocationVerifier::verify(const cgra::target::
     if (read.reads > bank->readPorts)
       add(report, RFAllocationVerificationCode::RFA_READ_PORT_CONFLICT,
           "allocated RF reads exceed target port capacity", segment.id);
+    if (allocation.readPort >= bank->readPorts ||
+        !readAssignments[{segment.tile, allocation.reg.bank,
+                          static_cast<std::uint32_t>(segment.readTime % ii)}]
+             .insert(allocation.readPort)
+             .second)
+      add(report, RFAllocationVerificationCode::RFA_READ_PORT_CONFLICT,
+          "storage segments share an exclusive RF read port", segment.id);
+    if (allocation.writePort >= bank->writePorts ||
+        !writeAssignments[{segment.tile, allocation.reg.bank,
+                           static_cast<std::uint32_t>(segment.writeTime % ii)}]
+             .insert(allocation.writePort)
+             .second)
+      add(report, RFAllocationVerificationCode::RFA_WRITE_PORT_CONFLICT,
+          "storage segments share an exclusive RF write port", segment.id);
+    const auto source = storageWriteSource(dfg, target, mapping.staged(), segment);
+    const auto sourceIt = bank->writePortSources.find("W" + std::to_string(allocation.writePort));
+    if (sourceIt == bank->writePortSources.end() ||
+        std::find(sourceIt->second.begin(), sourceIt->second.end(), source) ==
+            sourceIt->second.end())
+      add(report, RFAllocationVerificationCode::RFA_WRITE_PORT_CONFLICT,
+          "assigned RF write port does not accept the mapped value source", segment.id);
   }
 
   struct RegisterEventCounts {
