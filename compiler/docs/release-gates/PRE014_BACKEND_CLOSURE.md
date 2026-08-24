@@ -15,7 +15,7 @@ It is intentionally evidence-based: a workflow file is not a passing run.
 
 ## Audited evidence
 
-- Source commit: `223b78ac51f0518cb54eea5e1fc3e6094554694f`
+- Source commit: `dac8b4db518864c68478106a6bc22b0aa9fa649a`
 - Generated-program artifact: `build/compiler-e2e/fixed_addr_load_add_store/e2e_result.json`
 - Primary E2E starts at `MII=1`, maps at `II=1`, and records 18 complete
   candidates with 17 same-II RF rejections before acceptance.

@@ -5,7 +5,7 @@ repaired branch. The final decision must be one of the two explicit values
 below; do not infer approval from code review alone.
 
 ```text
-AUDITED_COMMIT_SHA: 223b78ac51f0518cb54eea5e1fc3e6094554694f
+AUDITED_COMMIT_SHA: dac8b4db518864c68478106a6bc22b0aa9fa649a
 DECISION: GO T-COMP-014
 ```
 
