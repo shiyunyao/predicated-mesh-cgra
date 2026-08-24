@@ -119,15 +119,19 @@ ModuloResourceModel::ModuloResourceModel(const cgra::TargetModel& target, std::u
         addResource(FUResource{tile, ModuloSlot(slot)});
         if (target.tileHasLSU(row, col))
           addResource(LSUResource{tile, ModuloSlot(slot)});
-        for (const auto direction :
-             {Direction::North, Direction::South, Direction::East, Direction::West}) {
-          if (neighbor(tile, direction, target.array().rows, target.array().cols))
-            addResource(LinkResource{NetworkDomain::Data, tile, direction, ModuloSlot(slot)});
-        }
-        for (const auto direction :
-             {Direction::North, Direction::South, Direction::East, Direction::West}) {
-          if (neighbor(tile, direction, target.array().rows, target.array().cols))
-            addResource(LinkResource{NetworkDomain::Predicate, tile, direction, ModuloSlot(slot)});
+        const bool meshLinks = target.dataNetwork().topology == "mesh_2d";
+        if (meshLinks) {
+          for (const auto direction :
+               {Direction::North, Direction::South, Direction::East, Direction::West}) {
+            if (neighbor(tile, direction, target.array().rows, target.array().cols))
+              addResource(LinkResource{NetworkDomain::Data, tile, direction, ModuloSlot(slot)});
+          }
+          for (const auto direction :
+               {Direction::North, Direction::South, Direction::East, Direction::West}) {
+            if (neighbor(tile, direction, target.array().rows, target.array().cols))
+              addResource(
+                  LinkResource{NetworkDomain::Predicate, tile, direction, ModuloSlot(slot)});
+          }
         }
       }
     }
@@ -207,7 +211,13 @@ std::optional<ResourceId> ModuloResourceModel::linkResource(NetworkDomain domain
   time_.validate(slot);
   if (!neighbor(source, direction, target_->array().rows, target_->array().cols))
     return std::nullopt;
-  return findResource(LinkResource{domain, source, direction, slot});
+  try {
+    return findResource(LinkResource{domain, source, direction, slot});
+  } catch (const std::out_of_range&) {
+    // A target contract may intentionally describe a disconnected topology;
+    // absent links are a normal no-route result, not a malformed ResourceId.
+    return std::nullopt;
+  }
 }
 
 std::vector<ResourceId>

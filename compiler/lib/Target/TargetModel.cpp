@@ -243,7 +243,7 @@ TargetModel TargetModel::loadFromFile(const std::filesystem::path& path) {
   model.interconnect_.runtimeArbitration =
       required<bool>(network, "runtime_arbitration", "interconnect");
   model.interconnect_.compilerRouted = required<bool>(network, "compiler_routed", "interconnect");
-  if (model.interconnect_.topology != "mesh_2d")
+  if (model.interconnect_.topology != "mesh_2d" && model.interconnect_.topology != "disconnected")
     fail("interconnect.topology", "unsupported topology");
   if (!model.interconnect_.registeredLinks || model.interconnect_.inputBuffering ||
       model.interconnect_.runtimeArbitration || !model.interconnect_.compilerRouted)

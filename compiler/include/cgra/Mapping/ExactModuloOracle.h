@@ -19,6 +19,8 @@ enum class ExactOracleStatus {
 
 struct ExactOracleOptions {
   std::uint32_t maxNodes = 5;
+  std::uint32_t maxEdges = 5;
+  std::uint32_t maxTiles = 6;
   std::uint32_t maxII = 3;
 };
 
@@ -28,8 +30,8 @@ struct ExactOracleResult {
 };
 
 // Deliberately tiny, independent oracle used by CI-100. It exhaustively
-// enumerates operation placements for small memory-only graphs; value routing
-// is intentionally reported unsupported rather than delegated to the mapper.
+// enumerates operation placements and finite modulo routes for small graphs.
+// It must remain independent from the production mapper and route search.
 class ExactModuloOracle {
 public:
   static ExactOracleResult solve(const cgra::target::TargetDFG& dfg,

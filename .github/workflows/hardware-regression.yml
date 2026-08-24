@@ -3,7 +3,9 @@ name: hardware-regression
 on:
   pull_request:
   push:
-    branches: [main]
+    branches:
+      - main
+      - compiler/target-contract-v2
   workflow_dispatch:
 
 permissions:

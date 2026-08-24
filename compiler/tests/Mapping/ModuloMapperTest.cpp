@@ -30,6 +30,29 @@ cgra::TargetModel loadTarget() {
   return cgra::TargetModel::loadFromFile(Root / "target/cgra_v2.json");
 }
 
+cgra::TargetModel loadTinyTarget(bool singleLsu = false) {
+  std::ifstream input(Root / "target/cgra_v2.json");
+  nlohmann::json json;
+  input >> json;
+  json["array"]["rows"] = 2;
+  json["array"]["cols"] = 3;
+  json["parameters"]["array_rows"] = 2;
+  json["parameters"]["array_cols"] = 3;
+  json["lsu"]["enabled_tiles"] =
+      singleLsu ? nlohmann::json::array({{{"row", 0}, {"col", 0}, {"port_id", 0}}})
+                : nlohmann::json::array({{{"row", 0}, {"col", 0}, {"port_id", 0}},
+                                         {{"row", 1}, {"col", 0}, {"port_id", 1}}});
+  const auto path =
+      std::filesystem::temp_directory_path() /
+      (singleLsu ? "cgra-exact-oracle-tiny-single.json" : "cgra-exact-oracle-tiny.json");
+  std::ofstream output(path);
+  output << json.dump(2) << '\n';
+  output.close();
+  auto result = cgra::TargetModel::loadFromFile(path);
+  std::filesystem::remove(path);
+  return result;
+}
+
 cgra::target::TargetDFG legalize(const cgra::ir::DFG& generic, const cgra::TargetModel& target) {
   const auto result = cgra::target::TargetLegalizer::legalize(generic, target);
   if (!result.ok())
@@ -165,22 +188,103 @@ void testCompletionBacktracking(const cgra::TargetModel& target) {
 }
 
 void testTinyExactOracle(const cgra::TargetModel& target) {
-  const auto dfg = legalize(cgra::ir::fixtures::memoryDependence(), target);
-  const auto oracle = ExactModuloOracle::solve(dfg, target, 1);
+  (void)target;
+  const auto tiny = loadTinyTarget();
+  const auto dfg = legalize(cgra::ir::fixtures::memoryDependence(), tiny);
+  const auto oracle = ExactModuloOracle::solve(dfg, tiny, 1);
   expect(oracle.status == ExactOracleStatus::Feasible && oracle.mapping,
          "independent tiny oracle must find the memory-only fixture");
-  expect(ModuloMappingVerifier::verify(dfg, target, *oracle.mapping).ok(),
+  expect(ModuloMappingVerifier::verify(dfg, tiny, *oracle.mapping).ok(),
          "oracle witness must pass the independent mapping verifier");
-  const auto routed = legalize(cgra::ir::fixtures::arithmeticChain(), target);
-  expect(ExactModuloOracle::solve(routed, target, 1).status ==
-             ExactOracleStatus::UnsupportedOracleSize,
-         "tiny oracle must not delegate value routing to the heuristic mapper");
+  const auto routed = legalize(cgra::ir::fixtures::loadAddStore(), tiny);
+  const auto data = ExactModuloOracle::solve(routed, tiny, 2);
+  expect(data.status == ExactOracleStatus::Feasible && data.mapping,
+         "tiny oracle independently routes a Data graph");
+  const auto predicate = legalize(cgra::ir::fixtures::predicateSelectUnsigned(), tiny);
+  const auto pred = ExactModuloOracle::solve(predicate, tiny, 2);
+  expect(pred.status == ExactOracleStatus::Feasible && pred.mapping,
+         "tiny oracle independently routes a Predicate graph");
+
+  const auto recurrence = legalize(cgra::ir::fixtures::recurrence(), tiny);
+  const auto recurrent = ExactModuloOracle::solve(recurrence, tiny, 2);
+  expect(recurrent.status == ExactOracleStatus::Feasible && recurrent.mapping,
+         "tiny oracle handles a small loop-carried Data graph");
+
+  cgra::ir::DFGBuilder mixedBuilder("oracle_mixed_memory_data");
+  const auto address = mixedBuilder.addExternal("address", cgra::ir::ValueType::i32());
+  const auto value = mixedBuilder.addExternal("value", cgra::ir::ValueType::i32());
+  const auto store = mixedBuilder.addNode(
+      cgra::ir::Opcode::Store, {cgra::ir::ValueType::i32(), cgra::ir::ValueType::i32()},
+      cgra::ir::ValueType::voidTy(), std::nullopt, cgra::ir::MemoryOpInfo{32, false});
+  const auto load = mixedBuilder.addNode(cgra::ir::Opcode::Load, {cgra::ir::ValueType::i32()},
+                                         cgra::ir::ValueType::i32(), std::nullopt,
+                                         cgra::ir::MemoryOpInfo{32, false});
+  const auto add = mixedBuilder.addNode(cgra::ir::Opcode::Add,
+                                        {cgra::ir::ValueType::i32(), cgra::ir::ValueType::i32()},
+                                        cgra::ir::ValueType::i32());
+  mixedBuilder.bindExternal(store, 0, address);
+  mixedBuilder.bindExternal(store, 1, value);
+  mixedBuilder.bindExternal(load, 0, address);
+  mixedBuilder.addMemoryEdge(store, load, cgra::ir::MemoryDepKind::RAW, 0);
+  mixedBuilder.addDataEdge(load, add, 0);
+  mixedBuilder.bindExternal(add, 1, value);
+  const auto mixed = legalize(mixedBuilder.finish(), tiny);
+  const auto mixedResult = ExactModuloOracle::solve(mixed, tiny, 2);
+  expect(mixedResult.status == ExactOracleStatus::Feasible && mixedResult.mapping,
+         "tiny oracle handles mixed Memory and Data edges");
+
+  // A disconnected target plus heterogeneous FU capabilities forces the two
+  // endpoints onto different tiles, proving that the oracle reports a real
+  // routed infeasibility rather than relying on a same-tile hold.
+  std::ifstream disconnectedInput(Root / "target/cgra_v2.json");
+  nlohmann::json disconnectedJson;
+  disconnectedInput >> disconnectedJson;
+  disconnectedJson["array"]["rows"] = 1;
+  disconnectedJson["array"]["cols"] = 2;
+  disconnectedJson["parameters"]["array_rows"] = 1;
+  disconnectedJson["parameters"]["array_cols"] = 2;
+  disconnectedJson["interconnect"]["topology"] = "disconnected";
+  disconnectedJson["lsu"]["enabled_tiles"] =
+      nlohmann::json::array({{{"row", 0}, {"col", 0}, {"port_id", 0}}});
+  disconnectedJson["tile_capabilities"]["overrides"] =
+      nlohmann::json::array({{{"row", 0}, {"col", 0}, {"operations", {"ADD"}}},
+                             {{"row", 0}, {"col", 1}, {"operations", {"SUB"}}}});
+  const auto disconnectedPath =
+      std::filesystem::temp_directory_path() / "cgra-exact-oracle-disconnected.json";
+  {
+    std::ofstream output(disconnectedPath);
+    output << disconnectedJson.dump(2) << '\n';
+  }
+  const auto disconnectedTarget = cgra::TargetModel::loadFromFile(disconnectedPath);
+  std::filesystem::remove(disconnectedPath);
+  cgra::ir::DFGBuilder disconnectedBuilder("oracle_disconnected_route");
+  const auto lhs = disconnectedBuilder.addExternal("lhs", cgra::ir::ValueType::i32());
+  const auto rhs = disconnectedBuilder.addExternal("rhs", cgra::ir::ValueType::i32());
+  const auto third = disconnectedBuilder.addExternal("third", cgra::ir::ValueType::i32());
+  const auto disconnectedAdd = disconnectedBuilder.addNode(
+      cgra::ir::Opcode::Add, {cgra::ir::ValueType::i32(), cgra::ir::ValueType::i32()},
+      cgra::ir::ValueType::i32());
+  const auto sub = disconnectedBuilder.addNode(
+      cgra::ir::Opcode::Sub, {cgra::ir::ValueType::i32(), cgra::ir::ValueType::i32()},
+      cgra::ir::ValueType::i32());
+  disconnectedBuilder.bindExternal(disconnectedAdd, 0, lhs);
+  disconnectedBuilder.bindExternal(disconnectedAdd, 1, rhs);
+  disconnectedBuilder.addDataEdge(disconnectedAdd, sub, 0);
+  disconnectedBuilder.bindExternal(sub, 1, third);
+  const auto disconnectedDfg = legalize(disconnectedBuilder.finish(), disconnectedTarget);
+  const auto noRoute = ExactModuloOracle::solve(disconnectedDfg, disconnectedTarget, 1);
+  expect(noRoute.status == ExactOracleStatus::Infeasible,
+         "tiny oracle classifies a forced disconnected routed graph as infeasible");
 
   // Fixed-seed target mutations provide a small deterministic CI-100 corpus:
   // one LSU tile cannot issue the store/load pair in the same modulo slot.
   std::ifstream input(Root / "target/cgra_v2.json");
   nlohmann::json targetJson;
   input >> targetJson;
+  targetJson["array"]["rows"] = 2;
+  targetJson["array"]["cols"] = 3;
+  targetJson["parameters"]["array_rows"] = 2;
+  targetJson["parameters"]["array_cols"] = 3;
   targetJson["lsu"]["enabled_tiles"] =
       nlohmann::json::array({{{"row", 0}, {"col", 0}, {"port_id", 0}}});
   const auto path = std::filesystem::temp_directory_path() / "cgra-exact-oracle-infeasible.json";
@@ -197,6 +301,8 @@ void testTinyExactOracle(const cgra::TargetModel& target) {
 }
 
 void testSeededOracleCorpus(const cgra::TargetModel& target) {
+  (void)target;
+  const auto tiny = loadTinyTarget();
   std::mt19937 generator(0xC1A0100U);
   for (unsigned caseIndex = 0; caseIndex < 8; ++caseIndex) {
     const auto distance = generator() % 2;
@@ -213,13 +319,35 @@ void testSeededOracleCorpus(const cgra::TargetModel& target) {
     builder.bindExternal(store, 1, value);
     builder.bindExternal(load, 0, address);
     builder.addMemoryEdge(store, load, cgra::ir::MemoryDepKind::RAW, distance);
-    const auto dfg = legalize(builder.finish(), target);
-    const auto first = ExactModuloOracle::solve(dfg, target, 1);
-    const auto second = ExactModuloOracle::solve(dfg, target, 1);
+    const auto dfg = legalize(builder.finish(), tiny);
+    const auto first = ExactModuloOracle::solve(dfg, tiny, 1);
+    const auto second = ExactModuloOracle::solve(dfg, tiny, 1);
     expect(first.status == second.status, "seeded exact-oracle status is deterministic");
     if (first.status == ExactOracleStatus::Feasible)
-      expect(first.mapping && ModuloMappingVerifier::verify(dfg, target, *first.mapping).ok(),
+      expect(first.mapping && ModuloMappingVerifier::verify(dfg, tiny, *first.mapping).ok(),
              "seeded exact-oracle witness passes T005");
+  }
+
+  // Fixed-seed routed comparison corpus. The oracle is deliberately tiny,
+  // while the production mapper remains the heuristic under test.
+  for (unsigned caseIndex = 0; caseIndex < 12; ++caseIndex) {
+    const auto choice = generator() % 4;
+    const auto generic = choice == 0   ? cgra::ir::fixtures::arithmeticChain()
+                         : choice == 1 ? cgra::ir::fixtures::predicateSelectUnsigned()
+                         : choice == 2 ? cgra::ir::fixtures::loadAddStore()
+                                       : cgra::ir::fixtures::recurrence();
+    const auto dfg = legalize(generic, tiny);
+    const auto oracle = ExactModuloOracle::solve(dfg, tiny, 2);
+    const auto mapper = ModuloMapper::map(dfg, tiny, options(2));
+    if (mapper.ok()) {
+      expect(oracle.status != ExactOracleStatus::Infeasible,
+             "production Mapper success contradicts routed exact-oracle infeasibility");
+      expect(ModuloMappingVerifier::verify(dfg, tiny, *mapper.mapping).ok(),
+             "production Mapper success remains independently T005-legal");
+    }
+    if (oracle.status == ExactOracleStatus::Feasible && mapper.ok())
+      expect(ExactModuloOracle::solve(dfg, tiny, 2).status == ExactOracleStatus::Feasible,
+             "routed exact-oracle classification is deterministic");
   }
 }
 
