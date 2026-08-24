@@ -403,8 +403,11 @@ struct Lowerer {
                                                                : dataInput(link.direction);
           }
         } else {
+          if (index < op.operands.size() && op.operands[index].optional)
+            continue;
           throw LoweringError(TargetLoweringStatus::UnsupportedValueSource,
-                              "operand has no provider provenance");
+                              "operand has no provider provenance for node " +
+                                  std::to_string(node.id) + " operand " + std::to_string(index));
         }
         builder.source(static_cast<unsigned>(sink), source);
       }
@@ -589,7 +592,8 @@ Json buildManifestJson(const TargetDFG& dfg, const TargetModel& target,
   const auto prologue = encoded.prologue.cycles.size();
   const auto epilogue = encoded.epilogue.cycles.size();
   const auto ii = program.ii();
-  const auto runCycles = prologue + program.tripCount() * static_cast<std::uint64_t>(ii) + epilogue;
+  const auto kernelRepeats = encoded.kernel.repeatCount;
+  const auto runCycles = prologue + kernelRepeats * static_cast<std::uint64_t>(ii) + epilogue;
   Json root;
   root["schema"] = "cgra.program_manifest.v1";
   root["name"] = options.programName;
@@ -603,7 +607,10 @@ Json buildManifestJson(const TargetDFG& dfg, const TargetModel& target,
   root["loop"] = Json{{"enabled", true},
                       {"prologue_cycles", prologue},
                       {"ii", ii},
-                      {"trip_count", program.tripCount()},
+                      // The v1 loop descriptor repeats the compact kernel image.  Its
+                      // repeat count may differ from the source trip count when boundary
+                      // instances are already represented in the prologue/epilogue.
+                      {"trip_count", kernelRepeats},
                       {"epilogue_cycles", epilogue}};
   Json tiles = Json::array();
   const auto addCycle = [&](Json& controls, std::uint64_t pc, const EncodedTargetCycle& cycle) {
@@ -633,13 +640,22 @@ Json buildManifestJson(const TargetDFG& dfg, const TargetModel& target,
     std::snprintf(text, sizeof(text), "0x%08x", static_cast<unsigned>(constant.bits));
     constants.push_back(Json{{"addr", constant.id}, {"value", text}});
   }
+  Json scratchpad = Json::array();
+  for (const auto& [address, value] : options.scratchpadPreload) {
+    char text[11];
+    std::snprintf(text, sizeof(text), "0x%08x", value);
+    scratchpad.push_back(Json{{"addr", address}, {"value", text}});
+  }
   for (std::uint32_t row = 0; row < target.array().rows; ++row)
     for (std::uint32_t col = 0; col < target.array().cols; ++col)
-      tiles.push_back(Json{{"row", row},
-                           {"col", col},
-                           {"control", controls[row][col]},
-                           {"const_memory", constants},
-                           {"scratchpad_preload", Json::array()}});
+      tiles.push_back(
+          Json{{"row", row},
+               {"col", col},
+               {"control", controls[row][col]},
+               {"const_memory", constants},
+               // The scratchpad is shared by the mesh.  Its preload image
+               // belongs to one canonical configuration tile, not every tile.
+               {"scratchpad_preload", (row == 0 && col == 0) ? scratchpad : Json::array()}});
   root["program"] = Json{{"format", "explicit_tile_images"},
                          {"control_word_encoding", "lsb_first_32bit_chunks"},
                          {"tiles", tiles}};

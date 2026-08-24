@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace cgra::lowering {
@@ -76,6 +77,7 @@ struct TargetLoweringOptions {
   std::string programName = "cgra-program";
   std::string targetPath;
   std::string observation = "semantic schedule";
+  std::vector<std::pair<std::uint32_t, std::uint32_t>> scratchpadPreload;
 };
 
 struct TargetLoweringResult {

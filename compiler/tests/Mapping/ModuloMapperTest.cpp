@@ -97,6 +97,12 @@ void testBudgetAndMaxII(const cgra::TargetModel& target) {
   expect(oneII.ok(), "zero maxII uses the MII attempt as the default bound");
   expect(oneII.stats.iiAttempts == 1, "default maxII performs one MII attempt");
 
+  auto minimumII = options(3);
+  minimumII.minII = 2;
+  const auto minimum = ModuloMapper::map(dfg, target, minimumII);
+  expect(minimum.ok() && minimum.mapping->ii() >= 2,
+         "explicit mapper minimum II is respected without searching below it");
+
   auto routeBudget = options(4);
   routeBudget.budget.perRouteBudget.maxStateExpansions = 0;
   routeBudget.budget.perRouteBudget.maxQueuePushes = 1;

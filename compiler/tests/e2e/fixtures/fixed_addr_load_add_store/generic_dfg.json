@@ -1,0 +1,35 @@
+{
+  "schema": "cgra.dfg.debug.v1",
+  "name": "e2e_fixed_addr_load_add_store",
+  "external_values": [],
+  "constants": [
+    {"id": 0, "type": {"kind": "integer", "bits": 32}, "bits": 0},
+    {"id": 1, "type": {"kind": "integer", "bits": 32}, "bits": 1},
+    {"id": 2, "type": {"kind": "integer", "bits": 32}, "bits": 2}
+  ],
+  "nodes": [
+    {"id": 0, "opcode": "Load", "result_type": {"kind": "integer", "bits": 32},
+     "operand_types": [{"kind": "integer", "bits": 32}],
+     "memory": {"access_width_bits": 32, "volatile": false}},
+    {"id": 1, "opcode": "Load", "result_type": {"kind": "integer", "bits": 32},
+     "operand_types": [{"kind": "integer", "bits": 32}],
+     "memory": {"access_width_bits": 32, "volatile": false}},
+    {"id": 2, "opcode": "Add", "result_type": {"kind": "integer", "bits": 32},
+     "operand_types": [{"kind": "integer", "bits": 32}, {"kind": "integer", "bits": 32}]},
+    {"id": 3, "opcode": "Store", "result_type": {"kind": "void", "bits": 0},
+     "operand_types": [{"kind": "integer", "bits": 32}, {"kind": "integer", "bits": 32}],
+     "memory": {"access_width_bits": 32, "volatile": false}}
+  ],
+  "live_outs": [],
+  "external_bindings": [
+    {"node": 0, "operand": 0, "constant": 0},
+    {"node": 1, "operand": 0, "constant": 1},
+    {"node": 3, "operand": 0, "constant": 2}
+  ],
+  "edges": [
+    {"id": 0, "src": 0, "dst": 2, "distance": 0, "kind": "data", "operand": 0},
+    {"id": 1, "src": 1, "dst": 2, "distance": 0, "kind": "data", "operand": 1},
+    {"id": 2, "src": 2, "dst": 3, "distance": 0, "kind": "data", "operand": 1},
+    {"id": 3, "src": 3, "dst": 3, "distance": 1, "kind": "memory", "dependence": "WAW"}
+  ]
+}

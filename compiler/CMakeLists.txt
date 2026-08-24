@@ -146,6 +146,16 @@ target_link_libraries(cgra_lowering PUBLIC cgra_schedule_materialization cgra_re
 cgra_enable_warnings(cgra_lowering)
 cgra_enable_sanitizers(cgra_lowering)
 
+add_library(cgra_pipeline
+  lib/Pipeline/CompileDFG.cpp
+)
+target_include_directories(cgra_pipeline PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(cgra_pipeline PUBLIC cgra_lowering cgra_schedule_materialization
+                      cgra_register_allocation cgra_schedule cgra_analysis cgra_mapping
+                      cgra_target cgra_ir)
+cgra_enable_warnings(cgra_pipeline)
+cgra_enable_sanitizers(cgra_pipeline)
+
 add_executable(cgra-target-dump tools/target-dump/main.cpp)
 target_link_libraries(cgra-target-dump PRIVATE cgra_target)
 cgra_enable_warnings(cgra-target-dump)
@@ -231,6 +241,14 @@ target_link_libraries(cgra-target-lower PRIVATE cgra_lowering)
 cgra_enable_warnings(cgra-target-lower)
 cgra_enable_sanitizers(cgra-target-lower)
 set_target_properties(cgra-target-lower PROPERTIES
+  RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+)
+
+add_executable(cgrac-compile-dfg tools/compile-dfg/main.cpp)
+target_link_libraries(cgrac-compile-dfg PRIVATE cgra_pipeline)
+cgra_enable_warnings(cgrac-compile-dfg)
+cgra_enable_sanitizers(cgrac-compile-dfg)
+set_target_properties(cgrac-compile-dfg PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
 )
 
@@ -330,6 +348,14 @@ if(CGRA_BUILD_TESTS)
     TYPE semantic
     SOURCES tests/Lowering/TargetLoweringTest.cpp tests/IR/Fixtures.cpp
     LIBRARIES cgra_lowering
+    DEFINITIONS CGRA_REPOSITORY_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/.."
+  )
+
+  cgra_add_test(
+    NAME cgra-compiler-pipeline-e2e-smoke
+    TYPE e2e
+    SOURCES tests/e2e/CompilerPipelineE2ETest.cpp
+    LIBRARIES cgra_pipeline
     DEFINITIONS CGRA_REPOSITORY_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/.."
   )
 

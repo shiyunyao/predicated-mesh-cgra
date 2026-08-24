@@ -304,10 +304,7 @@ DFG parse(std::string_view jsonText) {
   return builder.finish();
 }
 
-void writeJson(const DFG& dfg, const std::filesystem::path& path) {
-  std::ofstream stream(path);
-  if (!stream)
-    throw std::runtime_error("cannot write DFG JSON: " + path.string());
+Json dfgJson(const DFG& dfg) {
   Json root = {{"schema", "cgra.dfg.debug.v1"},
                {"name", dfg.name()},
                {"external_values", Json::array()},
@@ -344,8 +341,17 @@ void writeJson(const DFG& dfg, const std::filesystem::path& path) {
   }
   for (const auto& edge : dfg.edges())
     root["edges"].push_back(edgeJson(edge));
-  stream << root.dump(2) << '\n';
+  return root;
 }
+
+void writeJson(const DFG& dfg, const std::filesystem::path& path) {
+  std::ofstream stream(path);
+  if (!stream)
+    throw std::runtime_error("cannot write DFG JSON: " + path.string());
+  stream << dfgJson(dfg).dump(2) << '\n';
+}
+
+std::string toJson(const DFG& dfg) { return dfgJson(dfg).dump(2) + "\n"; }
 
 DFG readJson(const std::filesystem::path& path) {
   std::ifstream stream(path);

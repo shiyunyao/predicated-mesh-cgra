@@ -11,6 +11,7 @@ namespace cgra::mapping {
 
 struct ModuloMapperOptions {
   std::uint32_t maxII = 0;
+  std::uint32_t minII = 0;
   ModuloMapperBudget budget;
   RouteSearchOptions routeOptions;
 };

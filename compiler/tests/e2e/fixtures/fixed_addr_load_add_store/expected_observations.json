@@ -1,0 +1,5 @@
+{
+  "trip_count": 4,
+  "committed_stores": [{"address": 2, "data": 18, "count": 4}],
+  "unexpected_store_policy": "forbid"
+}

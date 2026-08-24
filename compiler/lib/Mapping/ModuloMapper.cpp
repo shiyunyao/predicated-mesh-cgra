@@ -47,6 +47,7 @@ struct Candidate {
   TileCoord tile;
   ModuloSlot slot;
   std::uint64_t locality = 0;
+  std::uint64_t slotAffinity = 0;
 };
 
 struct CandidateDelta {
@@ -143,12 +144,30 @@ private:
     std::vector<Candidate> values;
     for (const auto& [row, col] : target_.compatibleTiles(targetNode.operation)) {
       const TileCoord tile{row, col};
-      for (std::uint32_t slot = 0; slot < ii_; ++slot)
-        values.push_back({tile, ModuloSlot(slot), locality(node, tile)});
+      for (std::uint32_t slot = 0; slot < ii_; ++slot) {
+        std::uint64_t affinity = 0;
+        for (const auto& edge : dfg_.edges()) {
+          if (edge.src != node && edge.dst != node)
+            continue;
+          const auto other = edge.src == node ? edge.dst : edge.src;
+          const auto found = placements_.find(other);
+          if (found == placements_.end() || edge.kind() == cgra::ir::Edge::Kind::Memory)
+            continue;
+          const auto& sourceNode = dfg_.node(edge.src);
+          const auto ready = sourceNode.producerOutputReadyOffset.value_or(0U) + 1U;
+          const auto preferred = edge.dst == node
+                                     ? (found->second.issueSlot.value() + ready) % ii_
+                                     : (found->second.issueSlot.value() + ii_ - ready % ii_) % ii_;
+          if (slot != preferred)
+            ++affinity;
+        }
+        values.push_back({tile, ModuloSlot(slot), locality(node, tile), affinity});
+      }
     }
     std::ranges::sort(values, [](const Candidate& lhs, const Candidate& rhs) {
-      return std::tuple{lhs.locality, lhs.tile.row, lhs.tile.col, lhs.slot.value()} <
-             std::tuple{rhs.locality, rhs.tile.row, rhs.tile.col, rhs.slot.value()};
+      return std::tuple{lhs.locality, lhs.slotAffinity, lhs.tile.row, lhs.tile.col,
+                        lhs.slot.value()} < std::tuple{rhs.locality, rhs.slotAffinity, rhs.tile.row,
+                                                       rhs.tile.col, rhs.slot.value()};
     });
     return values;
   }
@@ -504,15 +523,16 @@ ModuloMapperResult ModuloMapper::map(const cgra::target::TargetDFG& dfg,
     return result;
   }
   result.stats.startingMII = mii.mii;
-  const auto maxII = options.maxII == 0 ? mii.mii : options.maxII;
-  if (maxII < mii.mii) {
+  const auto startII = std::max(mii.mii, options.minII == 0 ? mii.mii : options.minII);
+  const auto maxII = options.maxII == 0 ? startII : options.maxII;
+  if (maxII < startII) {
     result.status = ModuloMapperStatus::NoMappingWithinIILimit;
     addDiagnostic(result, ModuloMapperDiagnosticCode::MAP_NO_MAPPING_WITHIN_II_LIMIT,
                   "maxII is below the analyzer lower bound", mii.mii);
     return result;
   }
 
-  for (std::uint64_t ii = mii.mii; ii <= maxII; ++ii) {
+  for (std::uint64_t ii = startII; ii <= maxII; ++ii) {
     ++result.stats.iiAttempts;
     const auto currentII = static_cast<std::uint32_t>(ii);
     MappingSearchState state(dfg, target, options, currentII, result);

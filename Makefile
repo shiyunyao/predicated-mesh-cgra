@@ -81,7 +81,15 @@ PROGRAM_CONFIG := $(PROGRAM_DIR)/config_stream.json
 PROGRAM_IMAGE := $(PROGRAM_DIR)/program_manifest.json
 PROGRAM_CPP := $(abspath sim/data_rf_main.cpp)
 
-.PHONY: help check-test lint build test regression shared-scratchpad-tests shared-scratchpad-negative-tests program program-prepare program-build program-run program-check modulo-loop modulo-loop-prepare modulo-loop-check modulo-loop-tripcount-tests modulo-loop-zero-boundary-test modulo-loop-reuse-test modulo-loop-assert-tests synth-fetch-asap7 synth-memory-shape synth-area synth-timing synth-power synth-power-feasibility synth-fn-cacti clean
+COMPILER_BUILD_DIR ?= build/compiler
+COMPILER_E2E_DIR ?= build/compiler-e2e/fixed_addr_load_add_store
+COMPILER_E2E_DFG := compiler/tests/e2e/fixtures/fixed_addr_load_add_store/generic_dfg.json
+COMPILER_E2E_PRELOAD := compiler/tests/e2e/fixtures/fixed_addr_load_add_store/scratchpad_preload.json
+COMPILER_E2E_EXPECTATIONS := compiler/tests/e2e/fixtures/fixed_addr_load_add_store/expected_observations.json
+COMPILER_E2E_MANIFEST := $(COMPILER_E2E_DIR)/program_manifest.json
+COMPILER_E2E_PROGRAM_DIR := $(COMPILER_E2E_DIR)
+
+.PHONY: help check-test lint build test regression shared-scratchpad-tests shared-scratchpad-negative-tests program program-prepare program-build program-run program-check compiler-e2e modulo-loop modulo-loop-prepare modulo-loop-check modulo-loop-tripcount-tests modulo-loop-zero-boundary-test modulo-loop-reuse-test modulo-loop-assert-tests synth-fetch-asap7 synth-memory-shape synth-area synth-timing synth-power synth-power-feasibility synth-fn-cacti clean
 
 help:
 	@echo "make test TEST=<name>  Build and run one testbench"
@@ -158,6 +166,26 @@ program-check: program-run
 		--rtl "$(PROGRAM_RTL_TRACE)" \
 		> "$(PROGRAM_DIR)/compare.log" 2>&1
 	cat "$(PROGRAM_DIR)/compare.log"
+
+compiler-e2e:
+	cmake -S compiler -B "$(COMPILER_BUILD_DIR)" -DCGRA_BUILD_TESTS=OFF -DCGRA_WARNINGS_AS_ERRORS=ON
+	cmake --build "$(COMPILER_BUILD_DIR)" --target cgrac-compile-dfg
+	mkdir -p "$(COMPILER_E2E_DIR)/compiler"
+	"$(COMPILER_BUILD_DIR)/bin/cgrac-compile-dfg" "$(COMPILER_E2E_DFG)" \
+		--target target/cgra_v2.json --trip-count 4 --min-ii 5 --max-ii 8 --no-virtual-hold \
+		--scratchpad-preload "$(COMPILER_E2E_PRELOAD)" \
+		--artifact-dir "$(COMPILER_E2E_DIR)/compiler" -o "$(COMPILER_E2E_MANIFEST)"
+	$(MAKE) --no-print-directory program BUILD_DIR="$(COMPILER_E2E_PROGRAM_DIR)" PROGRAM_MANIFEST="$(COMPILER_E2E_MANIFEST)"
+	python3 tools/check_compiler_e2e_observations.py \
+		--expectation "$(COMPILER_E2E_EXPECTATIONS)" \
+		--golden "$(COMPILER_E2E_PROGRAM_DIR)/program/program_manifest/golden_trace.csv" \
+		--rtl "$(COMPILER_E2E_PROGRAM_DIR)/program/program_manifest/rtl_trace.csv"
+	python3 tools/write_compiler_e2e_report.py \
+		--fixture fixed_addr_load_add_store --dfg "$(COMPILER_E2E_DFG)" \
+		--target target/cgra_v2.json --manifest "$(COMPILER_E2E_MANIFEST)" \
+		--compiler-artifacts "$(COMPILER_E2E_DIR)/compiler" \
+		--program-dir "$(COMPILER_E2E_PROGRAM_DIR)/program/program_manifest" \
+		--output "$(COMPILER_E2E_DIR)/e2e_result.json"
 
 modulo-loop: modulo-loop-check modulo-loop-tripcount-tests modulo-loop-zero-boundary-test modulo-loop-reuse-test modulo-loop-assert-tests
 	python3 -m pytest tests/test_modulo_loop.py
