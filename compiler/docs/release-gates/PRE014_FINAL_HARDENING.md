@@ -10,7 +10,7 @@ merge-ref, and post-merge `main` checks have all completed successfully.
 - Baseline: `6ba4a0bef861abb49733451d72f4e8546ce750b9`
 - Final candidate SHA: `e8320f35b5e2127bee2cf2aae3fc8376ef38b1c9`
 - Draft PR: [#1](https://github.com/shiyunyao/predicated-mesh-cgra/pull/1)
-- Merged main SHA: pending
+- Merged main SHA: `8a94f058d22c630defef29aa65ae330a7647bb6e`
 
 ## Local Hardening
 
@@ -61,8 +61,8 @@ after GitHub has run the pushed final SHA.
 - Final feature-head `hardware-regression-gate`: PASS ([run 32754228462](https://github.com/shiyunyao/predicated-mesh-cgra/actions/runs/32754228462))
 - Draft PR merge-ref `compiler-fast-gate`: PASS ([run 32754361570](https://github.com/shiyunyao/predicated-mesh-cgra/actions/runs/32754361570))
 - Draft PR merge-ref `hardware-regression-gate`: PASS ([run 32754361625](https://github.com/shiyunyao/predicated-mesh-cgra/actions/runs/32754361625))
-- Post-merge `main` `compiler-fast-gate`: pending
-- Post-merge `main` `hardware-regression-gate`: pending
+- Post-merge `main` `compiler-fast-gate`: PASS ([run 32757365174](https://github.com/shiyunyao/predicated-mesh-cgra/actions/runs/32757365174))
+- Post-merge `main` `hardware-regression-gate`: PASS ([run 32757365050](https://github.com/shiyunyao/predicated-mesh-cgra/actions/runs/32757365050))
 
 ## Re-audit
 
@@ -72,7 +72,9 @@ guessing, semantic ConstantId physical addresses, mapper/route-search reuse by
 the exact oracle, and linear full-resource hot lookups. No unreviewed
 production shortcut was found. Final source audit: GO for the feature-head
 candidate, including both feature-head and PR merge-ref checks. Post-merge
-`main` evidence remains pending until the PR is merged.
+`main` evidence is also green for merge commit `8a94f058`.
+
+Release decision: GO T-COMP-014.
 
 ## Non-blocking Limitations
 
