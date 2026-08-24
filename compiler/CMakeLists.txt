@@ -35,7 +35,7 @@ if(CGRA_FETCH_DEPS)
   set(BUILD_GMOCK OFF CACHE BOOL "" FORCE)
   FetchContent_MakeAvailable(googletest)
 else()
-  find_package(nlohmann_json 3.10.5 EXACT REQUIRED)
+  find_package(nlohmann_json 3.10.5 REQUIRED)
   find_package(GTest QUIET)
 endif()
 
