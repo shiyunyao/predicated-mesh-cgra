@@ -79,6 +79,7 @@ add_library(cgra_mapping
   lib/Mapping/ResourceReservation.cpp
   lib/Mapping/ModuloMappingVerifier.cpp
   lib/Mapping/ModuloRouteSearch.cpp
+  lib/Mapping/ModuloMapper.cpp
 )
 target_include_directories(cgra_mapping PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(cgra_mapping PUBLIC cgra_target cgra_ir)
@@ -93,6 +94,8 @@ target_include_directories(cgra_analysis PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/incl
 target_link_libraries(cgra_analysis PUBLIC cgra_target cgra_ir)
 cgra_enable_warnings(cgra_analysis)
 cgra_enable_sanitizers(cgra_analysis)
+
+target_link_libraries(cgra_mapping PUBLIC cgra_analysis)
 
 add_executable(cgra-target-dump tools/target-dump/main.cpp)
 target_link_libraries(cgra-target-dump PRIVATE cgra_target)
@@ -139,6 +142,14 @@ target_link_libraries(cgra-modulo-route-search PRIVATE cgra_mapping)
 cgra_enable_warnings(cgra-modulo-route-search)
 cgra_enable_sanitizers(cgra-modulo-route-search)
 set_target_properties(cgra-modulo-route-search PROPERTIES
+  RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+)
+
+add_executable(cgra-modulo-map tools/modulo-map/main.cpp)
+target_link_libraries(cgra-modulo-map PRIVATE cgra_mapping)
+cgra_enable_warnings(cgra-modulo-map)
+cgra_enable_sanitizers(cgra-modulo-map)
+set_target_properties(cgra-modulo-map PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
 )
 
@@ -189,6 +200,14 @@ if(CGRA_BUILD_TESTS)
     NAME cgra-modulo-route-search-tests
     TYPE semantic
     SOURCES tests/Mapping/ModuloRouteSearchTest.cpp tests/IR/Fixtures.cpp
+    LIBRARIES cgra_mapping
+    DEFINITIONS CGRA_REPOSITORY_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/.."
+  )
+
+  cgra_add_test(
+    NAME cgra-modulo-mapper-tests
+    TYPE semantic
+    SOURCES tests/Mapping/ModuloMapperTest.cpp tests/IR/Fixtures.cpp
     LIBRARIES cgra_mapping
     DEFINITIONS CGRA_REPOSITORY_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/.."
   )
