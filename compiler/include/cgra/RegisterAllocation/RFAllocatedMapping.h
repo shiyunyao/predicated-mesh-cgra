@@ -1,0 +1,54 @@
+// SPDX-License-Identifier: MIT
+#pragma once
+
+#include "cgra/RegisterAllocation/StorageRequirement.h"
+#include "cgra/Schedule/StagedMapping.h"
+
+#include <cstdint>
+#include <optional>
+#include <span>
+#include <string>
+#include <vector>
+
+namespace cgra::register_allocation {
+
+struct PhysicalRegister {
+  cgra::mapping::TileCoord tile;
+  cgra::RegisterBankId bank;
+  std::uint32_t index = 0;
+
+  friend bool operator==(const PhysicalRegister&, const PhysicalRegister&) = default;
+};
+
+struct StorageAllocation {
+  StorageSegmentId segment = 0;
+  PhysicalRegister reg;
+
+  friend bool operator==(const StorageAllocation&, const StorageAllocation&) = default;
+};
+
+class RFAllocatedMapping {
+public:
+  const cgra::schedule::StagedMapping& staged() const noexcept { return staged_; }
+  const StorageRequirements& storageRequirements() const noexcept { return requirements_; }
+  std::span<const StorageAllocation> allocations() const noexcept { return allocations_; }
+  PhysicalRegister registerFor(StorageSegmentId segment) const;
+  std::optional<PhysicalRegister> registerForVirtualHold(cgra::target::TargetEdgeId edge,
+                                                         std::uint32_t transportActionIndex) const;
+  std::optional<PhysicalRegister> registerForTerminalSlack(cgra::target::TargetEdgeId edge) const;
+  bool operator==(const RFAllocatedMapping&) const noexcept;
+
+private:
+  friend class RFAllocator;
+  friend class RFAllocationVerifier;
+  friend class RFAllocatedMappingSerialization;
+  friend class RFAllocationTestAccess;
+  RFAllocatedMapping(cgra::schedule::StagedMapping staged, StorageRequirements requirements,
+                     std::vector<StorageAllocation> allocations);
+
+  cgra::schedule::StagedMapping staged_;
+  StorageRequirements requirements_;
+  std::vector<StorageAllocation> allocations_;
+};
+
+} // namespace cgra::register_allocation

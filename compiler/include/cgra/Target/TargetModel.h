@@ -11,6 +11,7 @@
 #include <string_view>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 namespace cgra {
@@ -23,13 +24,34 @@ struct ArrayDesc {
   bool hardwareBranch = false;
 };
 
+enum class RegisterBankDomain {
+  Data,
+  Predicate,
+};
+
+enum class SameAddressReadWritePolicy {
+  Forbidden,
+  ReadOldThenWriteNew,
+  WriteNewThenRead,
+};
+
+using RegisterBankId = std::string;
+
 struct RegisterFileDesc {
+  RegisterBankId id;
+  RegisterBankDomain domain = RegisterBankDomain::Data;
   unsigned depth = 0;
   unsigned readPorts = 0;
   unsigned writePorts = 0;
   std::string sameCycleReadWriteSameAddress;
   std::string sameCycleMultiwriteSameAddress;
+  SameAddressReadWritePolicy sameAddressReadWritePolicy = SameAddressReadWritePolicy::Forbidden;
+  std::vector<unsigned> allocatableIndices;
+  std::vector<std::pair<unsigned, unsigned>> applicableTiles;
   std::unordered_map<std::string, std::vector<std::string>> writePortSources;
+
+  bool appliesToTile(unsigned row, unsigned col) const noexcept;
+  bool allocates(unsigned index) const noexcept;
 };
 
 struct InterconnectDesc {
@@ -84,6 +106,8 @@ public:
   const ArrayDesc& array() const noexcept { return array_; }
   const RegisterFileDesc& dataRF() const noexcept { return dataRF_; }
   const RegisterFileDesc& predicateRF() const noexcept { return predicateRF_; }
+  const RegisterFileDesc* registerBank(RegisterBankDomain domain, unsigned row,
+                                       unsigned col) const noexcept;
   const InterconnectDesc& dataNetwork() const noexcept { return interconnect_; }
   const InterconnectDesc& predicateNetwork() const noexcept { return interconnect_; }
   const MemoryDesc& memory() const noexcept { return memory_; }

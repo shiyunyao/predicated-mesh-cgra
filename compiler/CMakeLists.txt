@@ -97,6 +97,20 @@ cgra_enable_sanitizers(cgra_analysis)
 
 target_link_libraries(cgra_mapping PUBLIC cgra_analysis)
 
+add_library(cgra_register_allocation
+  lib/RegisterAllocation/StorageRequirementAnalysis.cpp
+  lib/RegisterAllocation/PeriodicLifetime.cpp
+  lib/RegisterAllocation/RFAllocatedMapping.cpp
+  lib/RegisterAllocation/RFAllocationResult.cpp
+  lib/RegisterAllocation/RFAllocatedMappingSerialization.cpp
+  lib/RegisterAllocation/RFAllocator.cpp
+  lib/RegisterAllocation/RFAllocationVerifier.cpp
+)
+target_include_directories(cgra_register_allocation PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(cgra_register_allocation PUBLIC cgra_schedule cgra_target cgra_ir)
+cgra_enable_warnings(cgra_register_allocation)
+cgra_enable_sanitizers(cgra_register_allocation)
+
 add_library(cgra_schedule
   lib/Schedule/StagedMapping.cpp
   lib/Schedule/StageSchedulingResult.cpp
@@ -173,6 +187,14 @@ set_target_properties(cgra-stage-schedule PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
 )
 
+add_executable(cgra-rf-allocate tools/rf-allocate/main.cpp)
+target_link_libraries(cgra-rf-allocate PRIVATE cgra_register_allocation)
+cgra_enable_warnings(cgra-rf-allocate)
+cgra_enable_sanitizers(cgra-rf-allocate)
+set_target_properties(cgra-rf-allocate PROPERTIES
+  RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+)
+
 if(CGRA_BUILD_TESTS)
   enable_testing()
 
@@ -245,6 +267,14 @@ if(CGRA_BUILD_TESTS)
     TYPE semantic
     SOURCES tests/Schedule/StageSchedulerTest.cpp tests/IR/Fixtures.cpp
     LIBRARIES cgra_schedule
+    DEFINITIONS CGRA_REPOSITORY_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/.."
+  )
+
+  cgra_add_test(
+    NAME cgra-rf-allocation-tests
+    TYPE semantic
+    SOURCES tests/RegisterAllocation/RFAllocationTest.cpp tests/IR/Fixtures.cpp
+    LIBRARIES cgra_register_allocation
     DEFINITIONS CGRA_REPOSITORY_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/.."
   )
 

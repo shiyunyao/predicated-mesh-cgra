@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <fstream>
 #include <limits>
+#include <numeric>
 #include <ranges>
 #include <set>
 #include <stdexcept>
@@ -59,9 +60,23 @@ unsigned positiveUnsigned(const Json& parent, const std::string& key, const std:
   return static_cast<unsigned>(value);
 }
 
-RegisterFileDesc parseRegisterFile(const Json& root, const std::string& key) {
+SameAddressReadWritePolicy parseReadWritePolicy(const std::string& value,
+                                                const std::string& context) {
+  if (value == "illegal")
+    return SameAddressReadWritePolicy::Forbidden;
+  if (value == "read_old_then_write_new")
+    return SameAddressReadWritePolicy::ReadOldThenWriteNew;
+  if (value == "write_new_then_read")
+    return SameAddressReadWritePolicy::WriteNewThenRead;
+  fail(context, "unsupported same-address read/write policy");
+}
+
+RegisterFileDesc parseRegisterFile(const Json& root, const std::string& key,
+                                   RegisterBankDomain domain, unsigned rows, unsigned cols) {
   const auto& json = requiredObject(root, key, "");
   RegisterFileDesc desc;
+  desc.id = key;
+  desc.domain = domain;
   desc.depth = positiveUnsigned(json, "depth", key);
   desc.readPorts = positiveUnsigned(json, "read_ports", key);
   desc.writePorts = positiveUnsigned(json, "write_ports", key);
@@ -69,10 +84,45 @@ RegisterFileDesc parseRegisterFile(const Json& root, const std::string& key) {
       required<std::string>(json, "same_cycle_read_write_same_address", key);
   desc.sameCycleMultiwriteSameAddress =
       required<std::string>(json, "same_cycle_multiwrite_same_address", key);
-  if (desc.sameCycleReadWriteSameAddress != "illegal")
-    fail(key + ".same_cycle_read_write_same_address", "unsupported policy");
+  desc.sameAddressReadWritePolicy = parseReadWritePolicy(
+      desc.sameCycleReadWriteSameAddress, key + ".same_cycle_read_write_same_address");
   if (desc.sameCycleMultiwriteSameAddress != "illegal")
     fail(key + ".same_cycle_multiwrite_same_address", "unsupported policy");
+  if (json.contains("allocatable_indices")) {
+    const auto& indices = json.at("allocatable_indices");
+    if (!indices.is_array() || indices.empty())
+      fail(key + ".allocatable_indices", "must be a non-empty array");
+    std::set<unsigned> seen;
+    for (const auto& value : indices) {
+      const auto index = value.get<unsigned>();
+      if (index >= desc.depth)
+        fail(key + ".allocatable_indices", "index is outside RF depth");
+      if (!seen.insert(index).second)
+        fail(key + ".allocatable_indices", "contains duplicate index");
+      desc.allocatableIndices.push_back(index);
+    }
+  } else {
+    desc.allocatableIndices.resize(desc.depth);
+    std::iota(desc.allocatableIndices.begin(), desc.allocatableIndices.end(), 0U);
+  }
+  if (json.contains("applicable_tiles")) {
+    const auto& tiles = json.at("applicable_tiles");
+    if (!tiles.is_array() || tiles.empty())
+      fail(key + ".applicable_tiles", "must be a non-empty array");
+    std::set<std::pair<unsigned, unsigned>> seen;
+    for (const auto& tile : tiles) {
+      if (!tile.is_array() || tile.size() != 2)
+        fail(key + ".applicable_tiles", "entries must be [row, col]");
+      const auto row = tile.at(0).get<unsigned>();
+      const auto col = tile.at(1).get<unsigned>();
+      if (row >= rows || col >= cols)
+        fail(key + ".applicable_tiles", "tile is outside the target array");
+      if (!seen.emplace(row, col).second)
+        fail(key + ".applicable_tiles", "contains duplicate tile");
+      desc.applicableTiles.emplace_back(row, col);
+    }
+    std::ranges::sort(desc.applicableTiles);
+  }
   const auto& ports = requiredObject(json, "write_ports_detail", key);
   for (const auto& [port, sources] : ports.items()) {
     if (!sources.is_object() || !sources.contains("sources") || !sources.at("sources").is_array() ||
@@ -96,9 +146,11 @@ void requireEqual(unsigned lhs, unsigned rhs, const std::string& context) {
 }
 
 void validateWritePortNames(const RegisterFileDesc& desc, const std::string& key) {
-  if (desc.writePortSources.size() != 2 || !desc.writePortSources.contains("W0") ||
-      !desc.writePortSources.contains("W1"))
-    fail(key + ".write_ports_detail", "must contain exactly W0 and W1");
+  if (desc.writePortSources.size() != desc.writePorts)
+    fail(key + ".write_ports_detail", "must contain exactly the declared write ports");
+  for (unsigned index = 0; index < desc.writePorts; ++index)
+    if (!desc.writePortSources.contains("W" + std::to_string(index)))
+      fail(key + ".write_ports_detail", "missing declared write port W" + std::to_string(index));
 }
 
 void validateWritePortSource(
@@ -173,8 +225,10 @@ TargetModel TargetModel::loadFromFile(const std::filesystem::path& path) {
   model.array_.predicateWidth = positiveUnsigned(array, "predicate_width", "array");
   model.array_.hardwareBranch = required<bool>(array, "hardware_branch", "array");
 
-  model.dataRF_ = parseRegisterFile(root, "data_rf");
-  model.predicateRF_ = parseRegisterFile(root, "predicate_rf");
+  model.dataRF_ = parseRegisterFile(root, "data_rf", RegisterBankDomain::Data, model.array_.rows,
+                                    model.array_.cols);
+  model.predicateRF_ = parseRegisterFile(root, "predicate_rf", RegisterBankDomain::Predicate,
+                                         model.array_.rows, model.array_.cols);
 
   const auto& network = requiredObject(root, "interconnect", "");
   model.interconnect_.topology = required<std::string>(network, "topology", "interconnect");
@@ -482,11 +536,13 @@ TargetModel TargetModel::loadFromFile(const std::filesystem::path& path) {
   validateWritePortNames(model.dataRF_, "data_rf");
   validateWritePortNames(model.predicateRF_, "predicate_rf");
   validateWritePortSource(model.dataRF_, "data_rf", "W0", "route_data_source", model.encodings_);
-  validateWritePortSource(model.dataRF_, "data_rf", "W1", "data_source", model.encodings_);
+  if (model.dataRF_.writePorts > 1)
+    validateWritePortSource(model.dataRF_, "data_rf", "W1", "data_source", model.encodings_);
   validateWritePortSource(model.predicateRF_, "predicate_rf", "W0", "route_predicate_source",
                           model.encodings_);
-  validateWritePortSource(model.predicateRF_, "predicate_rf", "W1", "predicate_source",
-                          model.encodings_);
+  if (model.predicateRF_.writePorts > 1)
+    validateWritePortSource(model.predicateRF_, "predicate_rf", "W1", "predicate_source",
+                            model.encodings_);
 
   const auto& layout = requiredObject(root, "control_layout", "");
   auto& parsedLayout = model.controlLayout_;
@@ -773,6 +829,21 @@ std::string TargetModel::encodingName(std::string_view domain, unsigned value) c
     throw std::runtime_error("unknown numeric target encoding " + std::string(domain) + "=" +
                              std::to_string(value));
   return nameIt->second;
+}
+
+bool RegisterFileDesc::appliesToTile(unsigned row, unsigned col) const noexcept {
+  return applicableTiles.empty() ||
+         std::ranges::find(applicableTiles, std::pair{row, col}) != applicableTiles.end();
+}
+
+bool RegisterFileDesc::allocates(unsigned index) const noexcept {
+  return std::ranges::find(allocatableIndices, index) != allocatableIndices.end();
+}
+
+const RegisterFileDesc* TargetModel::registerBank(RegisterBankDomain domain, unsigned row,
+                                                  unsigned col) const noexcept {
+  const auto& bank = domain == RegisterBankDomain::Data ? dataRF_ : predicateRF_;
+  return bank.appliesToTile(row, col) ? &bank : nullptr;
 }
 
 } // namespace cgra
