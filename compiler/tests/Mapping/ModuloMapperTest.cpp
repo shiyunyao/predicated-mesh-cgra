@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 #include "../IR/Fixtures.h"
 
+#include "cgra/IR/DFGBuilder.h"
 #include "cgra/Mapping/ExactModuloOracle.h"
 #include "cgra/Mapping/ModuloMapper.h"
 #include "cgra/Mapping/ModuloMappingSerialization.h"
@@ -12,6 +13,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <random>
 #include <stdexcept>
 
 namespace {
@@ -194,6 +196,33 @@ void testTinyExactOracle(const cgra::TargetModel& target) {
          "independent tiny oracle must classify a constrained memory fixture as infeasible");
 }
 
+void testSeededOracleCorpus(const cgra::TargetModel& target) {
+  std::mt19937 generator(0xC1A0100U);
+  for (unsigned caseIndex = 0; caseIndex < 8; ++caseIndex) {
+    const auto distance = generator() % 2;
+    cgra::ir::DFGBuilder builder("oracle_seed_" + std::to_string(caseIndex));
+    const auto address = builder.addExternal("address", cgra::ir::ValueType::i32());
+    const auto value = builder.addExternal("value", cgra::ir::ValueType::i32());
+    const auto store = builder.addNode(
+        cgra::ir::Opcode::Store, {cgra::ir::ValueType::i32(), cgra::ir::ValueType::i32()},
+        cgra::ir::ValueType::voidTy(), std::nullopt, cgra::ir::MemoryOpInfo{32, false});
+    const auto load = builder.addNode(cgra::ir::Opcode::Load, {cgra::ir::ValueType::i32()},
+                                      cgra::ir::ValueType::i32(), std::nullopt,
+                                      cgra::ir::MemoryOpInfo{32, false});
+    builder.bindExternal(store, 0, address);
+    builder.bindExternal(store, 1, value);
+    builder.bindExternal(load, 0, address);
+    builder.addMemoryEdge(store, load, cgra::ir::MemoryDepKind::RAW, distance);
+    const auto dfg = legalize(builder.finish(), target);
+    const auto first = ExactModuloOracle::solve(dfg, target, 1);
+    const auto second = ExactModuloOracle::solve(dfg, target, 1);
+    expect(first.status == second.status, "seeded exact-oracle status is deterministic");
+    if (first.status == ExactOracleStatus::Feasible)
+      expect(first.mapping && ModuloMappingVerifier::verify(dfg, target, *first.mapping).ok(),
+             "seeded exact-oracle witness passes T005");
+  }
+}
+
 } // namespace
 
 int main() {
@@ -204,6 +233,7 @@ int main() {
     testBudgetAndMaxII(target);
     testCompletionBacktracking(target);
     testTinyExactOracle(target);
+    testSeededOracleCorpus(target);
     std::cout << "modulo mapper tests passed\n";
     return 0;
   } catch (const std::exception& error) {
