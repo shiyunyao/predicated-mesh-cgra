@@ -113,6 +113,7 @@ public:
   const MemoryDesc& memory() const noexcept { return memory_; }
   const LoopExecutionDesc& loopExecution() const noexcept { return loopExecution_; }
   const ControlLayout& controlLayout() const noexcept { return controlLayout_; }
+  TileControl defaultTileControl() const noexcept { return TileControl{}; }
   const std::vector<LsuTileDesc>& lsuTiles() const noexcept { return lsuTiles_; }
   bool supportsValueType(const ir::ValueType& type) const noexcept;
   const TargetOperationDesc* findOperation(std::string_view name) const noexcept;

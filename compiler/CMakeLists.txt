@@ -137,6 +137,15 @@ target_link_libraries(cgra_schedule_materialization PUBLIC cgra_register_allocat
 cgra_enable_warnings(cgra_schedule_materialization)
 cgra_enable_sanitizers(cgra_schedule_materialization)
 
+add_library(cgra_lowering
+  lib/Lowering/TargetLowering.cpp
+)
+target_include_directories(cgra_lowering PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(cgra_lowering PUBLIC cgra_schedule_materialization cgra_register_allocation
+                      cgra_schedule cgra_mapping cgra_target cgra_ir)
+cgra_enable_warnings(cgra_lowering)
+cgra_enable_sanitizers(cgra_lowering)
+
 add_executable(cgra-target-dump tools/target-dump/main.cpp)
 target_link_libraries(cgra-target-dump PRIVATE cgra_target)
 cgra_enable_warnings(cgra-target-dump)
@@ -214,6 +223,14 @@ target_link_libraries(cgra-rf-allocate PRIVATE cgra_register_allocation)
 cgra_enable_warnings(cgra-rf-allocate)
 cgra_enable_sanitizers(cgra-rf-allocate)
 set_target_properties(cgra-rf-allocate PROPERTIES
+  RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+)
+
+add_executable(cgra-target-lower tools/target-lower/main.cpp)
+target_link_libraries(cgra-target-lower PRIVATE cgra_lowering)
+cgra_enable_warnings(cgra-target-lower)
+cgra_enable_sanitizers(cgra-target-lower)
+set_target_properties(cgra-target-lower PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
 )
 
@@ -305,6 +322,14 @@ if(CGRA_BUILD_TESTS)
     TYPE semantic
     SOURCES tests/Schedule/ScheduleMaterializerTest.cpp tests/IR/Fixtures.cpp
     LIBRARIES cgra_schedule_materialization
+    DEFINITIONS CGRA_REPOSITORY_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/.."
+  )
+
+  cgra_add_test(
+    NAME cgra-target-lowering-tests
+    TYPE semantic
+    SOURCES tests/Lowering/TargetLoweringTest.cpp tests/IR/Fixtures.cpp
+    LIBRARIES cgra_lowering
     DEFINITIONS CGRA_REPOSITORY_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/.."
   )
 

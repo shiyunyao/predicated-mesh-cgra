@@ -67,4 +67,68 @@ TargetResultRole targetResultRoleFromString(std::string_view value) {
   throw std::invalid_argument("unknown target result role: " + std::string(value));
 }
 
+std::string_view toString(TargetControlSink sink) {
+  switch (sink) {
+  case TargetControlSink::FuDataA:
+    return "FU_SRC_A";
+  case TargetControlSink::FuDataB:
+    return "FU_SRC_B";
+  case TargetControlSink::FuPredicate0:
+    return "FU_PRED_0";
+  case TargetControlSink::FuPredicate1:
+    return "FU_PRED_1";
+  case TargetControlSink::LsuAddress:
+    return "LSU_ADDR";
+  case TargetControlSink::LsuStoreData:
+    return "LSU_STORE_DATA";
+  case TargetControlSink::LsuCommitPredicate:
+    return "LSU_COMMIT_PRED";
+  }
+  return "UNKNOWN";
+}
+
+TargetControlSink targetControlSinkFromString(std::string_view value) {
+  if (value == "FU_SRC_A")
+    return TargetControlSink::FuDataA;
+  if (value == "FU_SRC_B")
+    return TargetControlSink::FuDataB;
+  if (value == "FU_PRED_0")
+    return TargetControlSink::FuPredicate0;
+  if (value == "FU_PRED_1")
+    return TargetControlSink::FuPredicate1;
+  if (value == "LSU_ADDR")
+    return TargetControlSink::LsuAddress;
+  if (value == "LSU_STORE_DATA")
+    return TargetControlSink::LsuStoreData;
+  if (value == "LSU_COMMIT_PRED")
+    return TargetControlSink::LsuCommitPredicate;
+  throw std::invalid_argument("unknown target control sink: " + std::string(value));
+}
+
+std::string_view toString(TargetResultSource source) {
+  switch (source) {
+  case TargetResultSource::None:
+    return "NONE";
+  case TargetResultSource::FuDataResult:
+    return "FU_DATA_RESULT";
+  case TargetResultSource::FuPredicateResult:
+    return "FU_PRED_RESULT";
+  case TargetResultSource::LsuLoadData:
+    return "LSU_LOAD_DATA";
+  }
+  return "UNKNOWN";
+}
+
+TargetResultSource targetResultSourceFromString(std::string_view value) {
+  if (value == "NONE")
+    return TargetResultSource::None;
+  if (value == "FU_DATA_RESULT")
+    return TargetResultSource::FuDataResult;
+  if (value == "FU_PRED_RESULT")
+    return TargetResultSource::FuPredicateResult;
+  if (value == "LSU_LOAD_DATA")
+    return TargetResultSource::LsuLoadData;
+  throw std::invalid_argument("unknown target result source: " + std::string(value));
+}
+
 } // namespace cgra

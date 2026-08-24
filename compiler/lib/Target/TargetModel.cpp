@@ -367,6 +367,68 @@ TargetModel TargetModel::loadFromFile(const std::filesystem::path& path) {
     } catch (const std::exception& error) {
       fail(context + ".result.role", error.what());
     }
+    std::vector<std::pair<unsigned, TargetControlSink>> operandSinks;
+    std::unordered_set<TargetControlSink> usedSinks;
+    TargetResultSource resultSource = TargetResultSource::None;
+    if (descriptorJson.contains("lowering")) {
+      const auto& loweringJson = requiredObject(descriptorJson, "lowering", context);
+      const auto& sinkJson = requiredArray(loweringJson, "operand_sinks", context + ".lowering");
+      if (sinkJson.size() != operands.size())
+        fail(context + ".lowering.operand_sinks", "must contain exactly one sink per operand");
+      for (std::size_t index = 0; index < sinkJson.size(); ++index) {
+        if (!sinkJson[index].is_string())
+          fail(context + ".lowering.operand_sinks", "sink names must be strings");
+        TargetControlSink sink;
+        try {
+          sink = targetControlSinkFromString(sinkJson[index].get<std::string>());
+        } catch (const std::exception& error) {
+          fail(context + ".lowering.operand_sinks[" + std::to_string(index) + "]", error.what());
+        }
+        if (!usedSinks.insert(sink).second)
+          fail(context + ".lowering.operand_sinks", "each physical sink may be bound only once");
+        operandSinks.emplace_back(static_cast<unsigned>(index), sink);
+      }
+      try {
+        resultSource = targetResultSourceFromString(
+            required<std::string>(loweringJson, "result_source", context + ".lowering"));
+      } catch (const std::exception& error) {
+        fail(context + ".lowering.result_source", error.what());
+      }
+    } else {
+      // Legacy target files predate the explicit lowering contract.  Derive the
+      // canonical current-target sinks once at load time so all consumers still
+      // use typed descriptors rather than operation-name checks.
+      unsigned dataIndex = 0;
+      unsigned predicateIndex = 0;
+      for (std::size_t index = 0; index < operands.size(); ++index) {
+        TargetControlSink sink;
+        switch (operands[index].role) {
+        case TargetOperandRole::Data:
+          if (executionClass == TargetExecutionClass::LSU)
+            sink = TargetControlSink::LsuStoreData;
+          else
+            sink = dataIndex++ == 0 ? TargetControlSink::FuDataA : TargetControlSink::FuDataB;
+          break;
+        case TargetOperandRole::Predicate:
+          if (executionClass == TargetExecutionClass::LSU)
+            sink = TargetControlSink::LsuCommitPredicate;
+          else
+            sink = predicateIndex++ == 0 ? TargetControlSink::FuPredicate0
+                                         : TargetControlSink::FuPredicate1;
+          break;
+        case TargetOperandRole::Address:
+          sink = TargetControlSink::LsuAddress;
+          break;
+        }
+        operandSinks.emplace_back(static_cast<unsigned>(index), sink);
+      }
+      if (resultRole == TargetResultRole::Data)
+        resultSource = executionClass == TargetExecutionClass::LSU
+                           ? TargetResultSource::LsuLoadData
+                           : TargetResultSource::FuDataResult;
+      else if (resultRole == TargetResultRole::Predicate)
+        resultSource = TargetResultSource::FuPredicateResult;
+    }
     const auto issueOccupancy = positiveUnsigned(descriptorJson, "issue_occupancy", context);
     std::optional<unsigned> resultLatency;
     std::optional<unsigned> outputReadyOffset;
@@ -389,18 +451,52 @@ TargetModel TargetModel::loadFromFile(const std::filesystem::path& path) {
     if ((executionClass == TargetExecutionClass::LSU) != accessWidth.has_value())
       fail(context,
            "LSU operations require memory_access_width_bits and FU operations must omit it");
+    for (const auto& [operandIndex, sink] : operandSinks) {
+      const auto role = operands[operandIndex].role;
+      const bool valid =
+          (role == TargetOperandRole::Data &&
+           (sink == TargetControlSink::FuDataA || sink == TargetControlSink::FuDataB ||
+            sink == TargetControlSink::LsuStoreData)) ||
+          (role == TargetOperandRole::Predicate &&
+           (sink == TargetControlSink::FuPredicate0 || sink == TargetControlSink::FuPredicate1 ||
+            sink == TargetControlSink::LsuCommitPredicate)) ||
+          (role == TargetOperandRole::Address && sink == TargetControlSink::LsuAddress);
+      if (!valid)
+        fail(context + ".lowering.operand_sinks[" + std::to_string(operandIndex) + "]",
+             "sink is incompatible with semantic operand role");
+      const bool lsuSink = sink == TargetControlSink::LsuAddress ||
+                           sink == TargetControlSink::LsuStoreData ||
+                           sink == TargetControlSink::LsuCommitPredicate;
+      if ((executionClass == TargetExecutionClass::LSU) != lsuSink)
+        fail(context + ".lowering.operand_sinks[" + std::to_string(operandIndex) + "]",
+             "sink is incompatible with operation execution class");
+    }
+    const bool validResultSource =
+        (resultRole == TargetResultRole::Void && resultSource == TargetResultSource::None) ||
+        (resultRole == TargetResultRole::Data && executionClass == TargetExecutionClass::FU &&
+         resultSource == TargetResultSource::FuDataResult) ||
+        (resultRole == TargetResultRole::Predicate && executionClass == TargetExecutionClass::FU &&
+         resultSource == TargetResultSource::FuPredicateResult) ||
+        (resultRole == TargetResultRole::Data && executionClass == TargetExecutionClass::LSU &&
+         resultSource == TargetResultSource::LsuLoadData);
+    if (!validResultSource)
+      fail(context + ".lowering.result_source",
+           "result source is incompatible with result role and execution class");
     if (resultRole == TargetResultRole::Data)
       model.operations_.push_back({name, executionClass, std::move(operands), resultRole,
                                    ir::ValueType::integer(model.array_.dataWidth), issueOccupancy,
-                                   resultLatency, outputReadyOffset, accessWidth, encoding});
+                                   resultLatency, outputReadyOffset, accessWidth, encoding,
+                                   std::move(operandSinks), resultSource});
     else if (resultRole == TargetResultRole::Predicate)
       model.operations_.push_back({name, executionClass, std::move(operands), resultRole,
                                    ir::ValueType::predicate(), issueOccupancy, resultLatency,
-                                   outputReadyOffset, accessWidth, encoding});
+                                   outputReadyOffset, accessWidth, encoding,
+                                   std::move(operandSinks), resultSource});
     else
       model.operations_.push_back({name, executionClass, std::move(operands), resultRole,
                                    ir::ValueType::voidTy(), issueOccupancy, resultLatency,
-                                   outputReadyOffset, accessWidth, encoding});
+                                   outputReadyOffset, accessWidth, encoding,
+                                   std::move(operandSinks), resultSource});
     model.operationIndices_.emplace(name, model.operations_.size() - 1);
   }
   for (const auto& operation : model.operations_)

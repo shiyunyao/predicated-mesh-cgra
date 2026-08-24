@@ -7,6 +7,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace cgra {
@@ -30,6 +31,23 @@ enum class TargetResultRole {
   Void,
 };
 
+enum class TargetControlSink {
+  FuDataA,
+  FuDataB,
+  FuPredicate0,
+  FuPredicate1,
+  LsuAddress,
+  LsuStoreData,
+  LsuCommitPredicate,
+};
+
+enum class TargetResultSource {
+  None,
+  FuDataResult,
+  FuPredicateResult,
+  LsuLoadData,
+};
+
 struct TargetOperandDesc {
   TargetOperandRole role = TargetOperandRole::Data;
   bool optional = false;
@@ -50,6 +68,10 @@ std::string_view toString(TargetOperandRole role);
 TargetOperandRole targetOperandRoleFromString(std::string_view value);
 std::string_view toString(TargetResultRole role);
 TargetResultRole targetResultRoleFromString(std::string_view value);
+std::string_view toString(TargetControlSink sink);
+TargetControlSink targetControlSinkFromString(std::string_view value);
+std::string_view toString(TargetResultSource source);
+TargetResultSource targetResultSourceFromString(std::string_view value);
 
 struct TargetOperationDesc {
   TargetOperationRef id;
@@ -62,6 +84,8 @@ struct TargetOperationDesc {
   std::optional<unsigned> producerOutputReadyOffset;
   std::optional<unsigned> accessWidthBits;
   std::optional<TargetEncodingRef> encoding;
+  std::vector<std::pair<unsigned, TargetControlSink>> operandSinks;
+  TargetResultSource resultSource = TargetResultSource::None;
 
   friend bool operator==(const TargetOperationDesc&, const TargetOperationDesc&) = default;
 };
