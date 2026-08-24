@@ -8,7 +8,7 @@ merge-ref, and post-merge `main` checks have all completed successfully.
 
 - Branch: `compiler/target-contract-v2`
 - Baseline: `6ba4a0bef861abb49733451d72f4e8546ce750b9`
-- Final candidate SHA: pending final commit
+- Final candidate SHA: `f97f24180d1d9da206137f8f6af61095dcaccd35`
 - Draft PR: pending hosted push
 - Merged main SHA: pending
 
@@ -40,7 +40,8 @@ no-route result rather than a resource-ID exception.
 | --- | --- |
 | dev-debug build | PASS |
 | dev-debug CTest | PASS (17/17) |
-| sanitizer CTest | PASS (19/19) |
+| ci-debug CTest | PASS (20/20) |
+| sanitizer CTest | PASS (19/19 executed; CTest IDs through 20) |
 | `make compiler-e2e` | PASS (real golden/RTL replay and observations) |
 | `make regression` | PASS |
 
@@ -54,8 +55,8 @@ The compiler-fast and hardware-regression workflows include push coverage for
 `compiler/target-contract-v2`. Record exact URLs and conclusions here only
 after GitHub has run the pushed final SHA.
 
-- Exact feature-head `compiler-fast-gate`: pending
-- Exact feature-head `hardware-regression-gate`: pending
+- Exact feature-head `compiler-fast-gate`: PASS ([run 32753316169](https://github.com/shiyunyao/predicated-mesh-cgra/actions/runs/32753316169))
+- Exact feature-head `hardware-regression-gate`: PASS ([run 32753316101](https://github.com/shiyunyao/predicated-mesh-cgra/actions/runs/32753316101))
 - Draft PR merge-ref `compiler-fast-gate`: pending
 - Draft PR merge-ref `hardware-regression-gate`: pending
 - Post-merge `main` `compiler-fast-gate`: pending
@@ -67,8 +68,8 @@ Required source-audit patterns were checked for fixture-specific primary-E2E
 II/VirtualHold overrides, operand-index RF ports, FU/non-FU write-port
 guessing, semantic ConstantId physical addresses, mapper/route-search reuse by
 the exact oracle, and linear full-resource hot lookups. No unreviewed
-production shortcut was found. Final result remains pending the final
-candidate SHA review and hosted evidence.
+production shortcut was found. Final source audit: GO for the feature-head
+candidate, with PR merge-ref and post-merge `main` evidence still pending.
 
 ## Non-blocking Limitations
 
