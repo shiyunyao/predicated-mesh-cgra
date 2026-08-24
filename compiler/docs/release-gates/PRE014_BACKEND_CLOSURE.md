@@ -7,11 +7,22 @@ It is intentionally evidence-based: a workflow file is not a passing run.
 
 | Gate | Command / evidence | Result |
 | --- | --- | --- |
-| Compiler build and semantic tests | `ctest --test-dir compiler/build/dev-debug --output-on-failure` | pending current HEAD run |
-| Compiler sanitizer lane | `ctest --test-dir compiler/build/ci-sanitize --output-on-failure` | pending current HEAD run |
-| Generated-program hardware E2E | `make compiler-e2e` | pending current HEAD run |
-| Retained hardware regression | `make regression` | pending current HEAD run |
-| Tiny independent oracle | `cgra-modulo-mapper-tests` | pending current HEAD run |
+| Compiler build and semantic tests | `ctest --test-dir compiler/build/dev-debug --output-on-failure` | PASS (17/17) |
+| Compiler sanitizer lane | `ctest --test-dir compiler/build/ci-sanitize --output-on-failure` | PASS (20/20) |
+| Generated-program hardware E2E | `make compiler-e2e` | PASS (compiler, manifest validator, Verilator, golden/RTL, observations) |
+| Retained hardware regression | `make regression` | PASS |
+| Tiny independent oracle | `cgra-modulo-mapper-tests` | PASS (feasible/infeasible and mapper completion tests) |
+
+## Audited evidence
+
+- Source commit: `2a774d3c92183655e5602471d65ee26802f4fde5`
+- Generated-program artifact: `build/compiler-e2e/fixed_addr_load_add_store/e2e_result.json`
+- Primary E2E starts at `MII=1`, maps at `II=1`, and records 18 complete
+  candidates with 17 same-II RF rejections before acceptance.
+- E2E manifest hash matched the archived replay manifest; Verilator reported
+  `PROGRAM_RTL_PASS`, the retained comparator reported `PROGRAM_TRACE_MATCH`,
+  and the independent observation checker reported 4 expected stores in both
+  golden and RTL traces.
 
 ## Closure assertions
 
