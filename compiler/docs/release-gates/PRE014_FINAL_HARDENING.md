@@ -8,8 +8,8 @@ merge-ref, and post-merge `main` checks have all completed successfully.
 
 - Branch: `compiler/target-contract-v2`
 - Baseline: `6ba4a0bef861abb49733451d72f4e8546ce750b9`
-- Final candidate SHA: `f97f24180d1d9da206137f8f6af61095dcaccd35`
-- Draft PR: pending hosted push
+- Final candidate SHA: `e8320f35b5e2127bee2cf2aae3fc8376ef38b1c9`
+- Draft PR: [#1](https://github.com/shiyunyao/predicated-mesh-cgra/pull/1)
 - Merged main SHA: pending
 
 ## Local Hardening
@@ -57,8 +57,10 @@ after GitHub has run the pushed final SHA.
 
 - Exact feature-head `compiler-fast-gate`: PASS ([run 32753316169](https://github.com/shiyunyao/predicated-mesh-cgra/actions/runs/32753316169))
 - Exact feature-head `hardware-regression-gate`: PASS ([run 32753316101](https://github.com/shiyunyao/predicated-mesh-cgra/actions/runs/32753316101))
-- Draft PR merge-ref `compiler-fast-gate`: pending
-- Draft PR merge-ref `hardware-regression-gate`: pending
+- Final feature-head `compiler-fast-gate`: PASS ([run 32754228557](https://github.com/shiyunyao/predicated-mesh-cgra/actions/runs/32754228557))
+- Final feature-head `hardware-regression-gate`: PASS ([run 32754228462](https://github.com/shiyunyao/predicated-mesh-cgra/actions/runs/32754228462))
+- Draft PR merge-ref `compiler-fast-gate`: PASS ([run 32754361570](https://github.com/shiyunyao/predicated-mesh-cgra/actions/runs/32754361570))
+- Draft PR merge-ref `hardware-regression-gate`: PASS ([run 32754361625](https://github.com/shiyunyao/predicated-mesh-cgra/actions/runs/32754361625))
 - Post-merge `main` `compiler-fast-gate`: pending
 - Post-merge `main` `hardware-regression-gate`: pending
 
@@ -69,7 +71,8 @@ II/VirtualHold overrides, operand-index RF ports, FU/non-FU write-port
 guessing, semantic ConstantId physical addresses, mapper/route-search reuse by
 the exact oracle, and linear full-resource hot lookups. No unreviewed
 production shortcut was found. Final source audit: GO for the feature-head
-candidate, with PR merge-ref and post-merge `main` evidence still pending.
+candidate, including both feature-head and PR merge-ref checks. Post-merge
+`main` evidence remains pending until the PR is merged.
 
 ## Non-blocking Limitations
 
