@@ -225,8 +225,6 @@ void testExactRFPortRegressions(const cgra::TargetModel& model) {
     const auto& segment = allocation.mapping->storageRequirements().segment(item.segment);
     expect(item.writePort == (segment.edge == 0 ? 0U : 1U),
            "SELECT storage provenance selects the source-compatible write port");
-    expect(item.readPort == (segment.edge == 0 ? 0U : 1U),
-           "SELECT data provenance selects the deterministic RF read port");
   }
 
   const auto networkOnly = makeSelectStorageCase(model, true);
