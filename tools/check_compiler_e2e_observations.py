@@ -15,6 +15,14 @@ STORE_OPS = {"2", "STORE"}
 COMMITTED = {"1", "true", "True"}
 
 
+def parse_word(text: str) -> int:
+    try:
+        return int(text, 0)
+    except ValueError:
+        # The retained trace writer emits hexadecimal words without a 0x prefix.
+        return int(text, 16)
+
+
 def load_stores(path: pathlib.Path) -> list[tuple[int, int, int]]:
     with path.open(newline="", encoding="utf-8") as stream:
         rows = list(csv.DictReader(stream))
@@ -28,7 +36,7 @@ def load_stores(path: pathlib.Path) -> list[tuple[int, int, int]]:
     for row in rows:
         if row["lsu_op"] not in STORE_OPS or row["lsu_store_commit"] not in COMMITTED:
             continue
-        stores.append((int(row["cycle"]), int(row["lsu_addr"], 0), int(row["lsu_store_data"], 0)))
+        stores.append((int(row["cycle"]), parse_word(row["lsu_addr"]), parse_word(row["lsu_store_data"])))
     return stores
 
 

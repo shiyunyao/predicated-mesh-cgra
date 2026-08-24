@@ -88,14 +88,20 @@ COMPILER_E2E_PRELOAD := compiler/tests/e2e/fixtures/fixed_addr_load_add_store/sc
 COMPILER_E2E_EXPECTATIONS := compiler/tests/e2e/fixtures/fixed_addr_load_add_store/expected_observations.json
 COMPILER_E2E_MANIFEST := $(COMPILER_E2E_DIR)/program_manifest.json
 COMPILER_E2E_PROGRAM_DIR := $(COMPILER_E2E_DIR)
+COMPILER_KERNEL_E2E_DIR ?= build/kernel-e2e/abi_scalar_add_equal
+COMPILER_KERNEL_E2E_DFG := compiler/tests/Target/fixtures/simple_add.dfg.json
+COMPILER_KERNEL_E2E_INVOCATION := compiler/tests/ABI/fixtures/abi_scalar_add_equal_invocation.json
+COMPILER_KERNEL_E2E_EXPECTATIONS := compiler/tests/ABI/fixtures/abi_scalar_add_equal_expected_observations.json
+COMPILER_KERNEL_E2E_MANIFEST := $(COMPILER_KERNEL_E2E_DIR)/program_manifest.json
 
-.PHONY: help check-test lint build test regression shared-scratchpad-tests shared-scratchpad-negative-tests program program-prepare program-build program-run program-check compiler-e2e modulo-loop modulo-loop-prepare modulo-loop-check modulo-loop-tripcount-tests modulo-loop-zero-boundary-test modulo-loop-reuse-test modulo-loop-assert-tests synth-fetch-asap7 synth-memory-shape synth-area synth-timing synth-power synth-power-feasibility synth-fn-cacti clean
+.PHONY: help check-test lint build test regression shared-scratchpad-tests shared-scratchpad-negative-tests program program-prepare program-build program-run program-check compiler-e2e kernel-abi-e2e modulo-loop modulo-loop-prepare modulo-loop-check modulo-loop-tripcount-tests modulo-loop-zero-boundary-test modulo-loop-reuse-test modulo-loop-assert-tests synth-fetch-asap7 synth-memory-shape synth-area synth-timing synth-power synth-power-feasibility synth-fn-cacti clean
 
 help:
 	@echo "make test TEST=<name>  Build and run one testbench"
 	@echo "make lint TEST=<name>  Lint RTL with one testbench"
 	@echo "make regression         Run all retained testbenches"
 	@echo "make program PROGRAM_MANIFEST=<path>  Replay an external cgra.program_manifest.v1 through RTL and compare traces"
+	@echo "make kernel-abi-e2e  Compile and replay an invocation-bound ABI kernel through RTL"
 	@echo "make modulo-loop        Replay the external modulo-loop manifest and run loop coverage"
 	@echo "make synth-area         Map 2x2/4x4 logic and report ASAP7 cell area"
 	@echo "make synth-timing       Estimate 2x2/4x4 logic timing at 100 MHz"
@@ -186,6 +192,19 @@ compiler-e2e:
 		--compiler-artifacts "$(COMPILER_E2E_DIR)/compiler" \
 		--program-dir "$(COMPILER_E2E_PROGRAM_DIR)/program/program_manifest" \
 		--output "$(COMPILER_E2E_DIR)/e2e_result.json"
+
+kernel-abi-e2e:
+	cmake -S compiler -B "$(COMPILER_BUILD_DIR)" -DCGRA_BUILD_TESTS=OFF -DCGRA_WARNINGS_AS_ERRORS=ON
+	cmake --build "$(COMPILER_BUILD_DIR)" --target cgrac-compile-kernel
+	mkdir -p "$(COMPILER_KERNEL_E2E_DIR)/compiler"
+	"$(COMPILER_BUILD_DIR)/bin/cgrac-compile-kernel" "$(COMPILER_KERNEL_E2E_DFG)" \
+		--target target/cgra_v3.json --invocation "$(COMPILER_KERNEL_E2E_INVOCATION)" \
+		--artifact-dir "$(COMPILER_KERNEL_E2E_DIR)/compiler" -o "$(COMPILER_KERNEL_E2E_MANIFEST)"
+	$(MAKE) --no-print-directory program BUILD_DIR="$(COMPILER_KERNEL_E2E_DIR)" PROGRAM_MANIFEST="$(COMPILER_KERNEL_E2E_MANIFEST)"
+	python3 tools/check_compiler_e2e_observations.py \
+		--expectation "$(COMPILER_KERNEL_E2E_EXPECTATIONS)" \
+		--golden "$(COMPILER_KERNEL_E2E_DIR)/program/program_manifest/golden_trace.csv" \
+		--rtl "$(COMPILER_KERNEL_E2E_DIR)/program/program_manifest/rtl_trace.csv"
 
 modulo-loop: modulo-loop-check modulo-loop-tripcount-tests modulo-loop-zero-boundary-test modulo-loop-reuse-test modulo-loop-assert-tests
 	python3 -m pytest tests/test_modulo_loop.py
