@@ -123,6 +123,20 @@ target_link_libraries(cgra_schedule PUBLIC cgra_mapping cgra_target cgra_ir)
 cgra_enable_warnings(cgra_schedule)
 cgra_enable_sanitizers(cgra_schedule)
 
+add_library(cgra_schedule_materialization
+  lib/Schedule/MaterializedEvent.cpp
+  lib/Schedule/MaterializedSchedule.cpp
+  lib/Schedule/MaterializedScheduleSerialization.cpp
+  lib/Schedule/ScheduleMaterializationResult.cpp
+  lib/Schedule/ScheduleMaterializer.cpp
+  lib/Schedule/MaterializedScheduleVerifier.cpp
+)
+target_include_directories(cgra_schedule_materialization PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(cgra_schedule_materialization PUBLIC cgra_register_allocation cgra_schedule
+                      cgra_target cgra_ir)
+cgra_enable_warnings(cgra_schedule_materialization)
+cgra_enable_sanitizers(cgra_schedule_materialization)
+
 add_executable(cgra-target-dump tools/target-dump/main.cpp)
 target_link_libraries(cgra-target-dump PRIVATE cgra_target)
 cgra_enable_warnings(cgra-target-dump)
@@ -184,6 +198,14 @@ target_link_libraries(cgra-stage-schedule PRIVATE cgra_schedule)
 cgra_enable_warnings(cgra-stage-schedule)
 cgra_enable_sanitizers(cgra-stage-schedule)
 set_target_properties(cgra-stage-schedule PROPERTIES
+  RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+)
+
+add_executable(cgra-materialize-schedule tools/materialize-schedule/main.cpp)
+target_link_libraries(cgra-materialize-schedule PRIVATE cgra_schedule_materialization)
+cgra_enable_warnings(cgra-materialize-schedule)
+cgra_enable_sanitizers(cgra-materialize-schedule)
+set_target_properties(cgra-materialize-schedule PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
 )
 
@@ -275,6 +297,14 @@ if(CGRA_BUILD_TESTS)
     TYPE semantic
     SOURCES tests/RegisterAllocation/RFAllocationTest.cpp tests/IR/Fixtures.cpp
     LIBRARIES cgra_register_allocation
+    DEFINITIONS CGRA_REPOSITORY_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/.."
+  )
+
+  cgra_add_test(
+    NAME cgra-schedule-materialization-tests
+    TYPE semantic
+    SOURCES tests/Schedule/ScheduleMaterializerTest.cpp tests/IR/Fixtures.cpp
+    LIBRARIES cgra_schedule_materialization
     DEFINITIONS CGRA_REPOSITORY_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/.."
   )
 
