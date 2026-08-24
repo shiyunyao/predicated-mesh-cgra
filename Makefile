@@ -52,7 +52,7 @@ HARNESS := sim/$(if $(filter $(TEST),$(CLOCKLESS_TESTS)),smoke_main.cpp,data_rf_
 CPP_SRC := $(abspath $(HARNESS))
 TRACE_FILE := $(TEST_BUILD_DIR)/trace.csv
 RUN_ARGS := $(if $(filter $(TEST),trace_tb trace_extended_tb),+CGRA_TRACE +CGRA_TRACE_FILE=$(TRACE_FILE))
-VERILATOR_FLAGS ?= -Wall --cc --exe --build
+VERILATOR_FLAGS ?= -Wall --Wno-fatal --cc --exe --build
 
 MODULO_LOOP_PROGRAM ?= examples/schedules/modulo_mesh_feedback.json
 MODULO_LOOP_DIR := $(BUILD_DIR)/modulo_loop

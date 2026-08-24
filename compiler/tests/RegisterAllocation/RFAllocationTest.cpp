@@ -207,6 +207,8 @@ void testExactRFPortRegressions(const cgra::TargetModel& model) {
         " req=" + std::to_string(requirements.requirements->segments().size()) +
         " w=" + std::to_string(requirements.requirements->segment(0).writeTime) +
         " r=" + std::to_string(requirements.requirements->segment(0).readTime));
+  expect(RFAllocationVerifier::verify(selectCase.dfg, model, *allocation.mapping).ok(),
+         "valid SELECT RF allocation passes the independent verifier");
   std::vector<std::uint32_t> readPorts;
   std::vector<std::uint32_t> writePorts;
   for (const auto& item : allocation.mapping->allocations()) {
@@ -223,6 +225,8 @@ void testExactRFPortRegressions(const cgra::TargetModel& model) {
     const auto& segment = allocation.mapping->storageRequirements().segment(item.segment);
     expect(item.writePort == (segment.edge == 0 ? 0U : 1U),
            "SELECT storage provenance selects the source-compatible write port");
+    expect(item.readPort == (segment.edge == 0 ? 0U : 1U),
+           "SELECT data provenance selects the deterministic RF read port");
   }
 
   const auto networkOnly = makeSelectStorageCase(model, true);
@@ -285,6 +289,8 @@ void testPredicateRFPortRegressions(const cgra::TargetModel& model) {
   const auto allocation = RFAllocator::allocate(predicateCase.dfg, model, predicateCase.staged);
   if (!allocation.ok())
     throw std::runtime_error(allocation.format());
+  expect(RFAllocationVerifier::verify(predicateCase.dfg, model, *allocation.mapping).ok(),
+         "valid predicate RF allocation passes the independent verifier");
   std::vector<std::uint32_t> writePorts;
   for (const auto& item : allocation.mapping->allocations())
     writePorts.push_back(item.writePort);
