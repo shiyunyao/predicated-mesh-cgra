@@ -6,7 +6,7 @@ below; do not infer approval from code review alone.
 
 ```text
 AUDITED_COMMIT_SHA: dac8b4db518864c68478106a6bc22b0aa9fa649a
-DECISION: GO T-COMP-014
+DECISION: STOP — hosted CI evidence pending
 ```
 
 ## Audit checklist
@@ -18,10 +18,13 @@ DECISION: GO T-COMP-014
 - [x] canonical target lowering descriptors are validated
 - [x] compiler changes trigger the generated-program RTL workflow
 - [x] clean compiler-fast, compiler E2E, hardware regression, and oracle runs
+- [ ] hosted `compiler-e2e-gate` and hardware regression gate green on this HEAD
 
 ## Evidence
 
-Evidence is recorded in `PRE014_BACKEND_CLOSURE.md`; the final repaired HEAD
-passed the compiler-fast, sanitizer, compiler-generated RTL E2E, retained
-hardware regression, and tiny-oracle gates. Remaining ABI/LLVM/MVE/spill and
-symbolic-trip-count work is explicitly outside this release gate.
+Evidence is recorded in `PRE014_BACKEND_CLOSURE.md`; the repaired HEAD passed
+the local compiler-fast, sanitizer, compiler-generated RTL E2E, retained
+hardware regression, and seeded tiny-oracle gates. The hosted CI gate still
+must run on this exact HEAD before T-COMP-014 is authorized. Remaining
+ABI/LLVM/MVE/spill and symbolic-trip-count work is explicitly outside this
+release gate.
