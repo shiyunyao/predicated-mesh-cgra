@@ -219,6 +219,11 @@ void testExactRFPortRegressions(const cgra::TargetModel& model) {
          "SELECT data operands use the two physical DataRF read ports");
   expect(writePorts == std::vector<std::uint32_t>({0, 1}),
          "FU-result and network writes use W0 and W1 respectively");
+  for (const auto& item : allocation.mapping->allocations()) {
+    const auto& segment = allocation.mapping->storageRequirements().segment(item.segment);
+    expect(item.writePort == (segment.edge == 0 ? 0U : 1U),
+           "SELECT storage provenance selects the source-compatible write port");
+  }
 
   const auto networkOnly = makeSelectStorageCase(model, true);
   const auto collision = RFAllocator::allocate(networkOnly.dfg, model, networkOnly.staged);
@@ -269,7 +274,7 @@ void testLsuLoadWritePort(const cgra::TargetModel& model) {
   for (const auto& item : allocation.mapping->allocations()) {
     const auto& segment = allocation.mapping->storageRequirements().segment(item.segment);
     for (const auto& origin : segment.origins)
-      if (origin.kind == StorageOriginKind::ExplicitVirtualHold)
+      if (origin.kind == StorageOriginKind::ExplicitVirtualHold && segment.edge == 0)
         found = found || item.writePort == 1;
   }
   expect(found, "LSU load-result storage write uses the W1-compatible port");
@@ -286,6 +291,11 @@ void testPredicateRFPortRegressions(const cgra::TargetModel& model) {
   std::ranges::sort(writePorts);
   expect(writePorts == std::vector<std::uint32_t>({0, 1}),
          "FU predicate and network predicate writes use W0 and W1");
+  for (const auto& item : allocation.mapping->allocations()) {
+    const auto& segment = allocation.mapping->storageRequirements().segment(item.segment);
+    expect(item.writePort == (segment.edge == 0 ? 0U : 1U),
+           "predicate storage provenance selects the source-compatible write port");
+  }
 
   auto corruptedJson =
       nlohmann::json::parse(RFAllocatedMappingSerialization::toJson(*allocation.mapping));

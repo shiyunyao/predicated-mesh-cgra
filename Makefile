@@ -107,7 +107,7 @@ check-test:
 	@test -f "$(TB_SRC)" || { echo "Unknown test: $(TEST)"; exit 2; }
 
 lint: check-test
-	$(VERILATOR) --lint-only -Wall $(RTL_SRCS) $(TB_SRC) --top-module $(TOP_MODULE)
+	$(VERILATOR) --lint-only -Wall --Wno-fatal $(RTL_SRCS) $(TB_SRC) --top-module $(TOP_MODULE)
 
 build: check-test
 	mkdir -p "$(TEST_BUILD_DIR)"

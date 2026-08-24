@@ -200,15 +200,21 @@ void testTinyExactOracle(const cgra::TargetModel& target) {
   const auto data = ExactModuloOracle::solve(routed, tiny, 2);
   expect(data.status == ExactOracleStatus::Feasible && data.mapping,
          "tiny oracle independently routes a Data graph");
+  expect(ModuloMappingVerifier::verify(routed, tiny, *data.mapping).ok(),
+         "Data routed oracle witness passes T005");
   const auto predicate = legalize(cgra::ir::fixtures::predicateSelectUnsigned(), tiny);
   const auto pred = ExactModuloOracle::solve(predicate, tiny, 2);
   expect(pred.status == ExactOracleStatus::Feasible && pred.mapping,
          "tiny oracle independently routes a Predicate graph");
+  expect(ModuloMappingVerifier::verify(predicate, tiny, *pred.mapping).ok(),
+         "Predicate routed oracle witness passes T005");
 
   const auto recurrence = legalize(cgra::ir::fixtures::recurrence(), tiny);
   const auto recurrent = ExactModuloOracle::solve(recurrence, tiny, 2);
   expect(recurrent.status == ExactOracleStatus::Feasible && recurrent.mapping,
          "tiny oracle handles a small loop-carried Data graph");
+  expect(ModuloMappingVerifier::verify(recurrence, tiny, *recurrent.mapping).ok(),
+         "recurrence oracle witness passes T005");
 
   cgra::ir::DFGBuilder mixedBuilder("oracle_mixed_memory_data");
   const auto address = mixedBuilder.addExternal("address", cgra::ir::ValueType::i32());
@@ -232,6 +238,29 @@ void testTinyExactOracle(const cgra::TargetModel& target) {
   const auto mixedResult = ExactModuloOracle::solve(mixed, tiny, 2);
   expect(mixedResult.status == ExactOracleStatus::Feasible && mixedResult.mapping,
          "tiny oracle handles mixed Memory and Data edges");
+  expect(ModuloMappingVerifier::verify(mixed, tiny, *mixedResult.mapping).ok(),
+         "mixed oracle witness passes T005");
+
+  ExactOracleOptions bounds;
+  bounds.maxNodes = 1;
+  expect(ExactModuloOracle::solve(routed, tiny, 2, bounds).status ==
+             ExactOracleStatus::UnsupportedOracleSize,
+         "tiny oracle rejects graphs above its node bound");
+  bounds = {};
+  bounds.maxEdges = 1;
+  expect(ExactModuloOracle::solve(routed, tiny, 2, bounds).status ==
+             ExactOracleStatus::UnsupportedOracleSize,
+         "tiny oracle rejects graphs above its edge bound");
+  bounds = {};
+  bounds.maxTiles = 2;
+  expect(ExactModuloOracle::solve(routed, tiny, 2, bounds).status ==
+             ExactOracleStatus::UnsupportedOracleSize,
+         "tiny oracle rejects targets above its tile bound");
+  bounds = {};
+  bounds.maxII = 1;
+  expect(ExactModuloOracle::solve(routed, tiny, 2, bounds).status ==
+             ExactOracleStatus::UnsupportedOracleSize,
+         "tiny oracle rejects II above its bound");
 
   // A disconnected target plus heterogeneous FU capabilities forces the two
   // endpoints onto different tiles, proving that the oracle reports a real
@@ -338,6 +367,9 @@ void testSeededOracleCorpus(const cgra::TargetModel& target) {
                                        : cgra::ir::fixtures::recurrence();
     const auto dfg = legalize(generic, tiny);
     const auto oracle = ExactModuloOracle::solve(dfg, tiny, 2);
+    const auto repeatOracle = ExactModuloOracle::solve(dfg, tiny, 2);
+    expect(oracle.status == repeatOracle.status,
+           "routed exact-oracle result is deterministic for every seed");
     const auto mapper = ModuloMapper::map(dfg, tiny, options(2));
     if (mapper.ok()) {
       expect(oracle.status != ExactOracleStatus::Infeasible,
@@ -345,9 +377,9 @@ void testSeededOracleCorpus(const cgra::TargetModel& target) {
       expect(ModuloMappingVerifier::verify(dfg, tiny, *mapper.mapping).ok(),
              "production Mapper success remains independently T005-legal");
     }
-    if (oracle.status == ExactOracleStatus::Feasible && mapper.ok())
-      expect(ExactModuloOracle::solve(dfg, tiny, 2).status == ExactOracleStatus::Feasible,
-             "routed exact-oracle classification is deterministic");
+    if (oracle.status == ExactOracleStatus::Feasible && !mapper.ok())
+      std::cerr << "routed mapper quality miss seed=" << caseIndex
+                << " status=" << static_cast<int>(mapper.status) << '\n';
   }
 }
 
