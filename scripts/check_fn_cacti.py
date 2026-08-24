@@ -308,7 +308,7 @@ def validate_proxy(record: dict[str, Any], run_kind: str) -> list[str]:
     if not isinstance(probe, dict):
         errors.append("7 nm device-node probe is missing")
     else:
-        if probe.get("status") != "UNUSABLE_ASSERTION":
+        if probe.get("status") != "UNUSABLE_NONZERO_EXIT":
             errors.append("7 nm device-node probe status is unsafe")
         if probe.get("requested_device_node_um") != 0.007:
             errors.append("7 nm device-node probe node mismatch")
@@ -316,8 +316,12 @@ def validate_proxy(record: dict[str, Any], run_kind: str) -> list[str]:
             errors.append("7 nm device-node probe command is not canonical")
         if not isinstance(probe.get("returncode"), int) or probe["returncode"] == 0:
             errors.append("7 nm device-node probe did not fail")
-        if probe.get("assertion_observed") is not True or probe.get("fresh_report_produced") is not False:
-            errors.append("7 nm device-node probe did not prove the known assertion")
+        if probe.get("nonzero_exit_observed") is not True:
+            errors.append("7 nm device-node probe did not record the nonzero exit")
+        if not isinstance(probe.get("tool_output_empty"), bool):
+            errors.append("7 nm device-node probe output evidence is malformed")
+        if probe.get("fresh_report_produced") is not False:
+            errors.append("7 nm device-node probe unexpectedly produced a report")
         resolved_config = resolve_artifact(
             probe.get("config"),
             common.relative(probe_root / "device_7nm_probe.cfg"),

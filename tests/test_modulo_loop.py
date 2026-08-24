@@ -80,7 +80,7 @@ def test_manifest_config_and_periodic_checker_are_consistent():
     assert len(control_writes) == 4 * 4 * 5 * 4
 
     huge = with_trip_count(manifest, 0xffff_ffff)
-    target = load_target("target/cgra_v1.json")
+    target = load_target("target/cgra_v2.json")
     proof_cycles, proof_periods = _check_cycles(huge, target)
     assert proof_periods is not None and proof_periods < 0xffff_ffff
     assert len(proof_cycles) == 2 + proof_periods * 2 + 1
@@ -166,7 +166,7 @@ def test_duplicate_phase_pc_and_dynamic_exit_are_rejected():
 
 def test_same_cycle_same_address_recurrence_is_rejected(tmp_path: pathlib.Path):
     manifest = load_example()
-    target = load_target("target/cgra_v1.json")
+    target = load_target("target/cgra_v2.json")
     hazard = TileControl(
         op="ADD",
         src_a="RF_A",

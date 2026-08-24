@@ -1,0 +1,71 @@
+{
+  "version": 6,
+  "configurePresets": [
+    {
+      "name": "dev-debug",
+      "displayName": "Developer Debug",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/dev-debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CGRA_BUILD_TESTS": "ON",
+        "CGRA_WARNINGS_AS_ERRORS": "OFF",
+        "CGRA_ENABLE_ASAN": "OFF",
+        "CGRA_ENABLE_UBSAN": "OFF",
+        "CGRA_FETCH_DEPS": "ON"
+      }
+    },
+    {
+      "name": "ci-debug",
+      "displayName": "CI Debug",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/ci-debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CGRA_BUILD_TESTS": "ON",
+        "CGRA_WARNINGS_AS_ERRORS": "ON",
+        "CGRA_ENABLE_ASAN": "OFF",
+        "CGRA_ENABLE_UBSAN": "OFF",
+        "CGRA_FETCH_DEPS": "ON"
+      }
+    },
+    {
+      "name": "ci-sanitize",
+      "displayName": "CI Clang Sanitizers",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/ci-sanitize",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_CXX_COMPILER": "clang++",
+        "CGRA_BUILD_TESTS": "ON",
+        "CGRA_WARNINGS_AS_ERRORS": "ON",
+        "CGRA_ENABLE_ASAN": "ON",
+        "CGRA_ENABLE_UBSAN": "ON",
+        "CGRA_FETCH_DEPS": "ON"
+      }
+    }
+  ],
+  "buildPresets": [
+    { "name": "dev-debug", "configurePreset": "dev-debug" },
+    { "name": "ci-debug", "configurePreset": "ci-debug" },
+    { "name": "ci-sanitize", "configurePreset": "ci-sanitize" }
+  ],
+  "testPresets": [
+    {
+      "name": "dev-debug",
+      "configurePreset": "dev-debug",
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "ci-debug",
+      "configurePreset": "ci-debug",
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "ci-sanitize",
+      "configurePreset": "ci-sanitize",
+      "output": { "outputOnFailure": true },
+      "filter": { "include": { "label": "unit|semantic" } }
+    }
+  ]
+}

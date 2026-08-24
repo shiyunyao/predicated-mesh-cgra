@@ -8,6 +8,7 @@ module mesh #(
   parameter int PRED_WIDTH = cgra_pkg::PRED_WIDTH,
   parameter int TILES = ROWS * COLS,
   parameter int CONTROL_WIDTH = cgra_pkg::CONTROL_WORD_PHYSICAL_WIDTH,
+  parameter int SHARED_MEM_PORTS = cgra_pkg::SHARED_MEM_PORTS,
   parameter logic [TILES-1:0] HAS_LSU_MASK = '0
 ) (
   input  logic                              clk,
@@ -16,9 +17,11 @@ module mesh #(
   input  logic [TILES-1:0]                  const_cfg_we,
   input  logic [TILES*cgra_pkg::CONST_ADDR_WIDTH-1:0] const_cfg_addr,
   input  logic [TILES*DATA_WIDTH-1:0]       const_cfg_wdata,
-  input  logic [TILES-1:0]                  scratch_cfg_we,
-  input  logic [TILES*cgra_pkg::SCRATCH_ADDR_WIDTH-1:0] scratch_cfg_addr,
-  input  logic [TILES*DATA_WIDTH-1:0]       scratch_cfg_wdata,
+  output logic [SHARED_MEM_PORTS-1:0]       mem_req_valid,
+  output logic [SHARED_MEM_PORTS-1:0]       mem_req_write,
+  output logic [SHARED_MEM_PORTS*cgra_pkg::SCRATCHPAD_ADDR_WIDTH-1:0] mem_req_addr,
+  output logic [SHARED_MEM_PORTS*DATA_WIDTH-1:0] mem_req_wdata,
+  input  logic [SHARED_MEM_PORTS*DATA_WIDTH-1:0] mem_read_data,
 
   output logic [TILES-1:0]                  north_data_we,
   output logic [TILES*DATA_WIDTH-1:0]       north_data_out,
@@ -73,6 +76,49 @@ module mesh #(
   logic tile_east_pred_we [TILES];
   logic [PRED_WIDTH-1:0] tile_west_pred_out [TILES];
   logic tile_west_pred_we [TILES];
+
+  logic tile_mem_req_valid [TILES];
+  logic tile_mem_req_write [TILES];
+  logic [cgra_pkg::SCRATCHPAD_ADDR_WIDTH-1:0] tile_mem_req_addr [TILES];
+  logic [DATA_WIDTH-1:0] tile_mem_req_wdata [TILES];
+  logic [DATA_WIDTH-1:0] tile_mem_read_data [TILES];
+
+  function automatic int lsu_port_for_idx(input int idx);
+    int rank;
+    begin
+      rank = 0;
+      for (int previous = 0; previous < idx; previous = previous + 1) begin
+        rank += int'(HAS_LSU_MASK[previous]);
+      end
+      lsu_port_for_idx = rank;
+    end
+  endfunction
+
+`ifndef SYNTHESIS
+  initial begin
+    if (int'($countones(HAS_LSU_MASK)) > SHARED_MEM_PORTS) begin
+      $fatal(1, "HAS_LSU_MASK enables %0d LSUs but only %0d shared memory ports exist",
+             $countones(HAS_LSU_MASK), SHARED_MEM_PORTS);
+    end
+  end
+`endif
+
+  always_comb begin
+    mem_req_valid = '0;
+    mem_req_write = '0;
+    mem_req_addr = '0;
+    mem_req_wdata = '0;
+    for (int idx = 0; idx < TILES; idx = idx + 1) begin
+      tile_mem_read_data[idx] = '0;
+      if (HAS_LSU_MASK[idx]) begin
+        mem_req_valid[lsu_port_for_idx(idx)] = tile_mem_req_valid[idx];
+        mem_req_write[lsu_port_for_idx(idx)] = tile_mem_req_write[idx];
+        mem_req_addr[lsu_port_for_idx(idx)*cgra_pkg::SCRATCHPAD_ADDR_WIDTH +: cgra_pkg::SCRATCHPAD_ADDR_WIDTH] = tile_mem_req_addr[idx];
+        mem_req_wdata[lsu_port_for_idx(idx)*DATA_WIDTH +: DATA_WIDTH] = tile_mem_req_wdata[idx];
+        tile_mem_read_data[idx] = mem_read_data[lsu_port_for_idx(idx)*DATA_WIDTH +: DATA_WIDTH];
+      end
+    end
+  end
 
   genvar row;
   genvar col;
@@ -141,9 +187,11 @@ module mesh #(
           .const_cfg_we(const_cfg_we[IDX]),
           .const_cfg_addr(const_cfg_addr[IDX*cgra_pkg::CONST_ADDR_WIDTH +: cgra_pkg::CONST_ADDR_WIDTH]),
           .const_cfg_wdata(const_cfg_wdata[IDX*DATA_WIDTH +: DATA_WIDTH]),
-          .scratch_cfg_we(scratch_cfg_we[IDX]),
-          .scratch_cfg_addr(scratch_cfg_addr[IDX*cgra_pkg::SCRATCH_ADDR_WIDTH +: cgra_pkg::SCRATCH_ADDR_WIDTH]),
-          .scratch_cfg_wdata(scratch_cfg_wdata[IDX*DATA_WIDTH +: DATA_WIDTH]),
+          .mem_read_data(tile_mem_read_data[IDX]),
+          .mem_req_valid(tile_mem_req_valid[IDX]),
+          .mem_req_write(tile_mem_req_write[IDX]),
+          .mem_req_addr(tile_mem_req_addr[IDX]),
+          .mem_req_wdata(tile_mem_req_wdata[IDX]),
           .north_data_in(tile_north_data_in[IDX]),
           .north_data_valid(tile_north_data_valid[IDX]),
           .south_data_in(tile_south_data_in[IDX]),

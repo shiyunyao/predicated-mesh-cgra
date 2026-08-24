@@ -12,9 +12,10 @@ module mesh_link_tb(input logic clk);
   logic [H_TILES-1:0] h_const_cfg_we;
   logic [H_TILES*CONST_ADDR_WIDTH-1:0] h_const_cfg_addr;
   logic [H_TILES*DATA_WIDTH-1:0] h_const_cfg_wdata;
-  logic [H_TILES-1:0] h_scratch_cfg_we;
-  logic [H_TILES*SCRATCH_ADDR_WIDTH-1:0] h_scratch_cfg_addr;
-  logic [H_TILES*DATA_WIDTH-1:0] h_scratch_cfg_wdata;
+  logic [SHARED_MEM_PORTS-1:0] h_mem_req_valid;
+  logic [SHARED_MEM_PORTS-1:0] h_mem_req_write;
+  logic [SHARED_MEM_PORTS*SCRATCHPAD_ADDR_WIDTH-1:0] h_mem_req_addr;
+  logic [SHARED_MEM_PORTS*DATA_WIDTH-1:0] h_mem_req_wdata;
   logic [H_TILES-1:0] h_north_data_we;
   logic [H_TILES*DATA_WIDTH-1:0] h_north_data_out;
   logic [H_TILES-1:0] h_south_data_we;
@@ -36,9 +37,10 @@ module mesh_link_tb(input logic clk);
   logic [V_TILES-1:0] v_const_cfg_we;
   logic [V_TILES*CONST_ADDR_WIDTH-1:0] v_const_cfg_addr;
   logic [V_TILES*DATA_WIDTH-1:0] v_const_cfg_wdata;
-  logic [V_TILES-1:0] v_scratch_cfg_we;
-  logic [V_TILES*SCRATCH_ADDR_WIDTH-1:0] v_scratch_cfg_addr;
-  logic [V_TILES*DATA_WIDTH-1:0] v_scratch_cfg_wdata;
+  logic [SHARED_MEM_PORTS-1:0] v_mem_req_valid;
+  logic [SHARED_MEM_PORTS-1:0] v_mem_req_write;
+  logic [SHARED_MEM_PORTS*SCRATCHPAD_ADDR_WIDTH-1:0] v_mem_req_addr;
+  logic [SHARED_MEM_PORTS*DATA_WIDTH-1:0] v_mem_req_wdata;
   logic [V_TILES-1:0] v_north_data_we;
   logic [V_TILES*DATA_WIDTH-1:0] v_north_data_out;
   logic [V_TILES-1:0] v_south_data_we;
@@ -70,9 +72,11 @@ module mesh_link_tb(input logic clk);
     .const_cfg_we(h_const_cfg_we),
     .const_cfg_addr(h_const_cfg_addr),
     .const_cfg_wdata(h_const_cfg_wdata),
-    .scratch_cfg_we(h_scratch_cfg_we),
-    .scratch_cfg_addr(h_scratch_cfg_addr),
-    .scratch_cfg_wdata(h_scratch_cfg_wdata),
+    .mem_req_valid(h_mem_req_valid),
+    .mem_req_write(h_mem_req_write),
+    .mem_req_addr(h_mem_req_addr),
+    .mem_req_wdata(h_mem_req_wdata),
+    .mem_read_data('0),
     .north_data_we(h_north_data_we),
     .north_data_out(h_north_data_out),
     .south_data_we(h_south_data_we),
@@ -101,9 +105,11 @@ module mesh_link_tb(input logic clk);
     .const_cfg_we(v_const_cfg_we),
     .const_cfg_addr(v_const_cfg_addr),
     .const_cfg_wdata(v_const_cfg_wdata),
-    .scratch_cfg_we(v_scratch_cfg_we),
-    .scratch_cfg_addr(v_scratch_cfg_addr),
-    .scratch_cfg_wdata(v_scratch_cfg_wdata),
+    .mem_req_valid(v_mem_req_valid),
+    .mem_req_write(v_mem_req_write),
+    .mem_req_addr(v_mem_req_addr),
+    .mem_req_wdata(v_mem_req_wdata),
+    .mem_read_data('0),
     .north_data_we(v_north_data_we),
     .north_data_out(v_north_data_out),
     .south_data_we(v_south_data_we),
@@ -153,7 +159,15 @@ module mesh_link_tb(input logic clk);
                           ^ (|v_east_pred_we)
                           ^ (^v_east_pred_out)
                           ^ (|v_west_pred_we)
-                          ^ (^v_west_pred_out);
+                          ^ (^v_west_pred_out)
+                          ^ (|h_mem_req_valid)
+                          ^ (|h_mem_req_write)
+                          ^ (^h_mem_req_addr)
+                          ^ (^h_mem_req_wdata)
+                          ^ (|v_mem_req_valid)
+                          ^ (|v_mem_req_write)
+                          ^ (^v_mem_req_addr)
+                          ^ (^v_mem_req_wdata);
 
   always_comb begin
     if (unused_outputs) begin
@@ -232,16 +246,10 @@ module mesh_link_tb(input logic clk);
     h_const_cfg_we = '0;
     h_const_cfg_addr = '0;
     h_const_cfg_wdata = '0;
-    h_scratch_cfg_we = '0;
-    h_scratch_cfg_addr = '0;
-    h_scratch_cfg_wdata = '0;
     v_control_words = '0;
     v_const_cfg_we = '0;
     v_const_cfg_addr = '0;
     v_const_cfg_wdata = '0;
-    v_scratch_cfg_we = '0;
-    v_scratch_cfg_addr = '0;
-    v_scratch_cfg_wdata = '0;
   end
 
 /* verilator lint_off BLKSEQ */
@@ -249,13 +257,7 @@ module mesh_link_tb(input logic clk);
     cycle <= cycle + 1;
     rst_n <= 1'b1;
     h_const_cfg_we <= '0;
-    h_scratch_cfg_we <= '0;
-    h_scratch_cfg_addr <= '0;
-    h_scratch_cfg_wdata <= '0;
     v_const_cfg_we <= '0;
-    v_scratch_cfg_we <= '0;
-    v_scratch_cfg_addr <= '0;
-    v_scratch_cfg_wdata <= '0;
 
     unique case (cycle)
       0: begin

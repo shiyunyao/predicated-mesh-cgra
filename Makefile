@@ -14,7 +14,7 @@ RTL_SRCS := \
 	rtl/fu.sv \
 	rtl/data_switchbox.sv \
 	rtl/pred_switchbox.sv \
-	rtl/scratchpad_bank.sv \
+	rtl/shared_scratchpad.sv \
 	rtl/lsu.sv \
 	rtl/tile.sv \
 	rtl/mesh.sv \
@@ -33,6 +33,7 @@ TESTS := \
 	pred_switchbox_tb \
 	fu_tb \
 	lsu_tb \
+	shared_scratchpad_tb \
 	tile_tb \
 	tile_lsu_tb \
 	mesh_link_tb \
@@ -51,7 +52,7 @@ HARNESS := sim/$(if $(filter $(TEST),$(CLOCKLESS_TESTS)),smoke_main.cpp,data_rf_
 CPP_SRC := $(abspath $(HARNESS))
 TRACE_FILE := $(TEST_BUILD_DIR)/trace.csv
 RUN_ARGS := $(if $(filter $(TEST),trace_tb trace_extended_tb),+CGRA_TRACE +CGRA_TRACE_FILE=$(TRACE_FILE))
-VERILATOR_FLAGS ?= -Wall --cc --exe --build
+VERILATOR_FLAGS ?= -Wall --Wno-fatal --cc --exe --build
 
 MODULO_LOOP_PROGRAM ?= examples/schedules/modulo_mesh_feedback.json
 MODULO_LOOP_DIR := $(BUILD_DIR)/modulo_loop
@@ -69,7 +70,7 @@ endif
 
 TOP_MODULE := $(if $(filter modulo_loop,$(TEST)),generated_program_tb,$(TEST))
 
-PROGRAM_MANIFEST ?= examples/schedules/fir32_transposed_predicated_ii7_4x4.semantic.json
+PROGRAM_MANIFEST ?= examples/schedules/shared_memory_cross_lsu_4x4.json
 PROGRAM_NAME := $(basename $(notdir $(PROGRAM_MANIFEST)))
 PROGRAM_DIR := $(BUILD_DIR)/program/$(PROGRAM_NAME)
 PROGRAM_OBJ_DIR := $(PROGRAM_DIR)/obj
@@ -80,7 +81,15 @@ PROGRAM_CONFIG := $(PROGRAM_DIR)/config_stream.json
 PROGRAM_IMAGE := $(PROGRAM_DIR)/program_manifest.json
 PROGRAM_CPP := $(abspath sim/data_rf_main.cpp)
 
-.PHONY: help check-test lint build test regression program program-prepare program-build program-run program-check modulo-loop modulo-loop-prepare modulo-loop-check modulo-loop-tripcount-tests modulo-loop-zero-boundary-test modulo-loop-reuse-test modulo-loop-assert-tests synth-fetch-asap7 synth-memory-shape synth-area synth-timing synth-power synth-power-feasibility synth-fn-cacti clean
+COMPILER_BUILD_DIR ?= build/compiler
+COMPILER_E2E_DIR ?= build/compiler-e2e/fixed_addr_load_add_store
+COMPILER_E2E_DFG := compiler/tests/e2e/fixtures/fixed_addr_load_add_store/generic_dfg.json
+COMPILER_E2E_PRELOAD := compiler/tests/e2e/fixtures/fixed_addr_load_add_store/scratchpad_preload.json
+COMPILER_E2E_EXPECTATIONS := compiler/tests/e2e/fixtures/fixed_addr_load_add_store/expected_observations.json
+COMPILER_E2E_MANIFEST := $(COMPILER_E2E_DIR)/program_manifest.json
+COMPILER_E2E_PROGRAM_DIR := $(COMPILER_E2E_DIR)
+
+.PHONY: help check-test lint build test regression shared-scratchpad-tests shared-scratchpad-negative-tests program program-prepare program-build program-run program-check compiler-e2e modulo-loop modulo-loop-prepare modulo-loop-check modulo-loop-tripcount-tests modulo-loop-zero-boundary-test modulo-loop-reuse-test modulo-loop-assert-tests synth-fetch-asap7 synth-memory-shape synth-area synth-timing synth-power synth-power-feasibility synth-fn-cacti clean
 
 help:
 	@echo "make test TEST=<name>  Build and run one testbench"
@@ -98,7 +107,7 @@ check-test:
 	@test -f "$(TB_SRC)" || { echo "Unknown test: $(TEST)"; exit 2; }
 
 lint: check-test
-	$(VERILATOR) --lint-only -Wall $(RTL_SRCS) $(TB_SRC) --top-module $(TEST)
+	$(VERILATOR) --lint-only -Wall --Wno-fatal $(RTL_SRCS) $(TB_SRC) --top-module $(TOP_MODULE)
 
 build: check-test
 	mkdir -p "$(TEST_BUILD_DIR)"
@@ -114,7 +123,16 @@ regression:
 	@set -e; for test_name in $(TESTS); do \
 		echo "==> $$test_name"; \
 		$(MAKE) --no-print-directory test TEST=$$test_name; \
-	done
+	 done
+
+shared-scratchpad-tests:
+	$(MAKE) --no-print-directory test TEST=shared_scratchpad_tb
+	$(MAKE) --no-print-directory shared-scratchpad-negative-tests
+
+shared-scratchpad-negative-tests:
+	$(MAKE) --no-print-directory build TEST=shared_scratchpad_tb
+	@set +e; "build/shared_scratchpad_tb/Vtop" +CONFLICT_STORE_LOAD >/dev/null 2>&1; status=$$?; test $$status -ne 0
+	@set +e; "build/shared_scratchpad_tb/Vtop" +CONFLICT_STORE_STORE >/dev/null 2>&1; status=$$?; test $$status -ne 0
 
 program: program-check
 
@@ -148,6 +166,26 @@ program-check: program-run
 		--rtl "$(PROGRAM_RTL_TRACE)" \
 		> "$(PROGRAM_DIR)/compare.log" 2>&1
 	cat "$(PROGRAM_DIR)/compare.log"
+
+compiler-e2e:
+	cmake -S compiler -B "$(COMPILER_BUILD_DIR)" -DCGRA_BUILD_TESTS=OFF -DCGRA_WARNINGS_AS_ERRORS=ON
+	cmake --build "$(COMPILER_BUILD_DIR)" --target cgrac-compile-dfg
+	mkdir -p "$(COMPILER_E2E_DIR)/compiler"
+	"$(COMPILER_BUILD_DIR)/bin/cgrac-compile-dfg" "$(COMPILER_E2E_DFG)" \
+		--target target/cgra_v3.json --trip-count 4 --max-ii 8 \
+		--scratchpad-preload "$(COMPILER_E2E_PRELOAD)" \
+		--artifact-dir "$(COMPILER_E2E_DIR)/compiler" -o "$(COMPILER_E2E_MANIFEST)"
+	$(MAKE) --no-print-directory program BUILD_DIR="$(COMPILER_E2E_PROGRAM_DIR)" PROGRAM_MANIFEST="$(COMPILER_E2E_MANIFEST)"
+	python3 tools/check_compiler_e2e_observations.py \
+		--expectation "$(COMPILER_E2E_EXPECTATIONS)" \
+		--golden "$(COMPILER_E2E_PROGRAM_DIR)/program/program_manifest/golden_trace.csv" \
+		--rtl "$(COMPILER_E2E_PROGRAM_DIR)/program/program_manifest/rtl_trace.csv"
+	python3 tools/write_compiler_e2e_report.py \
+		--fixture fixed_addr_load_add_store --dfg "$(COMPILER_E2E_DFG)" \
+		--target target/cgra_v3.json --manifest "$(COMPILER_E2E_MANIFEST)" \
+		--compiler-artifacts "$(COMPILER_E2E_DIR)/compiler" \
+		--program-dir "$(COMPILER_E2E_PROGRAM_DIR)/program/program_manifest" \
+		--output "$(COMPILER_E2E_DIR)/e2e_result.json"
 
 modulo-loop: modulo-loop-check modulo-loop-tripcount-tests modulo-loop-zero-boundary-test modulo-loop-reuse-test modulo-loop-assert-tests
 	python3 -m pytest tests/test_modulo_loop.py
@@ -185,7 +223,7 @@ modulo-loop-assert-tests:
 	$(MAKE) --no-print-directory test TEST=modulo_loop
 	@set -e; \
 	"$(MODULO_LOOP_DIR)/obj/Vtop" +SKIP_LOOP_COMMIT +CGRA_TRACE +CGRA_LOOP_TRACE +CGRA_TRACE_FILE="$(MODULO_LOOP_DIR)/skip_commit_trace.csv"; \
-	for arg in +INVALID_LOOP_II +INVALID_LOOP_SPAN +LOOP_DESC_DURING_RUN +LOOP_DESC_DURING_DONE; do \
+	for arg in +INVALID_LOOP_II +INVALID_LOOP_SPAN +PARTIAL_LOOP_DESC +LOOP_DESC_DURING_RUN +LOOP_DESC_DURING_DONE; do \
 		if "$(MODULO_LOOP_DIR)/obj/Vtop" $$arg > "$(MODULO_LOOP_DIR)/$${arg#+}.log" 2>&1; then \
 			echo "expected failure did not occur for $$arg" >&2; exit 1; \
 		fi; \

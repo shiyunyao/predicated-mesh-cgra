@@ -15,7 +15,7 @@ from typing import Any
 import fn_cacti_common as common
 
 CLOCK_HZ = 100_000_000
-SCENARIO = "all_declared_ports_once_per_10ns_cycle"
+SCENARIO = "all_declared_ports_bounded_once_per_10ns_cycle"
 FNC_DEVICE_NODE_UM = 0.014
 FNC_WIRE_NODE_UM = 0.007
 FNC_OPERATING_VOLTAGE = 0.7
@@ -34,6 +34,8 @@ def modeled_size_bytes(storage: dict[str, Any]) -> int:
 def class_model_status(storage: dict[str, Any]) -> str:
     if modeled_size_bytes(storage) != architectural_size_bytes(storage):
         return "MODELED_WITH_ASYNC_READ_AND_MINIMUM_CAPACITY_PADDING_APPROXIMATION"
+    if storage["read_write_ports"]:
+        return "MODELED_WITH_NATIVE_MULTI_RW_PORT_AND_ASYNC_READ_APPROXIMATION"
     return "MODELED_WITH_EXPLICIT_ASYNC_READ_APPROXIMATION"
 
 
@@ -49,7 +51,8 @@ def model_basis() -> dict[str, Any]:
         "logic_area_compatibility": "INCOMPATIBLE_WITH_ASAP7_7NM_1X_LOGIC_AREA",
         "reason": (
             "the supplied FN-CACTI README documents 14 nm device support; its 7 nm "
-            "device-node probe aborts in component.cc, so no 7 nm device proxy is accepted"
+            "device-node probe exits nonzero without producing a report, so no 7 nm "
+            "device proxy is accepted"
         ),
     }
 
@@ -91,7 +94,7 @@ def config_text(storage: dict[str, Any], device_node_um: float = FNC_DEVICE_NODE
             f"-block size {block_bytes}",
             "-associativity 1",
             "-ncfet - \"false\"",
-            "-read-write port 0",
+            f"-read-write port {storage['read_write_ports']}",
             f"-exclusive read port {storage['read_ports']}",
             f"-exclusive write port {storage['write_ports']}",
             "-single ended read ports 0",
@@ -155,11 +158,11 @@ def storage_mapping(storage: dict[str, Any]) -> dict[str, Any]:
         "capacity_padding_factor": fn_cacti_bytes / architectural_bytes,
         "fn_cacti_bus_width_bits": storage["width_bits"],
         "fn_cacti_ports": {
-            "read_write": 0,
+            "read_write": storage["read_write_ports"],
             "exclusive_read": storage["read_ports"],
             "exclusive_write": storage["write_ports"],
         },
-        "port_model": "NATIVE_EXCLUSIVE_READ_WRITE_PORT_COUNTS",
+        "port_model": "NATIVE_READ_WRITE_AND_EXCLUSIVE_PORT_COUNTS",
         "rtl_read_mode": storage["read_mode"],
         "rtl_write_mode": storage["write_mode"],
         "read_timing_semantics": "ASYNC_READ_NOT_TIMING_CHARACTERIZED_BY_FN_CACTI",
@@ -173,14 +176,21 @@ def scenario(metrics: dict[str, float], instances: int, storage: dict[str, Any])
     total_leakage_mw = metrics["leakage_mw"] * instances
     reads_per_second = storage["read_ports"] * CLOCK_HZ * instances
     writes_per_second = storage["write_ports"] * CLOCK_HZ * instances
+    read_write_accesses_per_second = storage["read_write_ports"] * CLOCK_HZ * instances
     read_dynamic_mw = metrics["read_energy_pj"] * reads_per_second / 1_000_000_000.0
     write_dynamic_mw = metrics["write_energy_pj"] * writes_per_second / 1_000_000_000.0
+    read_write_dynamic_mw = (
+        max(metrics["read_energy_pj"], metrics["write_energy_pj"])
+        * read_write_accesses_per_second
+        / 1_000_000_000.0
+    )
     return {
         "clock_hz": CLOCK_HZ,
         "activity_name": SCENARIO,
         "read_accesses_per_second": reads_per_second,
         "write_accesses_per_second": writes_per_second,
-        "formula": "P_dynamic_mW = E_pJ_per_access * accesses_per_second / 1e9",
+        "read_write_accesses_per_second": read_write_accesses_per_second,
+        "formula": "P_dynamic_mW = (E_read*R + E_write*W + max(E_read,E_write)*RW) / 1e9",
         "per_instance": metrics,
         "target_total": {
             "instances": instances,
@@ -189,12 +199,14 @@ def scenario(metrics: dict[str, float], instances: int, storage: dict[str, Any])
             "leakage_mw": total_leakage_mw,
             "read_dynamic_mw": read_dynamic_mw,
             "write_dynamic_mw": write_dynamic_mw,
-            "dynamic_mw": read_dynamic_mw + write_dynamic_mw,
-            "total_mw": total_leakage_mw + read_dynamic_mw + write_dynamic_mw,
+            "read_write_dynamic_mw": read_write_dynamic_mw,
+            "dynamic_mw": read_dynamic_mw + write_dynamic_mw + read_write_dynamic_mw,
+            "total_mw": total_leakage_mw + read_dynamic_mw + write_dynamic_mw + read_write_dynamic_mw,
         },
         "idle": {
             "read_accesses_per_second": 0,
             "write_accesses_per_second": 0,
+            "read_write_accesses_per_second": 0,
             "dynamic_mw": 0.0,
             "total_mw": total_leakage_mw,
         },
@@ -269,15 +281,21 @@ def device_node_probe(output_root: pathlib.Path, storage: dict[str, Any]) -> tup
     command = [str(common.FNC_EXECUTABLE), "-infile", config_path.name]
     returncode = run_to_log(command, probe_root, log_path)
     log_text = log_path.read_text(encoding="utf-8", errors="replace")
-    assertion = "Assertion" in log_text or "assert" in log_text
-    if returncode == 0 or report_path.exists() or not assertion:
-        return None, "7 nm device-node probe did not fail with the expected FN-CACTI assertion"
+    tool_output_empty = not log_text
+    if tool_output_empty:
+        write_text(
+            log_path,
+            f"FN-CACTI exited with return code {returncode} and produced no diagnostic output.\n",
+        )
+    if returncode == 0 or report_path.exists():
+        return None, "7 nm device-node probe did not fail cleanly without a report"
     return {
-        "status": "UNUSABLE_ASSERTION",
+        "status": "UNUSABLE_NONZERO_EXIT",
         "requested_device_node_um": 0.007,
         "command": command,
         "returncode": returncode,
-        "assertion_observed": assertion,
+        "nonzero_exit_observed": True,
+        "tool_output_empty": tool_output_empty,
         "fresh_report_produced": False,
         "config": common.artifact(config_path),
         "raw_log": common.artifact(log_path),
@@ -339,6 +357,7 @@ def aggregate_classes(classes: list[dict[str, Any]]) -> dict[str, Any]:
         "leakage_mw": 0.0,
         "read_dynamic_mw": 0.0,
         "write_dynamic_mw": 0.0,
+        "read_write_dynamic_mw": 0.0,
         "dynamic_mw": 0.0,
         "total_mw": 0.0,
     }

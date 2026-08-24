@@ -1,0 +1,100 @@
+{
+  "schema": "cgra.program_manifest.v1",
+  "name": "shared_memory_cross_lsu_4x4",
+  "version": 1,
+  "target": {
+    "schema": "cgra.target.v2",
+    "name": "cgra_v2_shared4p",
+    "path": "target/cgra_v2.json"
+  },
+  "run": {
+    "run_cycles": 7,
+    "result_observation": {
+      "mode": "trace_only",
+      "description": "All four LSU tiles route the value stored by tile (0,0) north at cycle 6."
+    }
+  },
+  "program": {
+    "format": "explicit_tile_images",
+    "control_word_encoding": "lsb_first_32bit_chunks",
+    "tiles": [
+      {
+        "row": 0,
+        "col": 0,
+        "control": [
+          {"pc": 0, "chunks": ["0x001de200", "0xc0060800", "0x00000001", "0x1c880000"], "comment": "Write shared address 100 to r0."},
+          {"pc": 1, "chunks": ["0x001de200", "0xc0061800", "0x00000001", "0x1c880400"], "comment": "Write store data to r1."},
+          {"pc": 2, "chunks": ["0x041de200", "0xc0080000", "0x00000001", "0x1c108000"], "comment": "Store r1 through port 0 to shared address r0."},
+          {"pc": 4, "chunks": ["0x001de200", "0xc0080000", "0x00000001", "0x1c804000"], "comment": "Load shared address 100 through port 0."},
+          {"pc": 6, "chunks": ["0x001de200", "0xc0080000", "0x0000004d", "0x1c880000"], "comment": "Consume the fixed two-cycle load response."}
+        ],
+        "const_memory": [
+          {"addr": 0, "value": "0x00000064"},
+          {"addr": 1, "value": "0xdeadbeef"}
+        ],
+        "scratchpad_preload": []
+      },
+      {
+        "row": 0,
+        "col": 1,
+        "control": [
+          {"pc": 0, "chunks": ["0x001de200", "0xc0080000", "0x00000001", "0x1c880000"]}
+        ],
+        "const_memory": [],
+        "scratchpad_preload": [
+          {"addr": 101, "value": "0x11110001"},
+          {"addr": 102, "value": "0x22220002"},
+          {"addr": 103, "value": "0x33330003"}
+        ]
+      },
+      {
+        "row": 1,
+        "col": 0,
+        "control": [
+          {"pc": 0, "chunks": ["0x001de200", "0xc0060800", "0x00000001", "0x1c880000"]},
+          {"pc": 1, "chunks": ["0x001de200", "0xc0061800", "0x00000001", "0x1c880400"]},
+          {"pc": 2, "chunks": ["0x001de200", "0xc0080000", "0x00000001", "0x1c804000"], "comment": "Concurrent distinct-address load through port 1."},
+          {"pc": 4, "chunks": ["0x041de200", "0xc0080000", "0x00000001", "0x1c814000"], "comment": "Load tile (0,0)'s shared store through port 1."},
+          {"pc": 6, "chunks": ["0x001de200", "0xc0080000", "0x0000004d", "0x1c880000"]}
+        ],
+        "const_memory": [
+          {"addr": 0, "value": "0x00000065"},
+          {"addr": 1, "value": "0x00000064"}
+        ],
+        "scratchpad_preload": []
+      },
+      {
+        "row": 2,
+        "col": 0,
+        "control": [
+          {"pc": 0, "chunks": ["0x001de200", "0xc0060800", "0x00000001", "0x1c880000"]},
+          {"pc": 1, "chunks": ["0x001de200", "0xc0061800", "0x00000001", "0x1c880400"]},
+          {"pc": 2, "chunks": ["0x001de200", "0xc0080000", "0x00000001", "0x1c804000"], "comment": "Concurrent distinct-address load through port 2."},
+          {"pc": 4, "chunks": ["0x041de200", "0xc0080000", "0x00000001", "0x1c814000"], "comment": "Load tile (0,0)'s shared store through port 2."},
+          {"pc": 6, "chunks": ["0x001de200", "0xc0080000", "0x0000004d", "0x1c880000"]}
+        ],
+        "const_memory": [
+          {"addr": 0, "value": "0x00000066"},
+          {"addr": 1, "value": "0x00000064"}
+        ],
+        "scratchpad_preload": []
+      },
+      {
+        "row": 3,
+        "col": 0,
+        "control": [
+          {"pc": 0, "chunks": ["0x001de200", "0xc0060800", "0x00000001", "0x1c880000"]},
+          {"pc": 1, "chunks": ["0x001de200", "0xc0061800", "0x00000001", "0x1c880400"]},
+          {"pc": 2, "chunks": ["0x001de200", "0xc0080000", "0x00000001", "0x1c804000"], "comment": "Concurrent distinct-address load through port 3."},
+          {"pc": 4, "chunks": ["0x041de200", "0xc0080000", "0x00000001", "0x1c814000"], "comment": "Load tile (0,0)'s shared store through port 3."},
+          {"pc": 6, "chunks": ["0x001de200", "0xc0080000", "0x0000004d", "0x1c880000"]}
+        ],
+        "const_memory": [
+          {"addr": 0, "value": "0x00000067"},
+          {"addr": 1, "value": "0x00000064"}
+        ],
+        "scratchpad_preload": []
+      }
+    ]
+  }
+}

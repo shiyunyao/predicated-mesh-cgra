@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT
-"""CGRA v1 cycle-level golden execution model.
+"""CGRA cycle-level golden execution model.
 
 The model covers a multi-tile array, registered one-hop mesh links, LSU
-scratchpad/load/store timing, and contract-compatible trace CSV emission.
+shared-scratchpad timing, and contract-compatible trace CSV emission.
 """
 
 from __future__ import annotations
@@ -251,6 +251,13 @@ class TileControl:
 
 
 @dataclass(frozen=True)
+class LsuRequest:
+    is_store: bool
+    address: int
+    store_data: int = 0
+
+
+@dataclass(frozen=True)
 class StepResult:
     op: str
     src_a_valid: bool
@@ -275,6 +282,7 @@ class StepResult:
     lsu_store_commit: bool
     lsu_load_resp_valid: bool
     lsu_load_resp_data: int
+    lsu_request: LsuRequest | None
 
 
 def _with_default_routes(routes: dict[str, RouteDirControl] | None) -> dict[str, RouteDirControl]:
@@ -546,10 +554,9 @@ def encode_control_chunks(ctrl: TileControl, target: dict[str, Any]) -> list[str
 
 
 class SingleTileGolden:
-    def __init__(self, target: dict[str, Any], has_lsu: bool = False, bank_id: int | None = None):
+    def __init__(self, target: dict[str, Any], has_lsu: bool = False):
         self.target = target
         self.has_lsu = has_lsu
-        self.bank_id = bank_id
         self.cycle = 0
         params = target["parameters"]
         self.data_rf = [0] * params["data_rf_depth"]
@@ -557,18 +564,11 @@ class SingleTileGolden:
         self.pred_rf = [0] * params["pred_rf_depth"]
         self.pred_valid = [False] * params["pred_rf_depth"]
         self.const_mem = [0] * params["const_mem_depth"]
-        self.scratchpad = [0] * params["scratch_bank_depth"]
-        self._pending_loads: list[tuple[int, int]] = []
+        self.scratchpad_depth = params["scratchpad_depth"]
 
     def write_const(self, addr: int, value: int) -> None:
         self._check_const_addr(addr)
         self.const_mem[addr] = mask32(value)
-
-    def write_scratchpad(self, addr: int, value: int) -> None:
-        self._check_scratch_addr(addr)
-        if not self.has_lsu:
-            raise GoldenModelError("scratchpad preload is only valid for LSU-enabled tiles")
-        self.scratchpad[addr] = mask32(value)
 
     def poke_data_rf(self, addr: int, value: int) -> None:
         self._check_data_addr(addr)
@@ -580,9 +580,14 @@ class SingleTileGolden:
         self.pred_rf[addr] = bit(value)
         self.pred_valid[addr] = True
 
-    def step(self, ctrl: TileControl, inputs: dict[str, tuple[bool, int]] | None = None) -> StepResult:
+    def step(
+        self,
+        ctrl: TileControl,
+        inputs: dict[str, tuple[bool, int]] | None = None,
+        load_response: tuple[bool, int] = (False, 0),
+    ) -> StepResult:
         inputs = inputs or {}
-        load_resp_valid, load_resp_data = self._load_response_for_current_cycle()
+        load_resp_valid, load_resp_data = load_response
 
         data_read_addrs = self._data_read_addrs(ctrl)
         pred_read_addrs = self._pred_read_addrs(ctrl)
@@ -630,8 +635,11 @@ class SingleTileGolden:
         lsu_addr = 0
         lsu_store_data = 0
         lsu_store_commit = False
+        lsu_request = None
         if ctrl.lsu_op != "NONE":
-            lsu_addr, lsu_store_data, lsu_store_commit = self._execute_lsu(ctrl, data_ctx, pred_ctx, inputs)
+            lsu_addr, lsu_store_data, lsu_store_commit, lsu_request = self._execute_lsu(
+                ctrl, data_ctx, pred_ctx, inputs
+            )
 
         data_writes = {}
         pred_writes = {}
@@ -692,16 +700,8 @@ class SingleTileGolden:
             lsu_store_commit=lsu_store_commit,
             lsu_load_resp_valid=load_resp_valid,
             lsu_load_resp_data=load_resp_data,
+            lsu_request=lsu_request,
         )
-
-    def _load_response_for_current_cycle(self) -> tuple[bool, int]:
-        ready = [data for ready_cycle, data in self._pending_loads if ready_cycle == self.cycle]
-        self._pending_loads = [(ready_cycle, data) for ready_cycle, data in self._pending_loads if ready_cycle != self.cycle]
-        if len(ready) > 1:
-            raise GoldenModelError("multiple LSU load responses in one cycle")
-        if ready:
-            return True, ready[0]
-        return False, 0
 
     def _execute_lsu(
         self,
@@ -709,7 +709,7 @@ class SingleTileGolden:
         data_ctx: dict[str, int],
         pred_ctx: dict[str, int],
         inputs: dict[str, tuple[bool, int]],
-    ) -> tuple[int, int, bool]:
+    ) -> tuple[int, int, bool, LsuRequest | None]:
         if not self.has_lsu:
             raise GoldenModelError("non-LSU tile issued active LSU operation")
         if ctrl.lsu_op == "RESERVED":
@@ -721,9 +721,9 @@ class SingleTileGolden:
         self._check_scratch_addr(addr)
         store_data = 0
         store_commit = False
+        request = None
         if ctrl.lsu_op == "LOAD":
-            ready_cycle = self.cycle + self.target["parameters"]["load_latency"]
-            self._pending_loads.append((ready_cycle, self.scratchpad[addr]))
+            request = LsuRequest(is_store=False, address=addr)
         elif ctrl.lsu_op == "STORE":
             store_data = self._data_source(ctrl.lsu_store_data_src, data_ctx, inputs)
             if ctrl.lsu_commit_pred_enable:
@@ -732,10 +732,10 @@ class SingleTileGolden:
             else:
                 store_commit = True
             if store_commit:
-                self.scratchpad[addr] = mask32(store_data)
+                request = LsuRequest(is_store=True, address=addr, store_data=mask32(store_data))
         else:
             raise GoldenModelError(f"unsupported LSU op {ctrl.lsu_op}")
-        return addr, store_data, store_commit
+        return addr, store_data, store_commit, request
 
     def _data_read_addrs(self, ctrl: TileControl) -> set[int]:
         addrs = set()
@@ -859,7 +859,7 @@ class SingleTileGolden:
             raise GoldenModelError(f"const memory address out of range: {addr}")
 
     def _check_scratch_addr(self, addr: int) -> None:
-        if not 0 <= addr < len(self.scratchpad):
+        if not 0 <= addr < self.scratchpad_depth:
             raise GoldenModelError(f"scratchpad address out of range: {addr}")
 
 
@@ -867,17 +867,28 @@ class MultiTileGolden:
     def __init__(self, target: dict[str, Any], rows: int | None = None, cols: int | None = None):
         self.target = target
         params = target["parameters"]
+        memory = target.get("memory", {})
+        if memory.get("model") != "shared_multiport_scratchpad":
+            raise GoldenModelError("target memory.model must be shared_multiport_scratchpad")
         self.rows = rows if rows is not None else params["array_rows"]
         self.cols = cols if cols is not None else params["array_cols"]
-        enabled = {(tile["row"], tile["col"]): tile["bank_id"] for tile in target["lsu"]["enabled_tiles"]}
+        enabled = {(tile["row"], tile["col"]) for tile in target["lsu"]["enabled_tiles"]}
         self.tiles: dict[tuple[int, int], SingleTileGolden] = {}
         for row in range(self.rows):
             for col in range(self.cols):
-                bank_id = enabled.get((row, col))
-                self.tiles[(row, col)] = SingleTileGolden(target, has_lsu=bank_id is not None, bank_id=bank_id)
+                self.tiles[(row, col)] = SingleTileGolden(target, has_lsu=(row, col) in enabled)
+        self.shared_scratchpad = [0] * params["scratchpad_depth"]
+        self._pending_loads: dict[tuple[int, int], dict[int, int]] = {
+            coord: {} for coord in enabled
+        }
         self.data_inputs = self._empty_inputs()
         self.pred_inputs = self._empty_inputs()
         self.cycle = 0
+
+    def write_scratchpad(self, addr: int, value: int) -> None:
+        if not 0 <= addr < len(self.shared_scratchpad):
+            raise GoldenModelError(f"scratchpad address out of range: {addr}")
+        self.shared_scratchpad[addr] = mask32(value)
 
     def _empty_inputs(self) -> dict[tuple[int, int], dict[str, tuple[bool, int]]]:
         return {(row, col): {} for row in range(self.rows) for col in range(self.cols)}
@@ -892,12 +903,20 @@ class MultiTileGolden:
         next_data = self._empty_inputs()
         next_pred = self._empty_inputs()
         records = []
+        load_responses = {
+            coord: (True, pending.pop(self.cycle)) if self.cycle in pending else (False, 0)
+            for coord, pending in self._pending_loads.items()
+        }
         for row in range(self.rows):
             for col in range(self.cols):
                 coord = (row, col)
                 ctrl = controls.get(coord, TileControl())
                 inputs = {**self.data_inputs[coord], **self.pred_inputs[coord]}
-                result = self.tiles[coord].step(ctrl, inputs)
+                result = self.tiles[coord].step(
+                    ctrl,
+                    inputs,
+                    load_response=load_responses.get(coord, (False, 0)),
+                )
                 results[coord] = result
                 record = trace_record(
                     self.cycle,
@@ -915,12 +934,45 @@ class MultiTileGolden:
                     })
                 records.append(record)
 
+        self._resolve_memory(results)
         for (row, col), result in results.items():
             self._route_outputs(row, col, result, next_data, next_pred)
         self.data_inputs = next_data
         self.pred_inputs = next_pred
         self.cycle += 1
         return records
+
+    def _resolve_memory(self, results: dict[tuple[int, int], StepResult]) -> None:
+        requests = [
+            (coord, result.lsu_request)
+            for coord, result in sorted(results.items())
+            if result.lsu_request is not None
+        ]
+        by_address: dict[int, list[tuple[tuple[int, int], LsuRequest]]] = {}
+        for coord, request in requests:
+            assert request is not None
+            by_address.setdefault(request.address, []).append((coord, request))
+
+        for address, same_address in sorted(by_address.items()):
+            if len(same_address) > 1 and any(request.is_store for _, request in same_address):
+                ports = ",".join(f"({row},{col})" for (row, col), _ in same_address)
+                raise GoldenModelError(
+                    f"shared scratchpad same-address store conflict at address {address}: tiles={ports}"
+                )
+
+        ready_cycle = self.cycle + self.target["parameters"]["load_latency"]
+        for coord, request in requests:
+            assert request is not None
+            if not request.is_store:
+                pending = self._pending_loads[coord]
+                if ready_cycle in pending:
+                    raise GoldenModelError(f"multiple LSU load responses for tile {coord} at cycle {ready_cycle}")
+                pending[ready_cycle] = self.shared_scratchpad[request.address]
+
+        for _, request in requests:
+            assert request is not None
+            if request.is_store:
+                self.shared_scratchpad[request.address] = mask32(request.store_data)
 
     def run(
         self,
@@ -1109,13 +1161,18 @@ def run_manifest(manifest_path: str | pathlib.Path, trace_out: str | pathlib.Pat
     target = load_target(manifest["target"]["path"])
     array = MultiTileGolden(target)
     controls_by_tile: dict[tuple[int, int], list[TileControl]] = {}
+    preloaded_addresses: set[int] = set()
     for tile_image in manifest["program"]["tiles"]:
         coord = (tile_image["row"], tile_image["col"])
         tile = array.tiles[coord]
         for entry in tile_image.get("const_memory", []):
             tile.write_const(entry["addr"], int(entry["value"], 16))
         for entry in tile_image.get("scratchpad_preload", []):
-            tile.write_scratchpad(entry["addr"], int(entry["value"], 16))
+            address = entry["addr"]
+            if address in preloaded_addresses:
+                raise GoldenModelError(f"duplicate global scratchpad preload address: {address}")
+            preloaded_addresses.add(address)
+            array.write_scratchpad(address, int(entry["value"], 16))
         control_slots = (
             target["parameters"]["ctrl_mem_depth"]
             if manifest.get("loop", {}).get("enabled") is True
@@ -1165,18 +1222,21 @@ def run_self_test(target_path: str) -> None:
     else:
         raise AssertionError("expected W0 no-result error")
 
-    lsu_tile = SingleTileGolden(target, has_lsu=True, bank_id=0)
-    lsu_tile.write_scratchpad(3, 0x55)
+    lsu_array = MultiTileGolden(target)
+    lsu_coord = min(coord for coord, candidate in lsu_array.tiles.items() if candidate.has_lsu)
+    lsu_tile = lsu_array.tiles[lsu_coord]
+    lsu_array.write_scratchpad(3, 0x55)
     lsu_tile.write_const(0, 3)
-    lsu_tile.step(TileControl(lsu_op="LOAD", lsu_addr_src="CONST_DATA", const_addr=0))
-    lsu_tile.step(TileControl())
-    load = lsu_tile.step(TileControl(op="PASS", src_a="LSU_LOAD_DATA", data_w0_we=True, data_w0_addr=1))
-    assert load.fu_data_valid and load.fu_data_result == 0x55
+    first = lsu_array.step({lsu_coord: TileControl(lsu_op="LOAD", lsu_addr_src="CONST_DATA", const_addr=0)})
+    second = lsu_array.step({})
+    third = lsu_array.step({lsu_coord: TileControl(op="PASS", src_a="LSU_LOAD_DATA", data_w0_we=True, data_w0_addr=1)})
+    assert first and second and third
+    assert lsu_tile.data_rf[1] == 0x55
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--target", default="target/cgra_v1.json")
+    parser.add_argument("--target", default="target/cgra_v2.json")
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--run", help="Run a cgra.program_manifest.v1 manifest")
     parser.add_argument("--trace-out", help="Write golden trace CSV when --run is used")

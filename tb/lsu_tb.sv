@@ -37,9 +37,11 @@ module lsu_tb(input logic clk);
   logic west_pred_valid;
   logic load_resp_valid;
   logic [DATA_WIDTH-1:0] load_resp_data;
-  logic scratch_cfg_we;
-  logic [SCRATCH_ADDR_WIDTH-1:0] scratch_cfg_addr;
-  logic [DATA_WIDTH-1:0] scratch_cfg_wdata;
+  logic mem_req_valid;
+  logic mem_req_write;
+  logic [SCRATCHPAD_ADDR_WIDTH-1:0] mem_req_addr;
+  logic [DATA_WIDTH-1:0] mem_req_wdata;
+  logic [DATA_WIDTH-1:0] mem_read_data;
   int cycle;
   logic load_pred_mode;
   logic non_lsu_mode;
@@ -51,9 +53,6 @@ module lsu_tb(input logic clk);
     .clk(clk),
     .rst_n(rst_n),
     .has_lsu(has_lsu),
-    .scratch_cfg_we(scratch_cfg_we),
-    .scratch_cfg_addr(scratch_cfg_addr),
-    .scratch_cfg_wdata(scratch_cfg_wdata),
     .lsu_op(lsu_op),
     .lsu_addr_src(lsu_addr_src),
     .lsu_store_data_src(lsu_store_data_src),
@@ -84,7 +83,26 @@ module lsu_tb(input logic clk);
     .west_pred_in(west_pred_in),
     .west_pred_valid(west_pred_valid),
     .load_resp_valid(load_resp_valid),
-    .load_resp_data(load_resp_data)
+    .load_resp_data(load_resp_data),
+    .mem_req_valid(mem_req_valid),
+    .mem_req_write(mem_req_write),
+    .mem_req_addr(mem_req_addr),
+    .mem_req_wdata(mem_req_wdata),
+    .mem_read_data(mem_read_data)
+  );
+
+  shared_scratchpad #(
+    .PORTS(1)
+  ) memory_i (
+    .clk(clk),
+    .req_valid(mem_req_valid),
+    .req_write(mem_req_write),
+    .req_addr(mem_req_addr),
+    .req_wdata(mem_req_wdata),
+    .read_data(mem_read_data),
+    .cfg_write_en(1'b0),
+    .cfg_write_addr('0),
+    .cfg_write_data('0)
   );
 
   task automatic expect_data(input string name,
@@ -142,9 +160,6 @@ module lsu_tb(input logic clk);
     east_pred_valid = 1'b1;
     west_pred_in = 1'b0;
     west_pred_valid = 1'b1;
-    scratch_cfg_we = 1'b0;
-    scratch_cfg_addr = '0;
-    scratch_cfg_wdata = '0;
     load_pred_mode = ($test$plusargs("LOAD_PRED") != 0);
     non_lsu_mode = ($test$plusargs("NON_LSU") != 0);
     invalid_data_mode = ($test$plusargs("INVALID_DATA") != 0);
@@ -163,9 +178,6 @@ module lsu_tb(input logic clk);
     lsu_commit_pred_enable <= 1'b0;
     lsu_commit_pred_invert <= 1'b0;
     lsu_commit_pred_src <= PRED_SRC_RF_A;
-    scratch_cfg_we <= 1'b0;
-    scratch_cfg_addr <= '0;
-    scratch_cfg_wdata <= '0;
     north_data_valid <= 1'b1;
     north_pred_valid <= 1'b1;
 
@@ -191,7 +203,7 @@ module lsu_tb(input logic clk);
           north_pred_valid <= 1'b0;
         end else if (out_of_range_mode) begin
           lsu_op <= LSU_OP_LOAD;
-          rf_a_data <= SCRATCH_BANK_DEPTH;
+          rf_a_data <= SCRATCHPAD_DEPTH;
         end
       end
       2: begin
@@ -217,10 +229,17 @@ module lsu_tb(input logic clk);
       end
       3: begin
         expect_bit("no hidden store response", load_resp_valid, 1'b0);
+        expect_bit("store request valid", mem_req_valid, 1'b1);
+        expect_bit("store request write", mem_req_write, 1'b1);
+        expect_data("store request address", DATA_WIDTH'(mem_req_addr), 32'd5);
+        expect_data("store request data", mem_req_wdata, 32'haaaa_0001);
         lsu_op <= LSU_OP_LOAD;
         rf_a_data <= 32'd5;
       end
       4: begin
+        expect_bit("load request valid", mem_req_valid, 1'b1);
+        expect_bit("load request read", mem_req_write, 1'b0);
+        expect_data("load request address", DATA_WIDTH'(mem_req_addr), 32'd5);
         expect_bit("load latency cycle 1", load_resp_valid, 1'b0);
       end
       5: begin
@@ -235,6 +254,8 @@ module lsu_tb(input logic clk);
       end
       6: begin
         expect_bit("load response one-cycle pulse", load_resp_valid, 1'b0);
+        expect_bit("true predicated store request", mem_req_valid, 1'b1);
+        expect_bit("true predicated store write", mem_req_write, 1'b1);
         lsu_op <= LSU_OP_STORE;
         rf_a_data <= 32'd7;
         rf_b_data <= 32'hcccc_0003;
@@ -243,6 +264,7 @@ module lsu_tb(input logic clk);
         rf_a_pred <= 1'b0;
       end
       7: begin
+        expect_bit("false predicated store suppressed", mem_req_valid, 1'b0);
         lsu_op <= LSU_OP_STORE;
         rf_a_data <= 32'd8;
         rf_b_data <= 32'hdddd_0004;
@@ -252,6 +274,8 @@ module lsu_tb(input logic clk);
         rf_a_pred <= 1'b0;
       end
       8: begin
+        expect_bit("inverted predicated store request", mem_req_valid, 1'b1);
+        expect_bit("inverted predicated store write", mem_req_write, 1'b1);
         lsu_op <= LSU_OP_LOAD;
         rf_a_data <= 32'd6;
       end

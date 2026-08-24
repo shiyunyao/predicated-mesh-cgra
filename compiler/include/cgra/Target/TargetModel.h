@@ -1,0 +1,165 @@
+// SPDX-License-Identifier: MIT
+#pragma once
+
+#include "cgra/IR/Edge.h"
+#include "cgra/Target/ControlLayout.h"
+#include "cgra/Target/TargetOperation.h"
+
+#include <cstdint>
+#include <filesystem>
+#include <string>
+#include <string_view>
+#include <unordered_map>
+#include <unordered_set>
+#include <utility>
+#include <vector>
+
+namespace cgra {
+
+struct ArrayDesc {
+  unsigned rows = 0;
+  unsigned cols = 0;
+  unsigned dataWidth = 0;
+  unsigned predicateWidth = 0;
+  bool hardwareBranch = false;
+};
+
+enum class RegisterBankDomain {
+  Data,
+  Predicate,
+};
+
+enum class SameAddressReadWritePolicy {
+  Forbidden,
+  ReadOldThenWriteNew,
+  WriteNewThenRead,
+};
+
+using RegisterBankId = std::string;
+
+struct RegisterFileDesc {
+  RegisterBankId id;
+  RegisterBankDomain domain = RegisterBankDomain::Data;
+  unsigned depth = 0;
+  unsigned readPorts = 0;
+  unsigned writePorts = 0;
+  std::string sameCycleReadWriteSameAddress;
+  std::string sameCycleMultiwriteSameAddress;
+  SameAddressReadWritePolicy sameAddressReadWritePolicy = SameAddressReadWritePolicy::Forbidden;
+  std::vector<unsigned> allocatableIndices;
+  std::vector<std::pair<unsigned, unsigned>> applicableTiles;
+  std::unordered_map<std::string, std::vector<std::string>> writePortSources;
+
+  bool appliesToTile(unsigned row, unsigned col) const noexcept;
+  bool allocates(unsigned index) const noexcept;
+};
+
+struct InterconnectDesc {
+  std::string topology;
+  bool registeredLinks = false;
+  unsigned hopLatency = 0;
+  bool inputBuffering = false;
+  bool runtimeArbitration = false;
+  bool compilerRouted = false;
+  bool separateResourceDomain = false;
+  unsigned channelsPerDirectionPerLink = 0;
+};
+
+struct MemoryDesc {
+  std::string model;
+  std::string addressUnit;
+  unsigned depth = 0;
+  unsigned widthBits = 0;
+  unsigned ports = 0;
+  unsigned loadLatency = 0;
+  unsigned maxIssuePerLsuPerCycle = 0;
+  unsigned maxIssuePerPortPerCycle = 0;
+  unsigned rawDependenceSeparation = 0;
+  unsigned warDependenceSeparation = 0;
+  unsigned wawDependenceSeparation = 0;
+  std::string sameAddressPolicy;
+  bool runtimeStall = false;
+  bool runtimeArbitration = false;
+};
+
+struct LoopExecutionDesc {
+  bool supported = false;
+  std::string model;
+  std::vector<std::string> controlPhases;
+  bool rotatingRegisters = false;
+  bool loopCounterOperand = false;
+  bool sameAddressRfReadWriteRecurrence = false;
+};
+
+struct LsuTileDesc {
+  unsigned row = 0;
+  unsigned col = 0;
+  unsigned portId = 0;
+};
+
+class TargetModel {
+public:
+  static TargetModel loadFromFile(const std::filesystem::path& path);
+
+  std::string_view name() const noexcept { return name_; }
+  unsigned contractVersion() const noexcept { return contractVersion_; }
+  const ArrayDesc& array() const noexcept { return array_; }
+  const RegisterFileDesc& dataRF() const noexcept { return dataRF_; }
+  const RegisterFileDesc& predicateRF() const noexcept { return predicateRF_; }
+  const RegisterFileDesc* registerBank(RegisterBankDomain domain, unsigned row,
+                                       unsigned col) const noexcept;
+  const InterconnectDesc& dataNetwork() const noexcept { return interconnect_; }
+  const InterconnectDesc& predicateNetwork() const noexcept { return interconnect_; }
+  const MemoryDesc& memory() const noexcept { return memory_; }
+  const LoopExecutionDesc& loopExecution() const noexcept { return loopExecution_; }
+  const ControlLayout& controlLayout() const noexcept { return controlLayout_; }
+  unsigned constantMemoryDepth() const noexcept { return constantMemoryDepth_; }
+  TileControl defaultTileControl() const noexcept { return TileControl{}; }
+  const std::vector<LsuTileDesc>& lsuTiles() const noexcept { return lsuTiles_; }
+  bool supportsValueType(const ir::ValueType& type) const noexcept;
+  const TargetOperationDesc* findOperation(std::string_view name) const noexcept;
+  const TargetOperationDesc& operation(std::string_view name) const;
+  const std::vector<TargetOperationDesc>& operations() const noexcept { return operations_; }
+  bool hasExecutionClass(TargetExecutionClass executionClass) const noexcept;
+  std::uint64_t executionResourceCount(TargetExecutionClass executionClass) const noexcept;
+  std::uint64_t compatibleResourceCount(const TargetOperationDesc& operation) const noexcept;
+  bool isOperationExecutable(std::string_view name) const noexcept;
+  bool isOperationExecutable(const TargetOperationDesc& operation) const noexcept;
+  unsigned memoryDependenceSeparation(ir::MemoryDepKind kind) const noexcept;
+
+  bool tileHasLSU(unsigned row, unsigned col) const noexcept;
+  bool tileSupportsOperation(unsigned row, unsigned col, std::string_view operation) const noexcept;
+  std::vector<std::pair<unsigned, unsigned>> compatibleTiles(std::string_view operation) const;
+  unsigned encodingValue(std::string_view domain, std::string_view name) const;
+  std::string encodingName(std::string_view domain, unsigned value) const;
+  unsigned opcodeValue(std::string_view name) const { return encodingValue("op", name); }
+  unsigned dataSourceValue(std::string_view name) const {
+    return encodingValue("data_source", name);
+  }
+  unsigned predicateSourceValue(std::string_view name) const {
+    return encodingValue("predicate_source", name);
+  }
+
+private:
+  std::string name_;
+  unsigned contractVersion_ = 0;
+  ArrayDesc array_;
+  RegisterFileDesc dataRF_;
+  RegisterFileDesc predicateRF_;
+  InterconnectDesc interconnect_;
+  MemoryDesc memory_;
+  LoopExecutionDesc loopExecution_;
+  ControlLayout controlLayout_;
+  unsigned constantMemoryDepth_ = 0;
+  std::vector<LsuTileDesc> lsuTiles_;
+  std::unordered_map<std::string, std::unordered_map<std::string, unsigned>> encodings_;
+  std::unordered_map<std::string, std::unordered_map<unsigned, std::string>> reverseEncodings_;
+  std::vector<TargetOperationDesc> operations_;
+  std::unordered_map<std::string, std::size_t> operationIndices_;
+  std::unordered_set<std::string> defaultFuOperations_;
+  std::unordered_map<std::uint64_t, std::unordered_set<std::string>> tileOperationOverrides_;
+
+  bool hasValidEncoding(const TargetOperationDesc& operation) const noexcept;
+};
+
+} // namespace cgra

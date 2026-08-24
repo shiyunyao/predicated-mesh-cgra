@@ -24,7 +24,7 @@ RTL_PATHS = {
     "data_rf": REPO_ROOT / "rtl/data_rf.sv",
     "predicate_rf": REPO_ROOT / "rtl/pred_rf.sv",
     "const_mem": REPO_ROOT / "rtl/tile.sv",
-    "scratchpad": REPO_ROOT / "rtl/scratchpad_bank.sv",
+    "scratchpad": REPO_ROOT / "rtl/shared_scratchpad.sv",
     "lsu": REPO_ROOT / "rtl/lsu.sv",
 }
 WORKFLOW_PATHS = (
@@ -50,6 +50,7 @@ EXPECTED_CLASSES = {
         "module": "control_mem_bank",
         "target_depth": "ctrl_mem_depth",
         "target_width": "physical_control_word_width_bits",
+        "read_write_ports": 0,
         "read_ports": 1,
         "write_ports": 1,
         "read_mode": "asynchronous",
@@ -60,6 +61,7 @@ EXPECTED_CLASSES = {
         "module": "data_rf",
         "target_depth": "data_rf_depth",
         "target_width": "data_width",
+        "read_write_ports": 0,
         "read_ports": 2,
         "write_ports": 2,
         "read_mode": "asynchronous",
@@ -70,6 +72,7 @@ EXPECTED_CLASSES = {
         "module": "pred_rf",
         "target_depth": "pred_rf_depth",
         "target_width": "pred_width",
+        "read_write_ports": 0,
         "read_ports": 2,
         "write_ports": 2,
         "read_mode": "asynchronous",
@@ -80,6 +83,7 @@ EXPECTED_CLASSES = {
         "module": "tile.const_mem",
         "target_depth": "const_mem_depth",
         "target_width": "data_width",
+        "read_write_ports": 0,
         "read_ports": 1,
         "write_ports": 1,
         "read_mode": "asynchronous",
@@ -87,14 +91,15 @@ EXPECTED_CLASSES = {
         "rtl_markers": ("logic [DATA_WIDTH-1:0] const_mem", "assign const_data = const_mem"),
     },
     "scratchpad": {
-        "module": "scratchpad_bank",
-        "target_depth": "scratch_bank_depth",
+        "module": "shared_scratchpad",
+        "target_depth": "scratchpad_depth",
         "target_width": "data_width",
-        "read_ports": 1,
-        "write_ports": 2,
+        "read_write_ports": 4,
+        "read_ports": 0,
+        "write_ports": 0,
         "read_mode": "asynchronous",
         "write_mode": "synchronous",
-        "rtl_markers": ("module scratchpad_bank", "assign read_data = mem[read_addr]", "if (write_en)", "if (cfg_write_en)"),
+        "rtl_markers": ("module shared_scratchpad", "assign read_data[", "req_valid[i] && req_write[i]", "if (cfg_write_en)"),
     },
 }
 REQUIRED_FNC_SOURCES = (
@@ -259,13 +264,7 @@ def expected_instance_count(target: str, name: str, target_doc: dict[str, Any]) 
     tiles = TARGETS[target]["rows"] * TARGETS[target]["cols"]
     if name != "scratchpad":
         return tiles
-    lsu = target_doc.get("lsu")
-    enabled = lsu.get("enabled_tiles") if isinstance(lsu, dict) else None
-    if not isinstance(enabled, list):
-        raise ValueError("target LSU enabled_tiles must be a list")
-    if target == "default":
-        return len(enabled)
-    return TARGETS[target]["rows"]
+    return 1
 
 
 def validate_inventory() -> tuple[list[str], dict[str, Any]]:
@@ -303,9 +302,13 @@ def validate_inventory() -> tuple[list[str], dict[str, Any]]:
             continue
         expected_depth = parameters.get(spec["target_depth"])
         expected_width = parameters.get(spec["target_width"])
+        expected_rw_ports = spec["read_write_ports"]
+        if name == "scratchpad" and parameters.get("shared_mem_ports") != expected_rw_ports:
+            errors.append("scratchpad: target shared_mem_ports does not match read_write_ports")
         observed = {
             "depth": item.get("depth"),
             "width_bits": item.get("width_bits"),
+            "read_write_ports": item.get("read_write_ports"),
             "read_ports": item.get("read_ports"),
             "write_ports": item.get("write_ports"),
             "read_mode": item.get("read_mode"),
@@ -315,6 +318,7 @@ def validate_inventory() -> tuple[list[str], dict[str, Any]]:
         expected = {
             "depth": expected_depth,
             "width_bits": expected_width,
+            "read_write_ports": spec["read_write_ports"],
             "read_ports": spec["read_ports"],
             "write_ports": spec["write_ports"],
             "read_mode": spec["read_mode"],
@@ -343,8 +347,8 @@ def validate_inventory() -> tuple[list[str], dict[str, Any]]:
         missing_markers = [marker for marker in spec["rtl_markers"] if marker not in text]
         if name == "scratchpad":
             lsu_text = RTL_PATHS["lsu"].read_text(encoding="utf-8") if RTL_PATHS["lsu"].is_file() else ""
-            if "scratchpad_bank #(" not in lsu_text:
-                missing_markers.append("lsu.sv: scratchpad_bank #(")
+            if "shared_scratchpad" in lsu_text:
+                missing_markers.append("lsu.sv must not own shared_scratchpad")
         if missing_markers:
             errors.append(f"{name}: RTL markers missing: {missing_markers}")
         details["classes"][name] = {

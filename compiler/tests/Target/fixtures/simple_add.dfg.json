@@ -1,0 +1,28 @@
+{
+  "schema": "cgra.dfg.debug.v1",
+  "name": "simple_add",
+  "external_values": [
+    {"id": 0, "name": "a", "type": {"kind": "integer", "bits": 32}},
+    {"id": 1, "name": "b", "type": {"kind": "integer", "bits": 32}}
+  ],
+  "constants": [],
+  "nodes": [
+    {
+      "id": 0,
+      "opcode": "Add",
+      "result_type": {"kind": "integer", "bits": 32},
+      "operand_types": [
+        {"kind": "integer", "bits": 32},
+        {"kind": "integer", "bits": 32}
+      ]
+    }
+  ],
+  "live_outs": [
+    {"id": 0, "name": "result", "type": {"kind": "integer", "bits": 32}, "node": 0}
+  ],
+  "external_bindings": [
+    {"node": 0, "operand": 0, "external": 0},
+    {"node": 0, "operand": 1, "external": 1}
+  ],
+  "edges": []
+}

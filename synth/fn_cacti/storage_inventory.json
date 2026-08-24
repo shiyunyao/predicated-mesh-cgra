@@ -8,6 +8,7 @@
       "module": "control_mem_bank",
       "depth": 256,
       "width_bits": 128,
+      "read_write_ports": 0,
       "read_ports": 1,
       "write_ports": 1,
       "read_mode": "asynchronous",
@@ -19,6 +20,7 @@
       "module": "data_rf",
       "depth": 16,
       "width_bits": 32,
+      "read_write_ports": 0,
       "read_ports": 2,
       "write_ports": 2,
       "read_mode": "asynchronous",
@@ -30,6 +32,7 @@
       "module": "pred_rf",
       "depth": 16,
       "width_bits": 1,
+      "read_write_ports": 0,
       "read_ports": 2,
       "write_ports": 2,
       "read_mode": "asynchronous",
@@ -41,6 +44,7 @@
       "module": "tile.const_mem",
       "depth": 16,
       "width_bits": 32,
+      "read_write_ports": 0,
       "read_ports": 1,
       "write_ports": 1,
       "read_mode": "asynchronous",
@@ -49,14 +53,15 @@
     },
     {
       "name": "scratchpad",
-      "module": "scratchpad_bank",
-      "depth": 1024,
+      "module": "shared_scratchpad",
+      "depth": 4096,
       "width_bits": 32,
-      "read_ports": 1,
-      "write_ports": 2,
+      "read_write_ports": 4,
+      "read_ports": 0,
+      "write_ports": 0,
       "read_mode": "asynchronous",
       "write_mode": "synchronous",
-      "instances": {"small": 2, "default": 4}
+      "instances": {"small": 1, "default": 1}
     }
   ],
   "excluded": [

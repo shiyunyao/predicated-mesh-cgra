@@ -123,7 +123,7 @@ def emit_testbench(
             "        "
             f"{index}: drive_cfg_int(2'd{write['cfg_mem_type']}, "
             f"CTRL_PC_WIDTH'({write['cfg_tile_row']}), CTRL_PC_WIDTH'({write['cfg_tile_col']}), "
-            f"SCRATCH_ADDR_WIDTH'({write['cfg_addr']}), 2'({write['cfg_word_idx']}), "
+            f"SCRATCHPAD_ADDR_WIDTH'({write['cfg_addr']}), 2'({write['cfg_word_idx']}), "
             f"{_sv_value(write['cfg_wdata'])});"
         )
     case_text = "\n".join(cases)
@@ -149,6 +149,10 @@ def emit_testbench(
         cfg_wdata = 32'(active_epilogue);
       end
       if (($test$plusargs("SKIP_LOOP_COMMIT") != 0) && (index == {loop_write_indices[4]})) begin
+        clear_cfg();
+      end
+      if (($test$plusargs("PARTIAL_LOOP_DESC") != 0)
+          && ((index == {loop_write_indices[0]}) || (index == {loop_write_indices[3]}))) begin
         clear_cfg();
       end
       if (($test$plusargs("INVALID_LOOP_SPAN") != 0) && (index == {loop_write_indices[0]})) begin
@@ -208,7 +212,7 @@ module generated_program_tb(input logic clk);
   logic [1:0] cfg_mem_type;
   logic [CTRL_PC_WIDTH-1:0] cfg_tile_row;
   logic [CTRL_PC_WIDTH-1:0] cfg_tile_col;
-  logic [SCRATCH_ADDR_WIDTH-1:0] cfg_addr;
+  logic [SCRATCHPAD_ADDR_WIDTH-1:0] cfg_addr;
   logic [1:0] cfg_word_idx;
   logic [31:0] cfg_wdata;
   logic start;
@@ -290,7 +294,7 @@ module generated_program_tb(input logic clk);
   task automatic drive_cfg_int(input logic [1:0] mem_type,
                                input logic [CTRL_PC_WIDTH-1:0] row,
                                input logic [CTRL_PC_WIDTH-1:0] col,
-                               input logic [SCRATCH_ADDR_WIDTH-1:0] addr,
+                               input logic [SCRATCHPAD_ADDR_WIDTH-1:0] addr,
                                input logic [1:0] word_idx,
                                input logic [31:0] data);
     begin

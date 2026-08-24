@@ -9,9 +9,11 @@ module tile_lsu_tb(input logic clk);
   logic const_cfg_we;
   logic [CONST_ADDR_WIDTH-1:0] const_cfg_addr;
   logic [DATA_WIDTH-1:0] const_cfg_wdata;
-  logic scratch_cfg_we;
-  logic [SCRATCH_ADDR_WIDTH-1:0] scratch_cfg_addr;
-  logic [DATA_WIDTH-1:0] scratch_cfg_wdata;
+  logic [DATA_WIDTH-1:0] mem_read_data;
+  logic mem_req_valid;
+  logic mem_req_write;
+  logic [SCRATCHPAD_ADDR_WIDTH-1:0] mem_req_addr;
+  logic [DATA_WIDTH-1:0] mem_req_wdata;
   logic [DATA_WIDTH-1:0] north_data_in;
   logic north_data_valid;
   logic [DATA_WIDTH-1:0] south_data_in;
@@ -59,9 +61,11 @@ module tile_lsu_tb(input logic clk);
     .const_cfg_we(const_cfg_we),
     .const_cfg_addr(const_cfg_addr),
     .const_cfg_wdata(const_cfg_wdata),
-    .scratch_cfg_we(scratch_cfg_we),
-    .scratch_cfg_addr(scratch_cfg_addr),
-    .scratch_cfg_wdata(scratch_cfg_wdata),
+    .mem_read_data(mem_read_data),
+    .mem_req_valid(mem_req_valid),
+    .mem_req_write(mem_req_write),
+    .mem_req_addr(mem_req_addr),
+    .mem_req_wdata(mem_req_wdata),
     .north_data_in(north_data_in),
     .north_data_valid(north_data_valid),
     .south_data_in(south_data_in),
@@ -96,6 +100,20 @@ module tile_lsu_tb(input logic clk);
     .east_pred_out(east_pred_out),
     .west_pred_we(west_pred_we),
     .west_pred_out(west_pred_out)
+  );
+
+  shared_scratchpad #(
+    .PORTS(1)
+  ) memory_i (
+    .clk(clk),
+    .req_valid(mem_req_valid),
+    .req_write(mem_req_write),
+    .req_addr(mem_req_addr),
+    .req_wdata(mem_req_wdata),
+    .read_data(mem_read_data),
+    .cfg_write_en(1'b0),
+    .cfg_write_addr('0),
+    .cfg_write_data('0)
   );
 
   assign unused_tb_outputs = north_pred_we
@@ -164,9 +182,6 @@ module tile_lsu_tb(input logic clk);
     const_cfg_we = 1'b0;
     const_cfg_addr = '0;
     const_cfg_wdata = '0;
-    scratch_cfg_we = 1'b0;
-    scratch_cfg_addr = '0;
-    scratch_cfg_wdata = '0;
     north_data_in = '0;
     north_data_valid = 1'b1;
     south_data_in = '0;
@@ -201,9 +216,6 @@ module tile_lsu_tb(input logic clk);
       cycle <= cycle + 1;
       rst_n <= 1'b1;
       const_cfg_we <= 1'b0;
-      scratch_cfg_we <= 1'b0;
-      scratch_cfg_addr <= '0;
-      scratch_cfg_wdata <= '0;
 
       unique case (cycle)
       0: begin

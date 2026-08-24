@@ -20,7 +20,7 @@ module trace_tb(input logic clk);
   logic [1:0] cfg_mem_type;
   logic [CTRL_PC_WIDTH-1:0] cfg_tile_row;
   logic [CTRL_PC_WIDTH-1:0] cfg_tile_col;
-  logic [SCRATCH_ADDR_WIDTH-1:0] cfg_addr;
+  logic [SCRATCHPAD_ADDR_WIDTH-1:0] cfg_addr;
   logic [1:0] cfg_word_idx;
   logic [31:0] cfg_wdata;
   logic start;
@@ -40,7 +40,7 @@ module trace_tb(input logic clk);
   int cycle;
   int init_index;
   int init_tile;
-  logic [SCRATCH_ADDR_WIDTH-1:0] init_pc;
+  logic [SCRATCHPAD_ADDR_WIDTH-1:0] init_pc;
   logic [1:0] init_chunk;
   logic [1:0] special_chunk;
   tile_control_word_t next_ctrl;
@@ -119,7 +119,7 @@ module trace_tb(input logic clk);
   task automatic drive_cfg_int(input logic [1:0] mem_type,
                                input logic [CTRL_PC_WIDTH-1:0] row,
                                input logic [CTRL_PC_WIDTH-1:0] col,
-                               input logic [SCRATCH_ADDR_WIDTH-1:0] addr,
+                               input logic [SCRATCHPAD_ADDR_WIDTH-1:0] addr,
                                input logic [1:0] word_idx,
                                input logic [31:0] data);
     begin
@@ -184,7 +184,7 @@ module trace_tb(input logic clk);
     end else if ((cycle >= 1) && (cycle < CONST_CFG_START)) begin
       init_index = cycle - 1;
       init_chunk = 2'(init_index % CONTROL_WORD_CHUNKS);
-      init_pc = SCRATCH_ADDR_WIDTH'((init_index / CONTROL_WORD_CHUNKS) % INIT_PCS);
+      init_pc = SCRATCHPAD_ADDR_WIDTH'((init_index / CONTROL_WORD_CHUNKS) % INIT_PCS);
       init_tile = init_index / (CONTROL_WORD_CHUNKS * INIT_PCS);
       drive_cfg_int(2'd0,
                     CTRL_PC_WIDTH'(init_tile / COLS),

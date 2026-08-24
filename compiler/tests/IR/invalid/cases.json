@@ -1,0 +1,32 @@
+{
+  "schema": "cgra.dfg.invalid_cases.v1",
+  "cases": [
+    "missing_operand_provider",
+    "duplicate_operand_provider",
+    "operand_index_out_of_range",
+    "data_type_mismatch",
+    "predicate_type_mismatch",
+    "void_value_used",
+    "icmp_missing_predicate",
+    "icmp_wrong_result",
+    "icmp_mismatched_operands",
+    "select_nonpredicate_condition",
+    "select_mismatched_values",
+    "select_wrong_result",
+    "load_bad_address",
+    "load_void_result",
+    "store_nonvoid_result",
+    "store_bad_address",
+    "store_bad_predicate_if_applicable",
+    "data_edge_from_predicate",
+    "predicate_edge_from_data",
+    "memory_edge_from_nonmemory",
+    "memory_raw_wrong_endpoints",
+    "memory_war_wrong_endpoints",
+    "memory_waw_wrong_endpoints",
+    "unknown_edge_source",
+    "unknown_edge_destination",
+    "unknown_external_binding",
+    "unknown_constant_binding"
+  ]
+}
