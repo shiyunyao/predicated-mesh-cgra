@@ -4,7 +4,7 @@ Status: exact feature-head evidence complete; PR merge-ref and post-merge eviden
 
 Base `main` after T015: `741b8fddb0878e0659c4c5cc87e10d5fbeae12e6`
 
-Feature implementation SHA: `b6d548f98563eb54ae8b42e89cc0dfc4f91aec9e`
+Feature implementation SHA: `117582200341e723dd15c83a007abb8f1d9d0dfc`
 
 ## Frozen scope
 
@@ -32,8 +32,8 @@ predicated recurrences remain explicit future-scope failures.
 
 Feature-head hosted evidence:
 
-- compiler-fast: [run 32895606431](https://github.com/shiyunyao/predicated-mesh-cgra/actions/runs/32895606431) — PASS
-- hardware-regression: [run 32896602900](https://github.com/shiyunyao/predicated-mesh-cgra/actions/runs/32896602900) — PASS
+- compiler-fast: [run 32898224678](https://github.com/shiyunyao/predicated-mesh-cgra/actions/runs/32898224678) — PASS
+- hardware-regression: [run 32898224715](https://github.com/shiyunyao/predicated-mesh-cgra/actions/runs/32898224715) — PASS
 
 The hardware run executed retained RTL, T013 compiler E2E, T014 Kernel ABI
 E2E, T015 LLVM frontend E2E, and `make llvm-recurrence-e2e`. The recurrence
