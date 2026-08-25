@@ -674,13 +674,23 @@ LLVMFrontendResult lowerSelectedLoop(llvm::Module& module, const LLVMFrontendOpt
         descriptor.uses.push_back({valueSummary(instruction), operandIndex, dst, edge});
       } else if (const auto* producer = llvm::dyn_cast<llvm::Instruction>(operand)) {
         const auto iterator = state.nodes.find(producer);
-        if (iterator == state.nodes.end()) {
+        if (iterator != state.nodes.end()) {
+          builder.addDataEdge(iterator->second, dst, operandIndex);
+        } else if (state.selection.loop->contains(producer)) {
           return failure(LLVMFrontendStatus::UnsupportedInductionDataUse,
                          LLVMFrontendDiagnosticCode::LLVM_FRONTEND_INDUCTION_DATA_USE,
                          "data instruction consumes an unsupported in-loop value", &state.selection,
                          &instruction);
+        } else {
+          const auto type = valueType(*operand);
+          if (!type)
+            return failure(LLVMFrontendStatus::UnsupportedLLVMType,
+                           LLVMFrontendDiagnosticCode::LLVM_FRONTEND_UNSUPPORTED_TYPE,
+                           "external operand has an unsupported integer type", &state.selection,
+                           &instruction);
+          const auto external = getExternal(state, builder, *operand, *type);
+          builder.bindExternal(dst, operandIndex, external);
         }
-        builder.addDataEdge(iterator->second, dst, operandIndex);
       } else if (const auto* constant = llvm::dyn_cast<llvm::ConstantInt>(operand)) {
         const auto type = valueType(*operand);
         if (!type)

@@ -100,6 +100,24 @@ exit:
 }
 )IR";
 
+const char* kPreheaderExternal = R"IR(
+define i32 @preheader_external(i32 %x) {
+entry:
+  %seed = add i32 %x, 2
+  br label %loop
+loop:
+  %sum = phi i32 [ %seed, %entry ], [ %next, %loop ]
+  %next = add i32 %sum, 1
+  %iv = phi i32 [ 0, %entry ], [ %inc, %loop ]
+  %inc = add i32 %iv, 1
+  %cmp = icmp ult i32 %inc, 3
+  br i1 %cmp, label %loop, label %exit
+exit:
+  %result = phi i32 [ %next, %loop ]
+  ret i32 %result
+}
+)IR";
+
 const char* kRepeatedPhiUse = R"IR(
 define i32 @repeated_phi(i32 %seed) {
 entry:
@@ -433,6 +451,17 @@ void testRecurrenceLowering() {
                                                              externalResult)
              .ok(),
          "external recurrence verifier");
+
+  auto preheaderExternal = parse(kPreheaderExternal, context);
+  options.functionName = "preheader_external";
+  const auto preheaderResult =
+      cgra::frontend::llvm_frontend::lowerInnermostLoop(*preheaderExternal, options);
+  expect(preheaderResult.ok() && preheaderResult.dfg->externalValues().size() == 1,
+         "preheader instruction seed must become one ExternalValue");
+  expect(cgra::frontend::llvm_frontend::verifyFrontendResult(*preheaderExternal, options,
+                                                             preheaderResult)
+             .ok(),
+         "preheader external recurrence verifier");
 
   auto repeated = parse(kRepeatedPhiUse, context);
   options.functionName = "repeated_phi";
