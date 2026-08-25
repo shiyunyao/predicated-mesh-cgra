@@ -1,8 +1,10 @@
 # T016 Loop Recurrence V0 Release Gate
 
-Status: implementation in progress.
+Status: exact feature-head evidence complete; PR merge-ref and post-merge evidence pending.
 
 Base `main` after T015: `741b8fddb0878e0659c4c5cc87e10d5fbeae12e6`
+
+Feature implementation SHA: `b6d548f98563eb54ae8b42e89cc0dfc4f91aec9e`
 
 ## Frozen scope
 
@@ -28,8 +30,17 @@ predicated recurrences remain explicit future-scope failures.
 
 ## Release evidence
 
-Feature-head, PR merge-ref, and post-merge `main` hosted runs will be recorded
-after the recurrence implementation and CI workflow change are complete.
+Feature-head hosted evidence:
+
+- compiler-fast: [run 32895606431](https://github.com/shiyunyao/predicated-mesh-cgra/actions/runs/32895606431) — PASS
+- hardware-regression: [run 32896602900](https://github.com/shiyunyao/predicated-mesh-cgra/actions/runs/32896602900) — PASS
+
+The hardware run executed retained RTL, T013 compiler E2E, T014 Kernel ABI
+E2E, T015 LLVM frontend E2E, and `make llvm-recurrence-e2e`. The recurrence
+cases covered seed/trip-count outputs 6, 9, 12, and 24 with Golden/RTL trace
+agreement and layout-aware ABI observation checks.
+
+PR merge-ref and post-merge `main` evidence will be recorded after review.
 
 Release decision: **PENDING**
 
