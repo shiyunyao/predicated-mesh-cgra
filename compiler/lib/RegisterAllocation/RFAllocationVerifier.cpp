@@ -68,6 +68,29 @@ std::string storageWriteSource(const cgra::target::TargetDFG& dfg, const cgra::T
   return {};
 }
 
+std::string boundaryWriteSource(const cgra::target::TargetDFG& dfg, const StorageSegment& segment) {
+  const auto& edge = dfg.edge(segment.edge);
+  if (edge.distance == 0)
+    return {};
+  const auto* boundary = edge.kind() == cgra::ir::Edge::Kind::Data
+                             ? &std::get<cgra::ir::DataEdgeInfo>(edge.info).boundary
+                             : &std::get<cgra::ir::PredicateEdgeInfo>(edge.info).boundary;
+  if (!*boundary || (*boundary)->values.empty())
+    return {};
+  const auto& value = (*boundary)->values.front().value;
+  if (!std::holds_alternative<cgra::ir::ConstantRef>(value))
+    return {};
+  if (edge.kind() == cgra::ir::Edge::Kind::Data)
+    return "CONST_DATA";
+  const auto constantId = std::get<cgra::ir::ConstantRef>(value).value;
+  const auto constant =
+      std::find_if(dfg.constants().begin(), dfg.constants().end(),
+                   [constantId](const auto& item) { return item.id == constantId; });
+  if (constant == dfg.constants().end())
+    return {};
+  return constant->bits != 0 ? "CONST_TRUE" : "CONST_FALSE";
+}
+
 } // namespace
 
 bool RFAllocationVerificationReport::contains(RFAllocationVerificationCode code) const noexcept {
@@ -215,6 +238,26 @@ RFAllocationVerificationReport RFAllocationVerifier::verify(const cgra::target::
             sourceIt->second.end())
       add(report, RFAllocationVerificationCode::RFA_WRITE_PORT_CONFLICT,
           "assigned RF write port does not accept the mapped value source", segment.id);
+    const auto boundarySource = boundaryWriteSource(dfg, segment);
+    if (!boundarySource.empty()) {
+      if (!allocation.boundaryWritePort || *allocation.boundaryWritePort >= bank->writePorts)
+        add(report, RFAllocationVerificationCode::RFA_WRITE_PORT_CONFLICT,
+            "recurrence boundary has no assigned physical RF write port", segment.id);
+      else {
+        const auto boundaryIt =
+            bank->writePortSources.find("W" + std::to_string(*allocation.boundaryWritePort));
+        if (boundaryIt == bank->writePortSources.end() ||
+            std::find(boundaryIt->second.begin(), boundaryIt->second.end(), boundarySource) ==
+                boundaryIt->second.end())
+          add(report, RFAllocationVerificationCode::RFA_WRITE_PORT_CONFLICT,
+              "assigned recurrence-boundary RF write port does not accept the seed source",
+              segment.id);
+      }
+    } else if (allocation.boundaryWritePort) {
+      add(report, RFAllocationVerificationCode::RFA_WRITE_PORT_CONFLICT,
+          "allocation carries a boundary RF write port for an edge without a constant seed",
+          segment.id);
+    }
   }
 
   struct RegisterEventCounts {

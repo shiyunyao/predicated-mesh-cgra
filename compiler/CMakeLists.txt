@@ -159,6 +159,19 @@ target_link_libraries(cgra_pipeline PUBLIC cgra_lowering cgra_schedule_materiali
 cgra_enable_warnings(cgra_pipeline)
 cgra_enable_sanitizers(cgra_pipeline)
 
+add_library(cgra_abi
+  lib/ABI/KernelSignature.cpp
+  lib/ABI/KernelInvocation.cpp
+  lib/ABI/KernelABILayout.cpp
+  lib/ABI/KernelABIBinder.cpp
+  lib/ABI/KernelABIVerifier.cpp
+  lib/ABI/CompileKernel.cpp
+)
+target_include_directories(cgra_abi PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(cgra_abi PUBLIC cgra_pipeline cgra_lowering cgra_target cgra_ir)
+cgra_enable_warnings(cgra_abi)
+cgra_enable_sanitizers(cgra_abi)
+
 add_executable(cgra-target-dump tools/target-dump/main.cpp)
 target_link_libraries(cgra-target-dump PRIVATE cgra_target)
 cgra_enable_warnings(cgra-target-dump)
@@ -236,6 +249,14 @@ target_link_libraries(cgra-rf-allocate PRIVATE cgra_register_allocation)
 cgra_enable_warnings(cgra-rf-allocate)
 cgra_enable_sanitizers(cgra-rf-allocate)
 set_target_properties(cgra-rf-allocate PROPERTIES
+  RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+)
+
+add_executable(cgrac-compile-kernel tools/compile-kernel/main.cpp)
+target_link_libraries(cgrac-compile-kernel PRIVATE cgra_abi)
+cgra_enable_warnings(cgrac-compile-kernel)
+cgra_enable_sanitizers(cgrac-compile-kernel)
+set_target_properties(cgrac-compile-kernel PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
 )
 
@@ -404,6 +425,16 @@ if(CGRA_BUILD_TESTS)
     set(CGRA_GTEST_MAIN_TARGET gtest_main)
   elseif(TARGET GTest::gtest_main)
     set(CGRA_GTEST_MAIN_TARGET GTest::gtest_main)
+  endif()
+  if(CGRA_GTEST_MAIN_TARGET)
+    cgra_add_test(
+      NAME cgra-kernel-abi-tests
+      TYPE semantic
+      SOURCES tests/ABI/KernelABITest.cpp
+      LIBRARIES cgra_abi ${CGRA_GTEST_MAIN_TARGET}
+      DEFINITIONS CGRA_REPOSITORY_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/.."
+      GTEST
+    )
   endif()
   if(CGRA_GTEST_MAIN_TARGET)
     cgra_add_test(

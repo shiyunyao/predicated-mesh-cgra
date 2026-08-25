@@ -6,6 +6,7 @@ on:
     branches:
       - main
       - compiler/target-contract-v2
+      - compiler/kernel-abi-v0
   workflow_dispatch:
 
 permissions:
@@ -73,6 +74,8 @@ jobs:
         run: make modulo-loop
       - name: Compiler-generated program E2E
         run: make compiler-e2e
+      - name: Kernel ABI V0 E2E
+        run: make kernel-abi-e2e
       - name: Upload backend diagnostics
         if: failure()
         uses: actions/upload-artifact@v4
@@ -93,6 +96,7 @@ jobs:
             build/modulo_loop/*/*.log
             build/*/trace.csv
             build/compiler-e2e/**
+            build/kernel-e2e/**
 
   hardware-regression-gate:
     name: hardware-regression-gate

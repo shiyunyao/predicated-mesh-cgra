@@ -27,6 +27,10 @@ struct StorageAllocation {
   // allocation, rather than a lowering-time convention.
   std::uint32_t readPort = 0;
   std::uint32_t writePort = 0;
+  // A recurrence boundary may enter the same allocated register through a
+  // different target source than the steady-state producer.  When present,
+  // this is the exact port assigned for that finite boundary write.
+  std::optional<std::uint32_t> boundaryWritePort;
 
   friend bool operator==(const StorageAllocation&, const StorageAllocation&) = default;
 };

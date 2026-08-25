@@ -1,0 +1,27 @@
+{
+  "schema": "cgra.dfg.debug.v1",
+  "name": "abi_recurrence_seed_two_node",
+  "external_values": [
+    {"id": 0, "name": "seed", "type": {"kind": "integer", "bits": 32}}
+  ],
+  "constants": [
+    {"id": 0, "type": {"kind": "integer", "bits": 32}, "bits": 1},
+    {"id": 1, "type": {"kind": "integer", "bits": 32}, "bits": 0}
+  ],
+  "nodes": [
+    {"id": 0, "opcode": "Add", "result_type": {"kind": "integer", "bits": 32},
+     "operand_types": [{"kind": "integer", "bits": 32}, {"kind": "integer", "bits": 32}]},
+    {"id": 1, "opcode": "Add", "result_type": {"kind": "integer", "bits": 32},
+     "operand_types": [{"kind": "integer", "bits": 32}, {"kind": "integer", "bits": 32}]}
+  ],
+  "live_outs": [{"id": 0, "name": "state", "type": {"kind": "integer", "bits": 32}, "node": 1}],
+  "external_bindings": [
+    {"node": 0, "operand": 1, "constant": 0},
+    {"node": 1, "operand": 1, "constant": 1}
+  ],
+  "edges": [
+    {"id": 0, "src": 0, "dst": 1, "distance": 0, "kind": "data", "operand": 0},
+    {"id": 1, "src": 1, "dst": 0, "distance": 1, "kind": "data", "operand": 0,
+     "boundary": [{"iteration_offset": 0, "external": 0}]}
+  ]
+}

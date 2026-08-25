@@ -6,6 +6,7 @@ on:
     branches:
       - main
       - compiler/target-contract-v2
+      - compiler/kernel-abi-v0
   workflow_dispatch:
 
 permissions:

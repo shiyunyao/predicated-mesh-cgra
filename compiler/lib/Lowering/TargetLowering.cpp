@@ -140,6 +140,42 @@ const ir::ConstantValue* constantFor(const TargetDFG& dfg, ir::ConstantId id) {
   return nullptr;
 }
 
+std::optional<ir::ConstantId> boundaryConstantFor(const TargetEdge& edge,
+                                                  std::int64_t producerIteration) {
+  if (producerIteration >= 0 || edge.distance == 0)
+    return std::nullopt;
+  const auto offsetSigned = producerIteration + static_cast<std::int64_t>(edge.distance);
+  if (offsetSigned < 0 || offsetSigned >= static_cast<std::int64_t>(edge.distance))
+    throw LoweringError(TargetLoweringStatus::InvalidMaterializedSchedule,
+                        "boundary producer iteration is outside recurrence boundary");
+  const auto offset = static_cast<std::uint32_t>(offsetSigned);
+  const auto* boundary = edge.kind() == ir::Edge::Kind::Data
+                             ? &std::get<ir::DataEdgeInfo>(edge.info).boundary
+                             : &std::get<ir::PredicateEdgeInfo>(edge.info).boundary;
+  if (!*boundary || offset >= (*boundary)->values.size())
+    throw LoweringError(TargetLoweringStatus::UnsupportedBoundaryProvider,
+                        "recurrence boundary has no value for this producer iteration");
+  const auto& value = (*boundary)->values[offset].value;
+  if (std::holds_alternative<ir::ExternalValueRef>(value))
+    throw LoweringError(TargetLoweringStatus::UnsupportedExternalProvider,
+                        "unresolved external recurrence boundary reaches target lowering");
+  return std::get<ir::ConstantRef>(value).value;
+}
+
+std::string boundarySource(const TargetDFG& dfg, const TargetEdge& edge,
+                           std::int64_t producerIteration) {
+  const auto id = boundaryConstantFor(edge, producerIteration);
+  if (!id)
+    return {};
+  const auto* value = constantFor(dfg, *id);
+  if (!value)
+    throw LoweringError(TargetLoweringStatus::UnsupportedBoundaryProvider,
+                        "boundary constant is not present in target DFG");
+  return edge.kind() == ir::Edge::Kind::Predicate
+             ? (value->bits != 0 ? "CONST_TRUE" : "CONST_FALSE")
+             : "CONST_DATA";
+}
+
 const StorageSegment* segmentForEdgeAtTile(const RFAllocatedMapping& mapping, TargetEdgeId edge,
                                            TileCoord tile) {
   for (const auto& segment : mapping.storageRequirements().segments())
@@ -326,9 +362,18 @@ struct Lowerer {
 
   void event(const MaterializedEvent& event, TileBuilder& builder, std::uint32_t cycle) {
     (void)cycle;
-    if (event.kind == MaterializedEventKind::BoundaryValueInject)
-      throw LoweringError(TargetLoweringStatus::UnsupportedBoundaryProvider,
-                          "boundary value provider is not defined by this target");
+    if (event.kind == MaterializedEventKind::BoundaryValueInject) {
+      if (!event.edge || !event.boundaryValue || !event.logicalIteration)
+        throw LoweringError(TargetLoweringStatus::InvalidMaterializedSchedule,
+                            "boundary injection has incomplete provenance");
+      const auto& edge = dfg.edge(*event.edge);
+      const auto constantId = boundaryConstantFor(edge, event.logicalIteration);
+      if (!constantId)
+        throw LoweringError(TargetLoweringStatus::UnsupportedBoundaryProvider,
+                            "boundary injection does not resolve to a constant");
+      builder.constant(options.constantImage.address(*constantId));
+      return;
+    }
     if (event.kind == MaterializedEventKind::LiveOutBoundaryUse)
       return;
     if (!event.tile && event.kind != MaterializedEventKind::NodeIssue)
@@ -443,6 +488,9 @@ struct Lowerer {
         const auto& prior = std::get<LinkStep>(actions[actionIndex - 1]);
         source = edge.kind() == ir::Edge::Kind::Predicate ? predicateInput(prior.direction)
                                                           : dataInput(prior.direction);
+      } else if (const auto boundary = boundaryConstantFor(edge, event.logicalIteration)) {
+        builder.constant(options.constantImage.address(*boundary));
+        source = boundarySource(dfg, edge, event.logicalIteration);
       } else {
         source = resultSource(target.operation(dfg.node(edge.src).operation).resultSource);
       }
@@ -457,7 +505,13 @@ struct Lowerer {
       const auto& segment = mapping.storageRequirements().segment(*event.segment);
       const auto& edge = dfg.edge(*event.edge);
       std::string source;
+      if (const auto boundary = boundaryConstantFor(edge, event.logicalIteration)) {
+        builder.constant(options.constantImage.address(*boundary));
+        source = boundarySource(dfg, edge, event.logicalIteration);
+      }
       for (const auto& origin : segment.origins) {
+        if (!source.empty())
+          break;
         if (origin.kind == StorageOriginKind::ExplicitVirtualHold && origin.transportActionIndex) {
           const auto& actions = mappedEdge(mapping, edge.id).transport->actions;
           if (*origin.transportActionIndex > 0 &&
@@ -481,7 +535,11 @@ struct Lowerer {
           source = resultSource(target.operation(dfg.node(edge.src).operation).resultSource);
         }
       }
-      const auto port = mapping.allocationFor(segment.id).writePort;
+      const auto& allocation = mapping.allocationFor(segment.id);
+      const auto isBoundaryInstance = boundaryConstantFor(edge, event.logicalIteration).has_value();
+      const auto port = isBoundaryInstance && allocation.boundaryWritePort
+                            ? *allocation.boundaryWritePort
+                            : allocation.writePort;
       if (segment.domain == RegisterBankDomain::Data)
         builder.dataWrite(port, event.physicalRegister->index, source);
       else
@@ -641,7 +699,10 @@ Json buildManifestJson(const TargetDFG& dfg, const TargetModel& target,
   for (const auto& cycle : encoded.epilogue.cycles)
     addCycle(controls, pc++, cycle);
   Json constants = Json::array();
+  std::set<std::uint32_t> emittedConstantAddresses;
   for (const auto& allocation : options.constantImage.entries) {
+    if (!emittedConstantAddresses.insert(allocation.location.address).second)
+      continue;
     char text[11];
     std::snprintf(text, sizeof(text), "0x%08x", static_cast<unsigned>(allocation.bits));
     constants.push_back(Json{{"addr", allocation.location.address}, {"value", text}});

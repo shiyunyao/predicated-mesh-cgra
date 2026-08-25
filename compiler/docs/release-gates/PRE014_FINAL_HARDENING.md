@@ -41,7 +41,7 @@ no-route result rather than a resource-ID exception.
 | dev-debug build | PASS |
 | dev-debug CTest | PASS (17/17) |
 | ci-debug CTest | PASS (20/20) |
-| sanitizer CTest | PASS (19/19 executed; CTest IDs through 20) |
+| sanitizer CTest | PASS (26/26) |
 | `make compiler-e2e` | PASS (real golden/RTL replay and observations) |
 | `make regression` | PASS |
 
