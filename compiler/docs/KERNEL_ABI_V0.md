@@ -24,6 +24,11 @@ edge.  Consequently, after the final iteration the reserved word contains the
 live-out value from that iteration.  The user preload range ends at the output
 region base and may not overlap it.
 
+The ABI verifier independently checks the target-derived depth, output ordering,
+address constants, Store provenance, and all concrete Load/Store addresses in the
+bound DFG.  Invocation preload values are checked before narrowing to the target
+word width; values outside that width are rejected.
+
 V0 requires a positive concrete trip count.  Zero-trip and runtime-symbolic
 semantics are intentionally deferred to later ABI work.
 
@@ -47,10 +52,17 @@ when represented by target-supported predicate constants.
 `compileGenericDFG` remains the lower-level backend API; `compileKernel` performs
 ABI binding and then calls it without a second mapper or lowering pipeline.
 
+The layout-aware checker in `tools/check_kernel_abi_e2e.py` resolves output names
+through the generated signature and layout before inspecting golden/RTL traces;
+the E2E oracle therefore does not hard-code a physical scratchpad address.
+
 The current target has one constant-memory address selector per tile/cycle.  Two
 different configuration scalars consumed by the same tile/cycle therefore remain
 a target-control conflict and are rejected by T012.  V0 does not invent a runtime
-scalar port or silently spill such values to scratchpad.
+scalar port or silently spill such values to scratchpad.  For recurrence boundary
+instances, T010 records a source-compatible finite-boundary RF write port when it
+differs from the steady-state producer port; the physical register and mapped
+transport remain unchanged.
 
 ## Deliberate limitations
 

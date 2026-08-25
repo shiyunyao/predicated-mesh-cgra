@@ -1,0 +1,16 @@
+{
+  "schema": "cgra.dfg.debug.v1",
+  "name": "abi_base_load",
+  "external_values": [
+    {"id": 0, "name": "base", "type": {"kind": "integer", "bits": 32}}
+  ],
+  "constants": [],
+  "nodes": [
+    {"id": 0, "opcode": "Load", "result_type": {"kind": "integer", "bits": 32},
+     "operand_types": [{"kind": "integer", "bits": 32}],
+     "memory": {"access_width_bits": 32, "volatile": false}}
+  ],
+  "live_outs": [{"id": 0, "name": "loaded", "type": {"kind": "integer", "bits": 32}, "node": 0}],
+  "external_bindings": [{"node": 0, "operand": 0, "external": 0}],
+  "edges": []
+}

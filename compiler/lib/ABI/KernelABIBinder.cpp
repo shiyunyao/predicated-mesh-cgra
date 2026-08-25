@@ -19,6 +19,34 @@ void add(KernelABIBindingResult& result, std::string code, std::string message) 
   result.diagnostics.push_back(
       {std::move(code), std::move(message), std::nullopt, std::nullopt, std::nullopt});
 }
+
+bool isABIOutputStore(const ir::Node& node) {
+  return node.source && node.source->label.starts_with("abi.liveout.");
+}
+
+bool checkReservedMemoryAddresses(const ir::DFG& dfg, std::uint32_t outputBase,
+                                  std::uint32_t scratchpadDepth, KernelABIBindingResult& result) {
+  for (const auto& node : dfg.nodes()) {
+    if ((node.opcode != ir::Opcode::Load && node.opcode != ir::Opcode::Store) || !node.memoryInfo ||
+        isABIOutputStore(node))
+      continue;
+    const auto binding =
+        std::find_if(dfg.externalBindings().begin(), dfg.externalBindings().end(),
+                     [&](const auto& item) { return item.node == node.id && item.operand == 0; });
+    if (binding == dfg.externalBindings().end() ||
+        !std::holds_alternative<ir::ConstantRef>(binding->source))
+      continue;
+    const auto constant = dfg.constant(std::get<ir::ConstantRef>(binding->source).value);
+    if (constant.bits >= outputBase && constant.bits < scratchpadDepth) {
+      result.status = KernelABIBindingStatus::ScratchpadABIRegionConflict;
+      add(result, "ABI_RESERVED_OUTPUT_REGION_ACCESS",
+          "a concrete Load/Store address accesses the ABI output region");
+      return false;
+    }
+  }
+  return true;
+}
+
 std::uint32_t nextId(std::span<const ir::ConstantValue> values) {
   std::uint32_t next = 0;
   for (const auto& value : values)
@@ -123,22 +151,6 @@ KernelABIBindingResult KernelABIBinder::bind(const ir::DFG& source, const Target
       return result;
     }
   }
-  if (outputCount != 0) {
-    for (const auto& binding : source.externalBindings()) {
-      if (!std::holds_alternative<ir::ConstantRef>(binding.source) || binding.operand != 0)
-        continue;
-      const auto& node = source.node(binding.node);
-      if (node.opcode != ir::Opcode::Load && node.opcode != ir::Opcode::Store)
-        continue;
-      const auto address = source.constant(std::get<ir::ConstantRef>(binding.source).value).bits;
-      if (address >= outputBase && address < depth) {
-        result.status = KernelABIBindingStatus::ScratchpadABIRegionConflict;
-        add(result, "ABI_CONSTANT_ADDRESS_COLLISION",
-            "constant memory address operand overlaps the ABI output region");
-        return result;
-      }
-    }
-  }
   try {
     ir::DFGBuilder builder(source.name());
     for (const auto& value : source.externalValues())
@@ -200,7 +212,10 @@ KernelABIBindingResult KernelABIBinder::bind(const ir::DFG& source, const Target
 
     auto nextNode = nextNodeId(source.nodes());
     auto nextConstant = constantStart + static_cast<ir::ConstantId>(specialized.size());
-    for (const auto& output : source.liveOuts()) {
+    std::vector<ir::LiveOut> sortedLiveOuts(source.liveOuts().begin(), source.liveOuts().end());
+    std::sort(sortedLiveOuts.begin(), sortedLiveOuts.end(),
+              [](const auto& lhs, const auto& rhs) { return lhs.id < rhs.id; });
+    for (const auto& output : sortedLiveOuts) {
       if (output.type.kind != ir::ValueKind::Integer ||
           output.type.bitWidth != target.memory().widthBits) {
         result.status = KernelABIBindingStatus::UnsupportedLiveOutType;
@@ -225,6 +240,8 @@ KernelABIBindingResult KernelABIBinder::bind(const ir::DFG& source, const Target
       layout.outputs.push_back({output.id, address, storeNode, addressConstant});
     }
     ABIBoundKernel bound{builder.finish(), signature, invocation, layout};
+    if (!checkReservedMemoryAddresses(bound.dfg, outputBase, depth, result))
+      return result;
     const auto verification = KernelABIVerifier::verify(source, target, invocation, bound);
     if (!verification.ok()) {
       result.status = KernelABIBindingStatus::VerificationFailure;

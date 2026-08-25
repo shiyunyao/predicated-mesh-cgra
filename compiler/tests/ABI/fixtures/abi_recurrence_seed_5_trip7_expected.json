@@ -1,0 +1,4 @@
+{
+  "schema": "cgra.kernel_abi.expectation.v1",
+  "outputs": {"state": {"final_value": 12, "store_count": 7}}
+}

@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <charconv>
 #include <cstdio>
+#include <limits>
 #include <set>
 #include <stdexcept>
 
@@ -101,10 +102,14 @@ KernelInvocation parseInvocation(std::string_view jsonText, const KernelSignatur
     }
   }
   if (root.contains("scratchpad_preload")) {
-    for (const auto& item : root.at("scratchpad_preload"))
-      result.scratchpadPreload.emplace_back(
-          item.at("address").get<std::uint32_t>(),
-          static_cast<std::uint32_t>(parseBits(item.at("value"))));
+    for (const auto& item : root.at("scratchpad_preload")) {
+      const auto value = parseBits(item.at("value"));
+      if (value > std::numeric_limits<std::uint32_t>::max())
+        throw std::invalid_argument(
+            "ABI_SCRATCHPAD_VALUE_OUT_OF_RANGE: preload value exceeds target word width");
+      result.scratchpadPreload.emplace_back(item.at("address").get<std::uint32_t>(),
+                                            static_cast<std::uint32_t>(value));
+    }
   }
   return result;
 }

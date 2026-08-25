@@ -14,6 +14,9 @@ namespace {
 void fail(KernelABIVerificationReport& report, std::string message) {
   report.diagnostics.push_back(std::move(message));
 }
+bool isABIOutputStore(const ir::Node& node) {
+  return node.source && node.source->label.starts_with("abi.liveout.");
+}
 const KernelInputBinding* inputBinding(const KernelABILayout& layout, ir::ExternalValueId id) {
   const auto it = std::find_if(layout.inputs.begin(), layout.inputs.end(),
                                [&](const auto& item) { return item.input == id; });
@@ -91,6 +94,16 @@ KernelABIVerificationReport KernelABIVerifier::verify(const ir::DFG& source,
     fail(report, "bound invocation scratchpad preload differs from requested invocation");
   if (bound.dfg.name() != source.name())
     fail(report, "bound DFG name changed");
+  if (source.liveOuts().size() > target.memory().depth)
+    fail(report, "source live-outs exceed target scratchpad depth");
+  const auto expectedOutputBase = source.liveOuts().size() > target.memory().depth
+                                      ? 0U
+                                      : target.memory().depth - source.liveOuts().size();
+  if (bound.layout.scratchpadDepth != target.memory().depth)
+    fail(report, "ABI layout scratchpad depth does not match target");
+  if (bound.layout.userScratchpadLimit != expectedOutputBase ||
+      bound.layout.outputRegionBase != expectedOutputBase)
+    fail(report, "ABI layout output region is not derived from target depth and live-out count");
   for (const auto& node : source.nodes())
     if (!bound.dfg.containsNode(node.id) || bound.dfg.node(node.id) != node)
       fail(report, "original node was changed or removed");
@@ -112,6 +125,14 @@ KernelABIVerificationReport KernelABIVerifier::verify(const ir::DFG& source,
     if (!bound.dfg.containsConstant(input.specializedConstant))
       fail(report, "specialized input constant is missing");
     else {
+      if (!source.containsExternal(input.input)) {
+        fail(report, "ABI input binding references an unknown source external");
+        continue;
+      }
+      const auto& external = source.externalValue(input.input);
+      const auto& specialized = bound.dfg.constant(input.specializedConstant);
+      if (specialized.type != external.type)
+        fail(report, "specialized input constant has the wrong type");
       const auto invocationValue =
           std::find_if(invocation.scalarInputs.begin(), invocation.scalarInputs.end(),
                        [&](const auto& item) { return item.id == input.input; });
@@ -183,12 +204,30 @@ KernelABIVerificationReport KernelABIVerifier::verify(const ir::DFG& source,
   if (bound.layout.outputs.size() != source.liveOuts().size())
     fail(report, "ABI layout does not contain exactly one output binding per source live-out");
   std::set<ir::LiveOutId> outputIds;
-  for (const auto& item : bound.layout.outputs) {
+  for (std::size_t ordinal = 0; ordinal < bound.layout.outputs.size(); ++ordinal) {
+    const auto& item = bound.layout.outputs[ordinal];
     if (!outputIds.insert(item.output).second || !source.containsLiveOut(item.output))
       fail(report, "ABI output binding has a duplicate or unknown live-out ID");
+    if (ordinal != 0 && bound.layout.outputs[ordinal - 1].output >= item.output)
+      fail(report, "ABI output bindings are not sorted by LiveOutId");
+    const auto expectedAddress = bound.layout.outputRegionBase + ordinal;
+    if (item.scratchpadAddress != expectedAddress)
+      fail(report, "ABI output address does not match sorted LiveOutId ordinal");
   }
-  if (bound.layout.outputRegionBase != bound.layout.scratchpadDepth - bound.layout.outputs.size())
-    fail(report, "ABI output region is not at the top of scratchpad");
+  std::set<ir::NodeId> abiStoreNodes;
+  for (const auto& item : bound.layout.outputs)
+    if (!abiStoreNodes.insert(item.abiStoreNode).second)
+      fail(report, "multiple ABI outputs reference the same Store node");
+  std::set<ir::NodeId> discoveredABIStores;
+  for (const auto& node : bound.dfg.nodes()) {
+    if (!isABIOutputStore(node))
+      continue;
+    discoveredABIStores.insert(node.id);
+    if (!abiStoreNodes.contains(node.id))
+      fail(report, "bound DFG contains an unbound ABI output Store");
+  }
+  if (discoveredABIStores.size() != bound.layout.outputs.size())
+    fail(report, "ABI layout does not account for every ABI output Store");
   for (const auto& output : source.liveOuts()) {
     const auto* binding = outputBinding(bound.layout, output.id);
     if (!binding) {
@@ -208,6 +247,14 @@ KernelABIVerificationReport KernelABIVerifier::verify(const ir::DFG& source,
         store.source->label != "abi.liveout." + std::to_string(output.id))
       fail(report, "ABI output node is not a provenance-marked Store");
     bool addressOk = false, dataOk = false, wawOk = false;
+    if (!bound.dfg.containsConstant(binding->addressConstant))
+      fail(report, "ABI output address constant is missing");
+    else {
+      const auto& addressConstant = bound.dfg.constant(binding->addressConstant);
+      if (addressConstant.type != ir::ValueType::i32() ||
+          addressConstant.bits != binding->scratchpadAddress)
+        fail(report, "ABI output address constant has the wrong type or value");
+    }
     for (const auto& item : bound.dfg.externalBindings())
       if (item.node == store.id && item.operand == 0 &&
           std::holds_alternative<ir::ConstantRef>(item.source) &&
@@ -233,6 +280,21 @@ KernelABIVerificationReport KernelABIVerifier::verify(const ir::DFG& source,
     (void)value;
     if (address >= bound.layout.outputRegionBase && !bound.layout.outputs.empty())
       fail(report, "scratchpad preload collides with ABI output region");
+  }
+  for (const auto& node : bound.dfg.nodes()) {
+    if ((node.opcode != ir::Opcode::Load && node.opcode != ir::Opcode::Store) || !node.memoryInfo ||
+        isABIOutputStore(node))
+      continue;
+    const auto binding =
+        std::find_if(bound.dfg.externalBindings().begin(), bound.dfg.externalBindings().end(),
+                     [&](const auto& item) { return item.node == node.id && item.operand == 0; });
+    if (binding == bound.dfg.externalBindings().end() ||
+        !std::holds_alternative<ir::ConstantRef>(binding->source))
+      continue;
+    const auto& constant = bound.dfg.constant(std::get<ir::ConstantRef>(binding->source).value);
+    if (!bound.layout.outputs.empty() && constant.bits >= bound.layout.outputRegionBase &&
+        constant.bits < bound.layout.scratchpadDepth)
+      fail(report, "concrete memory address accesses the ABI output region");
   }
   report.valid = report.diagnostics.empty();
   return report;

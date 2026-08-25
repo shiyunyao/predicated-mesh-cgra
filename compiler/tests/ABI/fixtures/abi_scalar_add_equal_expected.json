@@ -1,0 +1,9 @@
+{
+  "schema": "cgra.kernel_abi.expectation.v1",
+  "outputs": {
+    "result": {
+      "final_value": 14,
+      "store_count": 2
+    }
+  }
+}

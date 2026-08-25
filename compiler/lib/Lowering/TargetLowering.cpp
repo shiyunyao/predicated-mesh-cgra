@@ -535,7 +535,11 @@ struct Lowerer {
           source = resultSource(target.operation(dfg.node(edge.src).operation).resultSource);
         }
       }
-      const auto port = mapping.allocationFor(segment.id).writePort;
+      const auto& allocation = mapping.allocationFor(segment.id);
+      const auto isBoundaryInstance = boundaryConstantFor(edge, event.logicalIteration).has_value();
+      const auto port = isBoundaryInstance && allocation.boundaryWritePort
+                            ? *allocation.boundaryWritePort
+                            : allocation.writePort;
       if (segment.domain == RegisterBankDomain::Data)
         builder.dataWrite(port, event.physicalRegister->index, source);
       else

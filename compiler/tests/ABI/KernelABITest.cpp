@@ -11,6 +11,7 @@
 #include <nlohmann/json.hpp>
 
 #include <filesystem>
+#include <stdexcept>
 
 namespace {
 std::filesystem::path targetPath() {
@@ -50,6 +51,13 @@ TEST(KernelABI, BindsInputsAndLiveOutsWithoutChangingSource) {
   const auto verification =
       cgra::abi::KernelABIVerifier::verify(source, target, invocation, *result.bound);
   EXPECT_TRUE(verification.ok()) << verification.format();
+
+  auto corrupted = *result.bound;
+  corrupted.layout.outputs.front().addressConstant =
+      corrupted.layout.inputs.front().specializedConstant;
+  const auto corruptedReport =
+      cgra::abi::KernelABIVerifier::verify(source, target, invocation, corrupted);
+  EXPECT_FALSE(corruptedReport.ok());
 }
 
 TEST(KernelABI, RejectsMissingInputAndReservedScratchpadCollision) {
@@ -83,6 +91,66 @@ TEST(KernelABI, RejectsMissingInputAndReservedScratchpadCollision) {
   const auto staticCollision =
       cgra::abi::KernelABIBinder::bind(addressBuilder.finish(), target, {1, {}, {}});
   EXPECT_EQ(staticCollision.status, cgra::abi::KernelABIBindingStatus::ScratchpadABIRegionConflict);
+
+  DFGBuilder baseBuilder("abi_external_address_collision");
+  const auto base = baseBuilder.addExternal("base", ValueType::i32());
+  const auto baseLoad = baseBuilder.addNode(Opcode::Load, {ValueType::i32()}, ValueType::i32(),
+                                            std::nullopt, MemoryOpInfo{32, false});
+  baseBuilder.bindExternal(baseLoad, 0, base);
+  baseBuilder.addLiveOut("value", ValueType::i32(), baseLoad);
+  const auto baseDfg = baseBuilder.finish();
+  const auto reserved = cgra::abi::KernelABIBinder::bind(
+      baseDfg, target, {1, {{base, target.memory().depth - 1}}, {}});
+  EXPECT_EQ(reserved.status, cgra::abi::KernelABIBindingStatus::ScratchpadABIRegionConflict);
+  const auto legal = cgra::abi::KernelABIBinder::bind(baseDfg, target,
+                                                      {1, {{base, target.memory().depth - 2}}, {}});
+  EXPECT_TRUE(legal.ok()) << legal.format();
+}
+
+TEST(KernelABI, LiveOutLayoutIsSortedById) {
+  using namespace cgra::ir;
+  auto make = [](std::initializer_list<LiveOutId> ids) {
+    DFGBuilder builder("abi_sorted_outputs");
+    const auto zero = builder.addConstant(ValueType::i32(), 0);
+    const auto one = builder.addConstant(ValueType::i32(), 1);
+    const auto add =
+        builder.addNode(Opcode::Add, {ValueType::i32(), ValueType::i32()}, ValueType::i32());
+    builder.bindConstant(add, 0, zero);
+    builder.bindConstant(add, 1, one);
+    for (const auto id : ids)
+      builder.importLiveOut({id, ValueType::i32(), "out" + std::to_string(id), add});
+    return builder.finish();
+  };
+  const auto target = cgra::TargetModel::loadFromFile(targetPath());
+  const auto first = cgra::abi::KernelABIBinder::bind(make({17, 3, 9}), target, {1, {}, {}});
+  const auto second = cgra::abi::KernelABIBinder::bind(make({9, 17, 3}), target, {1, {}, {}});
+  ASSERT_TRUE(first.ok()) << first.format();
+  ASSERT_TRUE(second.ok()) << second.format();
+  ASSERT_EQ(first.bound->layout.outputs, second.bound->layout.outputs);
+  ASSERT_EQ(first.bound->layout.outputs.size(), 3U);
+  EXPECT_EQ(first.bound->layout.outputs[0].output, 3U);
+  EXPECT_EQ(first.bound->layout.outputs[1].output, 9U);
+  EXPECT_EQ(first.bound->layout.outputs[2].output, 17U);
+  EXPECT_EQ(first.bound->layout.outputs[0].scratchpadAddress, target.memory().depth - 3);
+  EXPECT_EQ(first.bound->layout.outputs[2].scratchpadAddress, target.memory().depth - 1);
+}
+
+TEST(KernelABI, RejectsScratchpadValueOverflowBeforeNarrowing) {
+  cgra::abi::KernelSignature signature;
+  signature.kernelName = "abi_overflow";
+  const auto parse = [](std::string_view value) {
+    nlohmann::json root = {
+        {"schema", "cgra.kernel_invocation.v1"},
+        {"trip_count", 1},
+        {"scalar_inputs", nlohmann::json::object()},
+        {"scratchpad_preload",
+         nlohmann::json::array({{{"address", 0}, {"value", std::string(value)}}})}};
+    return root.dump();
+  };
+  EXPECT_NO_THROW(cgra::abi::parseInvocation(parse("4294967295"), signature));
+  EXPECT_THROW(cgra::abi::parseInvocation(parse("4294967296"), signature), std::invalid_argument);
+  EXPECT_THROW(cgra::abi::parseInvocation(parse("0xffffffffffffffff"), signature),
+               std::invalid_argument);
 }
 
 TEST(KernelABI, SpecializesRecurrenceBoundaryWithoutChangingDistance) {

@@ -105,6 +105,29 @@ std::string storageWriteSource(const cgra::target::TargetDFG& dfg, const cgra::T
   return {};
 }
 
+std::string boundaryWriteSource(const cgra::target::TargetDFG& dfg, const StorageSegment& segment) {
+  const auto& edge = dfg.edge(segment.edge);
+  if (edge.distance == 0)
+    return {};
+  const auto* boundary = edge.kind() == cgra::ir::Edge::Kind::Data
+                             ? &std::get<cgra::ir::DataEdgeInfo>(edge.info).boundary
+                             : &std::get<cgra::ir::PredicateEdgeInfo>(edge.info).boundary;
+  if (!*boundary || (*boundary)->values.empty())
+    return {};
+  const auto& value = (*boundary)->values.front().value;
+  if (!std::holds_alternative<cgra::ir::ConstantRef>(value))
+    return {};
+  if (edge.kind() == cgra::ir::Edge::Kind::Data)
+    return "CONST_DATA";
+  const auto constantId = std::get<cgra::ir::ConstantRef>(value).value;
+  const auto constant =
+      std::find_if(dfg.constants().begin(), dfg.constants().end(),
+                   [constantId](const auto& item) { return item.id == constantId; });
+  if (constant == dfg.constants().end())
+    return {};
+  return constant->bits != 0 ? "CONST_TRUE" : "CONST_FALSE";
+}
+
 struct BudgetState {
   bool exceeded = false;
 };
@@ -353,8 +376,11 @@ RFAllocationResult RFAllocator::allocate(const cgra::target::TargetDFG& dfg,
   std::vector<StorageAllocation> allocations;
   allocations.reserve(requirements.segments().size());
   for (const auto& segment : requirements.segments())
-    allocations.push_back(
-        {segment.id, {segment.tile, banks[segment.id]->id, *colors[segment.id]}, 0, 0});
+    allocations.push_back({segment.id,
+                           {segment.tile, banks[segment.id]->id, *colors[segment.id]},
+                           0,
+                           0,
+                           std::nullopt});
 
   // Assign exact physical ports independently for every modulo slot.  The
   // matching is deliberately bipartite rather than first-fit: a future target
@@ -429,6 +455,62 @@ RFAllocationResult RFAllocator::allocate(const cgra::target::TargetDFG& dfg,
   };
   if (!assignPorts(readEvents, false) || !assignPorts(writeEvents, true))
     return result;
+
+  // Boundary instances are finite prologue events.  They use the same
+  // physical register as the periodic segment, but may have a different
+  // source-compatible write port (for example CONST_DATA uses W1 while a
+  // steady-state FU result uses W0).  Assign those ports explicitly so T012
+  // never has to guess or search during lowering.
+  using BoundaryPortKey = std::tuple<BankKey, std::uint32_t>;
+  std::map<BoundaryPortKey, std::vector<SegmentIndex>> boundaryEvents;
+  for (const auto& segment : requirements.segments()) {
+    if (boundaryWriteSource(dfg, segment).empty())
+      continue;
+    const auto boundaryTime = segment.writeTime >= ii ? segment.writeTime - ii : segment.writeTime;
+    boundaryEvents[{BankKey{segment.tile, banks[segment.id]->id},
+                    static_cast<std::uint32_t>(boundaryTime % ii)}]
+        .push_back(segment.id);
+  }
+  for (const auto& [key, eventIds] : boundaryEvents) {
+    const auto* bank = banks[eventIds.front()];
+    std::vector<SegmentIndex> matched(bank->writePorts, requirements.segments().size());
+    std::vector<SegmentIndex> order = eventIds;
+    std::ranges::sort(order);
+    const auto candidates = [&](SegmentIndex segmentId, unsigned port) {
+      const auto source = boundaryWriteSource(dfg, requirements.segment(segmentId));
+      const auto it = bank->writePortSources.find("W" + std::to_string(port));
+      return it != bank->writePortSources.end() &&
+             std::ranges::find(it->second, source) != it->second.end();
+    };
+    std::function<bool(SegmentIndex, std::vector<bool>&)> augment =
+        [&](SegmentIndex segmentId, std::vector<bool>& visited) {
+          for (unsigned port = 0; port < bank->writePorts; ++port) {
+            if (visited[port] || !candidates(segmentId, port))
+              continue;
+            visited[port] = true;
+            if (matched[port] == requirements.segments().size() ||
+                augment(matched[port], visited)) {
+              matched[port] = segmentId;
+              return true;
+            }
+          }
+          return false;
+        };
+    for (const auto segmentId : order) {
+      std::vector<bool> visited(bank->writePorts, false);
+      if (!augment(segmentId, visited)) {
+        result.status = RFAllocationStatus::WritePortConflict;
+        add(result, RFAllocationDiagnosticCode::RFA_WRITE_PORT_CONFLICT,
+            "no source-compatible physical RF write-port matching exists for recurrence boundary",
+            requirements.segment(segmentId).edge, segmentId, std::get<0>(key).tile,
+            std::get<0>(key).bank);
+        return result;
+      }
+    }
+    for (unsigned port = 0; port < bank->writePorts; ++port)
+      if (matched[port] != requirements.segments().size())
+        allocations[matched[port]].boundaryWritePort = port;
+  }
 
   struct RegisterEventCounts {
     std::uint32_t reads = 0;

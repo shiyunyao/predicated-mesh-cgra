@@ -88,20 +88,19 @@ COMPILER_E2E_PRELOAD := compiler/tests/e2e/fixtures/fixed_addr_load_add_store/sc
 COMPILER_E2E_EXPECTATIONS := compiler/tests/e2e/fixtures/fixed_addr_load_add_store/expected_observations.json
 COMPILER_E2E_MANIFEST := $(COMPILER_E2E_DIR)/program_manifest.json
 COMPILER_E2E_PROGRAM_DIR := $(COMPILER_E2E_DIR)
-COMPILER_KERNEL_E2E_DIR ?= build/kernel-e2e/abi_scalar_add_equal
-COMPILER_KERNEL_E2E_DFG := compiler/tests/Target/fixtures/simple_add.dfg.json
-COMPILER_KERNEL_E2E_INVOCATION := compiler/tests/ABI/fixtures/abi_scalar_add_equal_invocation.json
-COMPILER_KERNEL_E2E_EXPECTATIONS := compiler/tests/ABI/fixtures/abi_scalar_add_equal_expected_observations.json
-COMPILER_KERNEL_E2E_MANIFEST := $(COMPILER_KERNEL_E2E_DIR)/program_manifest.json
+COMPILER_KERNEL_SCALAR_DIR ?= build/kernel-e2e/abi_scalar_input
+COMPILER_KERNEL_BASE_DIR ?= build/kernel-e2e/abi_base_load
+COMPILER_KERNEL_RECURRENCE_DIR ?= build/kernel-e2e/abi_recurrence_seed
+COMPILER_KERNEL_TRIPCOUNT_DIR ?= build/kernel-e2e/abi_tripcount
 
-.PHONY: help check-test lint build test regression shared-scratchpad-tests shared-scratchpad-negative-tests program program-prepare program-build program-run program-check compiler-e2e kernel-abi-e2e modulo-loop modulo-loop-prepare modulo-loop-check modulo-loop-tripcount-tests modulo-loop-zero-boundary-test modulo-loop-reuse-test modulo-loop-assert-tests synth-fetch-asap7 synth-memory-shape synth-area synth-timing synth-power synth-power-feasibility synth-fn-cacti clean
+.PHONY: help check-test lint build test regression shared-scratchpad-tests shared-scratchpad-negative-tests program program-prepare program-build program-run program-check compiler-e2e kernel-abi-e2e kernel-abi-scalar-e2e kernel-abi-base-load-e2e kernel-abi-recurrence-e2e kernel-abi-tripcount-e2e modulo-loop modulo-loop-prepare modulo-loop-check modulo-loop-tripcount-tests modulo-loop-zero-boundary-test modulo-loop-reuse-test modulo-loop-assert-tests synth-fetch-asap7 synth-memory-shape synth-area synth-timing synth-power synth-power-feasibility synth-fn-cacti clean
 
 help:
 	@echo "make test TEST=<name>  Build and run one testbench"
 	@echo "make lint TEST=<name>  Lint RTL with one testbench"
 	@echo "make regression         Run all retained testbenches"
 	@echo "make program PROGRAM_MANIFEST=<path>  Replay an external cgra.program_manifest.v1 through RTL and compare traces"
-	@echo "make kernel-abi-e2e  Compile and replay an invocation-bound ABI kernel through RTL"
+	@echo "make kernel-abi-e2e  Compile scalar, base-address, recurrence, and trip-count ABI kernels through RTL"
 	@echo "make modulo-loop        Replay the external modulo-loop manifest and run loop coverage"
 	@echo "make synth-area         Map 2x2/4x4 logic and report ASAP7 cell area"
 	@echo "make synth-timing       Estimate 2x2/4x4 logic timing at 100 MHz"
@@ -193,18 +192,74 @@ compiler-e2e:
 		--program-dir "$(COMPILER_E2E_PROGRAM_DIR)/program/program_manifest" \
 		--output "$(COMPILER_E2E_DIR)/e2e_result.json"
 
-kernel-abi-e2e:
+kernel-abi-scalar-e2e:
 	cmake -S compiler -B "$(COMPILER_BUILD_DIR)" -DCGRA_BUILD_TESTS=OFF -DCGRA_WARNINGS_AS_ERRORS=ON
 	cmake --build "$(COMPILER_BUILD_DIR)" --target cgrac-compile-kernel
-	mkdir -p "$(COMPILER_KERNEL_E2E_DIR)/compiler"
-	"$(COMPILER_BUILD_DIR)/bin/cgrac-compile-kernel" "$(COMPILER_KERNEL_E2E_DFG)" \
-		--target target/cgra_v3.json --invocation "$(COMPILER_KERNEL_E2E_INVOCATION)" \
-		--artifact-dir "$(COMPILER_KERNEL_E2E_DIR)/compiler" -o "$(COMPILER_KERNEL_E2E_MANIFEST)"
-	$(MAKE) --no-print-directory program BUILD_DIR="$(COMPILER_KERNEL_E2E_DIR)" PROGRAM_MANIFEST="$(COMPILER_KERNEL_E2E_MANIFEST)"
-	python3 tools/check_compiler_e2e_observations.py \
-		--expectation "$(COMPILER_KERNEL_E2E_EXPECTATIONS)" \
-		--golden "$(COMPILER_KERNEL_E2E_DIR)/program/program_manifest/golden_trace.csv" \
-		--rtl "$(COMPILER_KERNEL_E2E_DIR)/program/program_manifest/rtl_trace.csv"
+	@set -e; for suffix in 7 9; do \
+		case "$$suffix" in \
+			7) invocation=compiler/tests/ABI/fixtures/abi_scalar_input_7.json; expectation=compiler/tests/ABI/fixtures/abi_scalar_input_7_expected.json ;; \
+			9) invocation=compiler/tests/ABI/fixtures/abi_scalar_input_9.json; expectation=compiler/tests/ABI/fixtures/abi_scalar_input_9_expected.json ;; \
+		esac; \
+		case_dir="$(COMPILER_KERNEL_SCALAR_DIR)/$$suffix"; manifest="$$case_dir/program_manifest.json"; \
+		mkdir -p "$$case_dir/compiler"; \
+		"$(COMPILER_BUILD_DIR)/bin/cgrac-compile-kernel" compiler/tests/ABI/fixtures/abi_scalar_input.dfg.json --target target/cgra_v3.json --invocation "$$invocation" --artifact-dir "$$case_dir/compiler" -o "$$manifest"; \
+		$(MAKE) --no-print-directory program BUILD_DIR="$$case_dir" PROGRAM_MANIFEST="$$manifest"; \
+		python3 tools/check_kernel_abi_e2e.py --signature "$$case_dir/compiler/01_kernel_signature.json" --layout "$$case_dir/compiler/04_kernel_abi_layout.json" --expectation "$$expectation" --golden "$$case_dir/program/program_manifest/golden_trace.csv" --rtl "$$case_dir/program/program_manifest/rtl_trace.csv"; \
+	done
+	test "$$(sha256sum "$(COMPILER_KERNEL_SCALAR_DIR)/7/compiler/03_abi_bound.generic_dfg.json" | cut -d' ' -f1)" != "$$(sha256sum "$(COMPILER_KERNEL_SCALAR_DIR)/9/compiler/03_abi_bound.generic_dfg.json" | cut -d' ' -f1)"
+	test "$$(sha256sum "$(COMPILER_KERNEL_SCALAR_DIR)/7/program_manifest.json" | cut -d' ' -f1)" != "$$(sha256sum "$(COMPILER_KERNEL_SCALAR_DIR)/9/program_manifest.json" | cut -d' ' -f1)"
+
+kernel-abi-base-load-e2e:
+	cmake -S compiler -B "$(COMPILER_BUILD_DIR)" -DCGRA_BUILD_TESTS=OFF -DCGRA_WARNINGS_AS_ERRORS=ON
+	cmake --build "$(COMPILER_BUILD_DIR)" --target cgrac-compile-kernel
+	@set -e; for suffix in a b; do \
+		case "$$suffix" in \
+			a) invocation=compiler/tests/ABI/fixtures/abi_base_load_a.json; expectation=compiler/tests/ABI/fixtures/abi_base_load_a_expected.json ;; \
+			b) invocation=compiler/tests/ABI/fixtures/abi_base_load_b.json; expectation=compiler/tests/ABI/fixtures/abi_base_load_b_expected.json ;; \
+		esac; \
+		case_dir="$(COMPILER_KERNEL_BASE_DIR)/$$suffix"; manifest="$$case_dir/program_manifest.json"; \
+		mkdir -p "$$case_dir/compiler"; \
+		"$(COMPILER_BUILD_DIR)/bin/cgrac-compile-kernel" compiler/tests/ABI/fixtures/abi_base_load.dfg.json --target target/cgra_v3.json --invocation "$$invocation" --artifact-dir "$$case_dir/compiler" -o "$$manifest"; \
+		$(MAKE) --no-print-directory program BUILD_DIR="$$case_dir" PROGRAM_MANIFEST="$$manifest"; \
+		python3 tools/check_kernel_abi_e2e.py --signature "$$case_dir/compiler/01_kernel_signature.json" --layout "$$case_dir/compiler/04_kernel_abi_layout.json" --expectation "$$expectation" --golden "$$case_dir/program/program_manifest/golden_trace.csv" --rtl "$$case_dir/program/program_manifest/rtl_trace.csv"; \
+	done
+	test "$$(sha256sum "$(COMPILER_KERNEL_BASE_DIR)/a/compiler/03_abi_bound.generic_dfg.json" | cut -d' ' -f1)" != "$$(sha256sum "$(COMPILER_KERNEL_BASE_DIR)/b/compiler/03_abi_bound.generic_dfg.json" | cut -d' ' -f1)"
+	test "$$(sha256sum "$(COMPILER_KERNEL_BASE_DIR)/a/program_manifest.json" | cut -d' ' -f1)" != "$$(sha256sum "$(COMPILER_KERNEL_BASE_DIR)/b/program_manifest.json" | cut -d' ' -f1)"
+
+kernel-abi-recurrence-e2e:
+	cmake -S compiler -B "$(COMPILER_BUILD_DIR)" -DCGRA_BUILD_TESTS=OFF -DCGRA_WARNINGS_AS_ERRORS=ON
+	cmake --build "$(COMPILER_BUILD_DIR)" --target cgrac-compile-kernel
+	@set -e; for suffix in 5 20; do \
+		case "$$suffix" in \
+			5) invocation=compiler/tests/ABI/fixtures/abi_recurrence_seed_5.json; expectation=compiler/tests/ABI/fixtures/abi_recurrence_seed_5_expected.json ;; \
+			20) invocation=compiler/tests/ABI/fixtures/abi_recurrence_seed_20.json; expectation=compiler/tests/ABI/fixtures/abi_recurrence_seed_20_expected.json ;; \
+		esac; \
+		case_dir="$(COMPILER_KERNEL_RECURRENCE_DIR)/$$suffix"; manifest="$$case_dir/program_manifest.json"; \
+		mkdir -p "$$case_dir/compiler"; \
+		"$(COMPILER_BUILD_DIR)/bin/cgrac-compile-kernel" compiler/tests/ABI/fixtures/abi_recurrence_seed_two_node.dfg.json --target target/cgra_v3.json --invocation "$$invocation" --artifact-dir "$$case_dir/compiler" -o "$$manifest"; \
+		$(MAKE) --no-print-directory program BUILD_DIR="$$case_dir" PROGRAM_MANIFEST="$$manifest"; \
+		python3 tools/check_kernel_abi_e2e.py --signature "$$case_dir/compiler/01_kernel_signature.json" --layout "$$case_dir/compiler/04_kernel_abi_layout.json" --expectation "$$expectation" --golden "$$case_dir/program/program_manifest/golden_trace.csv" --rtl "$$case_dir/program/program_manifest/rtl_trace.csv"; \
+	done
+	test "$$(sha256sum "$(COMPILER_KERNEL_RECURRENCE_DIR)/5/compiler/03_abi_bound.generic_dfg.json" | cut -d' ' -f1)" != "$$(sha256sum "$(COMPILER_KERNEL_RECURRENCE_DIR)/20/compiler/03_abi_bound.generic_dfg.json" | cut -d' ' -f1)"
+	test "$$(sha256sum "$(COMPILER_KERNEL_RECURRENCE_DIR)/5/program_manifest.json" | cut -d' ' -f1)" != "$$(sha256sum "$(COMPILER_KERNEL_RECURRENCE_DIR)/20/program_manifest.json" | cut -d' ' -f1)"
+
+kernel-abi-tripcount-e2e:
+	cmake -S compiler -B "$(COMPILER_BUILD_DIR)" -DCGRA_BUILD_TESTS=OFF -DCGRA_WARNINGS_AS_ERRORS=ON
+	cmake --build "$(COMPILER_BUILD_DIR)" --target cgrac-compile-kernel
+	@set -e; for suffix in trip1 trip7; do \
+		case "$$suffix" in \
+			trip1) invocation=compiler/tests/ABI/fixtures/abi_recurrence_seed_5_trip1.json; expectation=compiler/tests/ABI/fixtures/abi_recurrence_seed_5_trip1_expected.json ;; \
+			trip7) invocation=compiler/tests/ABI/fixtures/abi_recurrence_seed_5_trip7.json; expectation=compiler/tests/ABI/fixtures/abi_recurrence_seed_5_trip7_expected.json ;; \
+		esac; \
+		case_dir="$(COMPILER_KERNEL_TRIPCOUNT_DIR)/$$suffix"; manifest="$$case_dir/program_manifest.json"; \
+		mkdir -p "$$case_dir/compiler"; \
+		"$(COMPILER_BUILD_DIR)/bin/cgrac-compile-kernel" compiler/tests/ABI/fixtures/abi_recurrence_seed_two_node.dfg.json --target target/cgra_v3.json --invocation "$$invocation" --artifact-dir "$$case_dir/compiler" -o "$$manifest"; \
+		$(MAKE) --no-print-directory program BUILD_DIR="$$case_dir" PROGRAM_MANIFEST="$$manifest"; \
+		python3 tools/check_kernel_abi_e2e.py --signature "$$case_dir/compiler/01_kernel_signature.json" --layout "$$case_dir/compiler/04_kernel_abi_layout.json" --expectation "$$expectation" --golden "$$case_dir/program/program_manifest/golden_trace.csv" --rtl "$$case_dir/program/program_manifest/rtl_trace.csv"; \
+	done
+	test "$$(sha256sum "$(COMPILER_KERNEL_TRIPCOUNT_DIR)/trip1/program_manifest.json" | cut -d' ' -f1)" != "$$(sha256sum "$(COMPILER_KERNEL_TRIPCOUNT_DIR)/trip7/program_manifest.json" | cut -d' ' -f1)"
+
+kernel-abi-e2e: kernel-abi-scalar-e2e kernel-abi-base-load-e2e kernel-abi-recurrence-e2e kernel-abi-tripcount-e2e
 
 modulo-loop: modulo-loop-check modulo-loop-tripcount-tests modulo-loop-zero-boundary-test modulo-loop-reuse-test modulo-loop-assert-tests
 	python3 -m pytest tests/test_modulo_loop.py

@@ -62,19 +62,21 @@ std::string RFAllocatedMappingSerialization::toJson(const RFAllocatedMapping& ma
                {"staged_mapping", Json::parse(cgra::schedule::toJson(mapping.staged()))},
                {"storage_segments", Json::array()}};
   for (const auto& segment : mapping.storageRequirements().segments()) {
-    const auto allocation = mapping.registerFor(segment.id);
-    root["storage_segments"].push_back(
-        {{"id", segment.id},
-         {"edge", segment.edge},
-         {"tile", tileJson(segment.tile)},
-         {"bank", allocation.bank},
-         {"domain", domainName(segment.domain)},
-         {"write_time", segment.writeTime},
-         {"read_time", segment.readTime},
-         {"origins", Json::array()},
-         {"register", allocation.index},
-         {"read_port", mapping.allocationFor(segment.id).readPort},
-         {"write_port", mapping.allocationFor(segment.id).writePort}});
+    const auto& allocation = mapping.allocationFor(segment.id);
+    Json segmentJson = {{"id", segment.id},
+                        {"edge", segment.edge},
+                        {"tile", tileJson(segment.tile)},
+                        {"bank", allocation.reg.bank},
+                        {"domain", domainName(segment.domain)},
+                        {"write_time", segment.writeTime},
+                        {"read_time", segment.readTime},
+                        {"origins", Json::array()},
+                        {"register", allocation.reg.index},
+                        {"read_port", allocation.readPort},
+                        {"write_port", allocation.writePort}};
+    if (allocation.boundaryWritePort)
+      segmentJson["boundary_write_port"] = *allocation.boundaryWritePort;
+    root["storage_segments"].push_back(std::move(segmentJson));
     for (const auto& origin : segment.origins) {
       Json originJson = {{"kind", origin.kind == StorageOriginKind::ExplicitVirtualHold
                                       ? "virtual_hold"
@@ -127,7 +129,10 @@ RFAllocatedMapping RFAllocatedMappingSerialization::parse(std::string_view jsonT
         {id,
          {tile, required<std::string>(entry, "bank"), required<std::uint32_t>(entry, "register")},
          entry.contains("read_port") ? entry.at("read_port").get<std::uint32_t>() : 0U,
-         entry.contains("write_port") ? entry.at("write_port").get<std::uint32_t>() : 0U});
+         entry.contains("write_port") ? entry.at("write_port").get<std::uint32_t>() : 0U,
+         entry.contains("boundary_write_port") && !entry.at("boundary_write_port").is_null()
+             ? std::optional<std::uint32_t>(entry.at("boundary_write_port").get<std::uint32_t>())
+             : std::nullopt});
   }
   StorageRequirements requirements(staged.modulo().ii(), std::move(requirementsSegments));
   return RFAllocatedMapping(staged, std::move(requirements), std::move(allocations));
