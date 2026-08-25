@@ -8,8 +8,9 @@ does not add a runtime argument port or patch an already-generated manifest.
 
 - Branch: `compiler/kernel-abi-v0`
 - Baseline: `6bd7f9b91beff584ff3f643e150ef2ed800daf6d`
-- Source release SHA: `15886fc13abe999041ec623c55d97c0b19c096f8`
-- Evidence-document follow-up: metadata-only commit after the source gate
+- Source release SHA: `87649656a624ac18517cfbc65e78fac9db565ad4`
+- Merged main SHA: `9675089120cb2a3e4e9b2c521a0a7b1e457fd8ee`
+- Evidence-document follow-up: metadata-only commit after the hosted gates
 
 ## Implemented closure
 
@@ -76,8 +77,12 @@ The compiler-fast and hardware-regression workflows trigger on
 `make kernel-abi-e2e`. The source release SHA above was pushed and both exact
 feature-head gates completed successfully.
 
-- Exact feature-head `compiler-fast-gate`: PASS ([run 32865493201](https://github.com/shiyunyao/predicated-mesh-cgra/actions/runs/32865493201))
-- Exact feature-head `hardware-regression-gate`: PASS ([run 32865493227](https://github.com/shiyunyao/predicated-mesh-cgra/actions/runs/32865493227)); the job ran retained RTL, modulo-loop, T013 compiler E2E, and all four T014 ABI E2E targets.
+- Exact feature-head `compiler-fast-gate`: PASS ([run 32866779694](https://github.com/shiyunyao/predicated-mesh-cgra/actions/runs/32866779694))
+- Exact feature-head `hardware-regression-gate`: PASS ([run 32866779760](https://github.com/shiyunyao/predicated-mesh-cgra/actions/runs/32866779760)); the job ran retained RTL, modulo-loop, T013 compiler E2E, and all four T014 ABI E2E targets.
+- PR #2 merge-ref `c81d3563db427b4f88406c101f6a07f2e44f95cd` `compiler-fast-gate`: PASS ([run 32868160290](https://github.com/shiyunyao/predicated-mesh-cgra/actions/runs/32868160290))
+- PR #2 merge-ref `hardware-regression-gate`: PASS ([run 32868160228](https://github.com/shiyunyao/predicated-mesh-cgra/actions/runs/32868160228)); the merge-ref job completed the full hardware and Kernel ABI matrix.
+- Merged `main` `compiler-fast-gate`: PASS ([run 32869409220](https://github.com/shiyunyao/predicated-mesh-cgra/actions/runs/32869409220))
+- Merged `main` `hardware-regression-gate`: PASS ([run 32869409163](https://github.com/shiyunyao/predicated-mesh-cgra/actions/runs/32869409163)); the post-merge job completed retained RTL, modulo-loop, T013, and Kernel ABI V0 E2E.
 
 ## Known V0 limitations
 
@@ -92,6 +97,6 @@ live-out conversion, rotating registers, spills, multicast routing, or MVE.
 
 `GO T-COMP-015`
 
-The source release SHA and hosted run IDs are recorded above after the final
-release-seal push. The evidence-document follow-up is metadata-only and does
-not change compiler or hardware behavior.
+The source release SHA, PR merge-ref, and merged-main hosted run IDs are
+recorded above. The remaining evidence-document commit is metadata-only and
+does not change compiler or hardware behavior.
