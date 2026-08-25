@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 
-project(cgra_compiler_target_contract VERSION 0.1.0 LANGUAGES CXX)
+project(cgra_compiler_target_contract VERSION 0.1.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -11,6 +11,14 @@ option(CGRA_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" OFF)
 option(CGRA_ENABLE_ASAN "Enable AddressSanitizer" OFF)
 option(CGRA_ENABLE_UBSAN "Enable UndefinedBehaviorSanitizer" OFF)
 option(CGRA_FETCH_DEPS "Fetch pinned CMake dependencies" OFF)
+
+if(NOT LLVM_DIR AND EXISTS "/usr/lib/llvm-14/lib/cmake/llvm/LLVMConfig.cmake")
+  set(LLVM_DIR "/usr/lib/llvm-14/lib/cmake/llvm" CACHE PATH "LLVM CMake package directory")
+endif()
+find_package(LLVM 14 REQUIRED CONFIG)
+message(STATUS "Using LLVM ${LLVM_PACKAGE_VERSION} for cgra_llvm_frontend")
+separate_arguments(LLVM_DEFINITIONS_LIST NATIVE_COMMAND "${LLVM_DEFINITIONS}")
+llvm_map_components_to_libnames(CGRA_LLVM_LIBS Core Analysis IRReader Support)
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(CompilerWarnings)
@@ -172,6 +180,17 @@ target_link_libraries(cgra_abi PUBLIC cgra_pipeline cgra_lowering cgra_target cg
 cgra_enable_warnings(cgra_abi)
 cgra_enable_sanitizers(cgra_abi)
 
+add_library(cgra_llvm_frontend
+  lib/Frontend/LLVM/LLVMFrontend.cpp
+  lib/Frontend/LLVM/LLVMFrontendVerifier.cpp
+)
+target_include_directories(cgra_llvm_frontend PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_include_directories(cgra_llvm_frontend SYSTEM PUBLIC ${LLVM_INCLUDE_DIRS})
+target_compile_definitions(cgra_llvm_frontend PRIVATE ${LLVM_DEFINITIONS_LIST})
+target_link_libraries(cgra_llvm_frontend PUBLIC cgra_ir ${CGRA_LLVM_LIBS})
+cgra_enable_warnings(cgra_llvm_frontend)
+cgra_enable_sanitizers(cgra_llvm_frontend)
+
 add_executable(cgra-target-dump tools/target-dump/main.cpp)
 target_link_libraries(cgra-target-dump PRIVATE cgra_target)
 cgra_enable_warnings(cgra-target-dump)
@@ -273,6 +292,16 @@ target_link_libraries(cgrac-compile-dfg PRIVATE cgra_pipeline)
 cgra_enable_warnings(cgrac-compile-dfg)
 cgra_enable_sanitizers(cgrac-compile-dfg)
 set_target_properties(cgrac-compile-dfg PROPERTIES
+  RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+)
+
+add_executable(cgra-llvm-loop-lower tools/llvm-loop-lower/main.cpp)
+target_include_directories(cgra-llvm-loop-lower SYSTEM PRIVATE ${LLVM_INCLUDE_DIRS})
+target_compile_definitions(cgra-llvm-loop-lower PRIVATE ${LLVM_DEFINITIONS_LIST})
+target_link_libraries(cgra-llvm-loop-lower PRIVATE cgra_llvm_frontend ${CGRA_LLVM_LIBS})
+cgra_enable_warnings(cgra-llvm-loop-lower)
+cgra_enable_sanitizers(cgra-llvm-loop-lower)
+set_target_properties(cgra-llvm-loop-lower PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
 )
 
@@ -418,6 +447,14 @@ if(CGRA_BUILD_TESTS)
     DEFINITIONS CGRA_REPOSITORY_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/.."
     COMMAND_ARGS --expect-seed 42
     ENVIRONMENT CGRA_TEST_SEED=42
+  )
+
+  cgra_add_test(
+    NAME cgra-llvm-frontend-tests
+    TYPE semantic
+    SOURCES tests/Frontend/LLVM/LLVMFrontendTest.cpp
+    LIBRARIES cgra_llvm_frontend ${CGRA_LLVM_LIBS}
+    DEFINITIONS CGRA_REPOSITORY_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/.."
   )
 
   set(CGRA_GTEST_MAIN_TARGET)

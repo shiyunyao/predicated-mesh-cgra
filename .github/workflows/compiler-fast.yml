@@ -7,6 +7,7 @@ on:
       - main
       - compiler/target-contract-v2
       - compiler/kernel-abi-v0
+      - compiler/llvm-frontend-v0
   workflow_dispatch:
 
 permissions:
@@ -42,7 +43,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install compiler dependencies
-        run: sudo apt-get update && sudo apt-get install -y ccache clang cmake g++ ninja-build
+        run: sudo apt-get update && sudo apt-get install -y ccache clang clang-14 llvm-14 llvm-14-dev llvm-14-tools cmake g++ ninja-build
       - name: Configure
         run: cmake --preset ci-debug -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
         working-directory: compiler
@@ -69,7 +70,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install sanitizer dependencies
-        run: sudo apt-get update && sudo apt-get install -y ccache clang cmake ninja-build
+        run: sudo apt-get update && sudo apt-get install -y ccache clang clang-14 llvm-14 llvm-14-dev llvm-14-tools cmake ninja-build
       - name: Configure
         run: cmake --preset ci-sanitize -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
         working-directory: compiler
