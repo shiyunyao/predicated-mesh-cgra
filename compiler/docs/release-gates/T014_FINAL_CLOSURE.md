@@ -8,8 +8,8 @@ does not add a runtime argument port or patch an already-generated manifest.
 
 - Branch: `compiler/kernel-abi-v0`
 - Baseline: `6bd7f9b91beff584ff3f643e150ef2ed800daf6d`
-- Final SHA: filled after the release commit
-- Hosted evidence: filled from the exact pushed SHA
+- Source release SHA: `6b7b4ed4e550208d7703218b00a087aee702fbf8`
+- Evidence-document follow-up: metadata-only commit after the source gate
 
 ## Implemented closure
 
@@ -54,12 +54,13 @@ address constants.
 
 ## Hosted evidence
 
-The compiler-fast and hardware-regression workflows now trigger on
-`compiler/kernel-abi-v0`; the hardware job explicitly runs `make kernel-abi-e2e`.
-Exact run URLs and conclusions are recorded only after pushing the final SHA.
+The compiler-fast and hardware-regression workflows trigger on
+`compiler/kernel-abi-v0`; the hardware job explicitly runs
+`make kernel-abi-e2e`. The source release SHA above was pushed and both exact
+feature-head gates completed successfully.
 
-- Exact feature-head `compiler-fast-gate`: pending
-- Exact feature-head `hardware-regression-gate`: pending
+- Exact feature-head `compiler-fast-gate`: PASS ([run 32849013160](https://github.com/shiyunyao/predicated-mesh-cgra/actions/runs/32849013160))
+- Exact feature-head `hardware-regression-gate`: PASS ([run 32849013102](https://github.com/shiyunyao/predicated-mesh-cgra/actions/runs/32849013102)); the job ran retained RTL, modulo-loop, T013 compiler E2E, and all four T014 ABI E2E targets.
 
 ## Known V0 limitations
 
@@ -70,7 +71,9 @@ live-out conversion, rotating registers, spills, multicast routing, or MVE.
 
 ## Release decision
 
-`STOP — hosted exact-HEAD evidence pending.`
+`GO T-COMP-015` for the source release SHA. The evidence-document follow-up
+must retain green compiler-fast and hardware-regression checks; it changes no
+compiler or hardware behavior.
 
 This decision must be changed to `GO T-COMP-015` only after the final pushed
 commit has green compiler-fast and hardware-regression runs and a fresh source
