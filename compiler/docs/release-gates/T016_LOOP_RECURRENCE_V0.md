@@ -1,10 +1,10 @@
 # T016 Loop Recurrence V0 Release Gate
 
-Status: exact feature-head evidence complete; PR merge-ref and post-merge evidence pending.
+Status: feature-head and PR merge-ref evidence complete; post-merge main evidence pending.
 
 Base `main` after T015: `741b8fddb0878e0659c4c5cc87e10d5fbeae12e6`
 
-Feature implementation SHA: `117582200341e723dd15c83a007abb8f1d9d0dfc`
+Feature implementation SHA: `816f04f3041e72d5892a641489f58fc9fd014b56`
 
 ## Frozen scope
 
@@ -32,15 +32,25 @@ predicated recurrences remain explicit future-scope failures.
 
 Feature-head hosted evidence:
 
-- compiler-fast: [run 32898224678](https://github.com/shiyunyao/predicated-mesh-cgra/actions/runs/32898224678) — PASS
-- hardware-regression: [run 32898224715](https://github.com/shiyunyao/predicated-mesh-cgra/actions/runs/32898224715) — PASS
+- compiler-fast: [run 32900682268](https://github.com/shiyunyao/predicated-mesh-cgra/actions/runs/32900682268) — PASS
+- hardware-regression: [run 32900682250](https://github.com/shiyunyao/predicated-mesh-cgra/actions/runs/32900682250) — PASS
 
 The hardware run executed retained RTL, T013 compiler E2E, T014 Kernel ABI
 E2E, T015 LLVM frontend E2E, and `make llvm-recurrence-e2e`. The recurrence
 cases covered seed/trip-count outputs 6, 9, 12, and 24 with Golden/RTL trace
 agreement and layout-aware ABI observation checks.
 
-PR merge-ref and post-merge `main` evidence will be recorded after review.
+PR #4 merge-ref hosted evidence:
+
+- compiler-fast: [run 32900692012](https://github.com/shiyunyao/predicated-mesh-cgra/actions/runs/32900692012) — PASS
+- hardware-regression: [run 32900692000](https://github.com/shiyunyao/predicated-mesh-cgra/actions/runs/32900692000) — PASS
+
+The merge-ref hardware run executed the retained RTL, shared-memory, modulo-loop,
+T013 compiler E2E, T014 Kernel ABI E2E, T015 LLVM frontend E2E, and T016
+recurrence E2E. The recurrence step completed the seed/trip-count matrix and
+layout-aware output checks.
+
+Post-merge `main` evidence will be recorded after the PR is merged.
 
 Release decision: **PENDING**
 
