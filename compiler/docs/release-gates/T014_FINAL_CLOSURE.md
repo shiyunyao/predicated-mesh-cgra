@@ -8,7 +8,7 @@ does not add a runtime argument port or patch an already-generated manifest.
 
 - Branch: `compiler/kernel-abi-v0`
 - Baseline: `6bd7f9b91beff584ff3f643e150ef2ed800daf6d`
-- Source release SHA: `pending final release-seal commit`
+- Source release SHA: `15886fc13abe999041ec623c55d97c0b19c096f8`
 - Evidence-document follow-up: metadata-only commit after the source gate
 
 ## Implemented closure
@@ -76,8 +76,8 @@ The compiler-fast and hardware-regression workflows trigger on
 `make kernel-abi-e2e`. The source release SHA above was pushed and both exact
 feature-head gates completed successfully.
 
-- Exact feature-head `compiler-fast-gate`: pending final release-seal push
-- Exact feature-head `hardware-regression-gate`: pending final release-seal push; the job must run retained RTL, modulo-loop, T013 compiler E2E, and all four T014 ABI E2E targets.
+- Exact feature-head `compiler-fast-gate`: PASS ([run 32865493201](https://github.com/shiyunyao/predicated-mesh-cgra/actions/runs/32865493201))
+- Exact feature-head `hardware-regression-gate`: PASS ([run 32865493227](https://github.com/shiyunyao/predicated-mesh-cgra/actions/runs/32865493227)); the job ran retained RTL, modulo-loop, T013 compiler E2E, and all four T014 ABI E2E targets.
 
 ## Known V0 limitations
 
