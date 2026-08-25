@@ -92,8 +92,15 @@ COMPILER_KERNEL_SCALAR_DIR ?= build/kernel-e2e/abi_scalar_input
 COMPILER_KERNEL_BASE_DIR ?= build/kernel-e2e/abi_base_load
 COMPILER_KERNEL_RECURRENCE_DIR ?= build/kernel-e2e/abi_recurrence_seed
 COMPILER_KERNEL_TRIPCOUNT_DIR ?= build/kernel-e2e/abi_tripcount
+LLVM_CONFIG ?= llvm-config-14
+LLVM_DIR ?= $(shell $(LLVM_CONFIG) --cmakedir 2>/dev/null)
+LLVM_FRONTEND_BUILD_DIR ?= build/compiler-llvm
+LLVM_FRONTEND_E2E_DIR ?= build/llvm-frontend-e2e
+LLVM_FRONTEND_CLANG ?= clang-14
+LLVM_FRONTEND_OPT ?= opt-14
+LLVM_CMAKE_ARG := $(if $(LLVM_DIR),-DLLVM_DIR=$(LLVM_DIR),)
 
-.PHONY: help check-test lint build test regression shared-scratchpad-tests shared-scratchpad-negative-tests program program-prepare program-build program-run program-check compiler-e2e kernel-abi-e2e kernel-abi-scalar-e2e kernel-abi-base-load-e2e kernel-abi-recurrence-e2e kernel-abi-tripcount-e2e modulo-loop modulo-loop-prepare modulo-loop-check modulo-loop-tripcount-tests modulo-loop-zero-boundary-test modulo-loop-reuse-test modulo-loop-assert-tests synth-fetch-asap7 synth-memory-shape synth-area synth-timing synth-power synth-power-feasibility synth-fn-cacti clean
+.PHONY: help check-test lint build test regression shared-scratchpad-tests shared-scratchpad-negative-tests program program-prepare program-build program-run program-check compiler-e2e kernel-abi-e2e kernel-abi-scalar-e2e kernel-abi-base-load-e2e kernel-abi-recurrence-e2e kernel-abi-tripcount-e2e llvm-frontend-e2e llvm-frontend-c-smoke modulo-loop modulo-loop-prepare modulo-loop-check modulo-loop-tripcount-tests modulo-loop-zero-boundary-test modulo-loop-reuse-test modulo-loop-assert-tests synth-fetch-asap7 synth-memory-shape synth-area synth-timing synth-power synth-power-feasibility synth-fn-cacti clean
 
 help:
 	@echo "make test TEST=<name>  Build and run one testbench"
@@ -101,6 +108,7 @@ help:
 	@echo "make regression         Run all retained testbenches"
 	@echo "make program PROGRAM_MANIFEST=<path>  Replay an external cgra.program_manifest.v1 through RTL and compare traces"
 	@echo "make kernel-abi-e2e  Compile scalar, base-address, recurrence, and trip-count ABI kernels through RTL"
+	@echo "make llvm-frontend-e2e  Lower clang LLVM loops through Generic DFG, Kernel ABI, and RTL"
 	@echo "make modulo-loop        Replay the external modulo-loop manifest and run loop coverage"
 	@echo "make synth-area         Map 2x2/4x4 logic and report ASAP7 cell area"
 	@echo "make synth-timing       Estimate 2x2/4x4 logic timing at 100 MHz"
@@ -191,6 +199,54 @@ compiler-e2e:
 		--compiler-artifacts "$(COMPILER_E2E_DIR)/compiler" \
 		--program-dir "$(COMPILER_E2E_PROGRAM_DIR)/program/program_manifest" \
 		--output "$(COMPILER_E2E_DIR)/e2e_result.json"
+
+llvm-frontend-c-smoke:
+	@set -eu; \
+	command -v "$(LLVM_FRONTEND_CLANG)" >/dev/null || { echo "missing $(LLVM_FRONTEND_CLANG)"; exit 2; }; \
+	command -v "$(LLVM_FRONTEND_OPT)" >/dev/null || { echo "missing $(LLVM_FRONTEND_OPT)"; exit 2; }; \
+	cmake -S compiler -B "$(LLVM_FRONTEND_BUILD_DIR)" -DCGRA_BUILD_TESTS=OFF -DCGRA_WARNINGS_AS_ERRORS=ON $(LLVM_CMAKE_ARG); \
+	cmake --build "$(LLVM_FRONTEND_BUILD_DIR)" --target cgra-llvm-loop-lower --parallel; \
+	case_dir="$(LLVM_FRONTEND_E2E_DIR)/c-smoke"; mkdir -p "$$case_dir/source" "$$case_dir/frontend"; \
+	"$(LLVM_FRONTEND_CLANG)" -O0 -Xclang -disable-O0-optnone -fno-discard-value-names -S -emit-llvm \
+		compiler/tests/Frontend/LLVM/fixtures/kernel_scalar_add.c -o "$$case_dir/source/kernel.raw.ll"; \
+	"$(LLVM_FRONTEND_OPT)" -S -passes='mem2reg,loop-simplify,lcssa,simplifycfg' \
+		"$$case_dir/source/kernel.raw.ll" -o "$$case_dir/source/kernel.ll"; \
+	"$(LLVM_FRONTEND_OPT)" -passes='mem2reg,loop-simplify,lcssa,simplifycfg' \
+		"$$case_dir/source/kernel.raw.ll" -o "$$case_dir/source/kernel.bc"; \
+	"$(LLVM_FRONTEND_BUILD_DIR)/bin/cgra-llvm-loop-lower" "$$case_dir/source/kernel.ll" \
+		--function kernel --artifact-dir "$$case_dir/frontend" -o "$$case_dir/frontend/generic_dfg.json"; \
+	"$(LLVM_FRONTEND_BUILD_DIR)/bin/cgra-llvm-loop-lower" "$$case_dir/source/kernel.bc" \
+		--function kernel --loop-header do.body -o "$$case_dir/frontend/generic_dfg.bc.json"; \
+	test -s "$$case_dir/frontend/generic_dfg.json"
+
+llvm-frontend-e2e: llvm-frontend-c-smoke
+	@set -eu; \
+	case_dir="$(LLVM_FRONTEND_E2E_DIR)"; mkdir -p "$$case_dir"; \
+	cmake --build "$(LLVM_FRONTEND_BUILD_DIR)" --target cgrac-compile-kernel --parallel; \
+	compile_case() { \
+		name="$$1"; source="$$2"; input="$$3"; expected="$$4"; output_name="$$5"; \
+		root="$$case_dir/$$name"; mkdir -p "$$root/source" "$$root/frontend" "$$root/backend"; \
+		"$(LLVM_FRONTEND_CLANG)" -O0 -Xclang -disable-O0-optnone -fno-discard-value-names -S -emit-llvm "$$source" -o "$$root/source/kernel.raw.ll"; \
+		"$(LLVM_FRONTEND_OPT)" -S -passes='mem2reg,loop-simplify,lcssa,simplifycfg' "$$root/source/kernel.raw.ll" -o "$$root/source/kernel.ll"; \
+		"$(LLVM_FRONTEND_BUILD_DIR)/bin/cgra-llvm-loop-lower" "$$root/source/kernel.ll" --function kernel --artifact-dir "$$root/frontend" -o "$$root/frontend/generic_dfg.json"; \
+		printf '%s\n' '{"schema":"cgra.kernel_invocation.v1","trip_count":4,"scalar_inputs":{"x":'"$$input"'},"scratchpad_preload":[]}' > "$$root/invocation.json"; \
+		"$(LLVM_FRONTEND_BUILD_DIR)/bin/cgrac-compile-kernel" "$$root/frontend/generic_dfg.json" --target target/cgra_v3.json --invocation "$$root/invocation.json" --artifact-dir "$$root/backend" -o "$$root/program_manifest.json"; \
+		$(MAKE) --no-print-directory program BUILD_DIR="$$root" PROGRAM_MANIFEST="$$root/program_manifest.json"; \
+		printf '%s\n' '{"schema":"cgra.kernel_abi.expectation.v1","outputs":{"'"$$output_name"'":{"final_value":'"$$expected"',"store_count":4}}}' > "$$root/expected.json"; \
+		python3 tools/check_kernel_abi_e2e.py --signature "$$root/backend/01_kernel_signature.json" --layout "$$root/backend/04_kernel_abi_layout.json" --expectation "$$root/expected.json" --golden "$$root/program/program_manifest/golden_trace.csv" --rtl "$$root/program/program_manifest/rtl_trace.csv"; \
+	}; \
+	compile_case scalar_add_7 compiler/tests/Frontend/LLVM/fixtures/kernel_scalar_add.c 7 14 add; \
+	compile_case scalar_add_9 compiler/tests/Frontend/LLVM/fixtures/kernel_scalar_add.c 9 18 add; \
+	compile_case scalar_mul_7 compiler/tests/Frontend/LLVM/fixtures/kernel_scalar_mul.c 7 49 mul; \
+	test "$$(sha256sum "$$case_dir/scalar_add_7/frontend/generic_dfg.json" | cut -d' ' -f1)" = "$$(sha256sum "$$case_dir/scalar_add_9/frontend/generic_dfg.json" | cut -d' ' -f1)"; \
+	test "$$(sha256sum "$$case_dir/scalar_add_7/backend/03_abi_bound.generic_dfg.json" | cut -d' ' -f1)" != "$$(sha256sum "$$case_dir/scalar_add_9/backend/03_abi_bound.generic_dfg.json" | cut -d' ' -f1)"; \
+	test "$$(sha256sum "$$case_dir/scalar_add_7/frontend/generic_dfg.json" | cut -d' ' -f1)" != "$$(sha256sum "$$case_dir/scalar_mul_7/frontend/generic_dfg.json" | cut -d' ' -f1)"; \
+	python3 tools/write_compiler_e2e_report.py \
+		--fixture llvm_frontend_scalar_add_7 --dfg "$$case_dir/scalar_add_7/frontend/generic_dfg.json" \
+		--target target/cgra_v3.json --manifest "$$case_dir/scalar_add_7/program_manifest.json" \
+		--compiler-artifacts "$$case_dir/scalar_add_7/backend/backend" \
+		--program-dir "$$case_dir/scalar_add_7/program/program_manifest" \
+		--output "$$case_dir/e2e_result.json"
 
 kernel-abi-scalar-e2e:
 	cmake -S compiler -B "$(COMPILER_BUILD_DIR)" -DCGRA_BUILD_TESTS=OFF -DCGRA_WARNINGS_AS_ERRORS=ON
