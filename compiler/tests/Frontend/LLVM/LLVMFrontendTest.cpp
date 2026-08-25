@@ -3,6 +3,7 @@
 #include "cgra/Frontend/LLVM/LLVMFrontendVerifier.h"
 
 #include <llvm/AsmParser/Parser.h>
+#include <llvm/IR/Instructions.h>
 #include <llvm/IR/LLVMContext.h>
 #include <llvm/IR/Module.h>
 #include <llvm/Support/SourceMgr.h>
@@ -13,6 +14,21 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+
+namespace cgra::ir {
+class DFGTestAccess {
+public:
+  static void setEdgeDistance(DFG& dfg, EdgeId edge, std::uint32_t distance) {
+    dfg.edges_[edge].distance = distance;
+  }
+  static void setEdgeOperand(DFG& dfg, EdgeId edge, std::uint32_t operand) {
+    std::get<DataEdgeInfo>(dfg.edges_[edge].info).dstOperand = operand;
+  }
+  static void clearBoundary(DFG& dfg, EdgeId edge) {
+    std::get<DataEdgeInfo>(dfg.edges_[edge].info).boundary.reset();
+  }
+};
+} // namespace cgra::ir
 
 namespace {
 
@@ -60,6 +76,59 @@ loop:
   %iv.next = add i32 %iv, 1
   %next = add i32 %sum, %x
   %cmp = icmp ult i32 %iv.next, 3
+  br i1 %cmp, label %loop, label %exit
+exit:
+  %result = phi i32 [ %next, %loop ]
+  ret i32 %result
+}
+)IR";
+
+const char* kExternalDataPhi = R"IR(
+define i32 @external_reduction(i32 %seed) {
+entry:
+  br label %loop
+loop:
+  %sum = phi i32 [ %seed, %entry ], [ %next, %loop ]
+  %next = add i32 %sum, 1
+  %iv = phi i32 [ 0, %entry ], [ %inc, %loop ]
+  %inc = add i32 %iv, 1
+  %cmp = icmp ult i32 %inc, 3
+  br i1 %cmp, label %loop, label %exit
+exit:
+  %result = phi i32 [ %next, %loop ]
+  ret i32 %result
+}
+)IR";
+
+const char* kPreheaderExternal = R"IR(
+define i32 @preheader_external(i32 %x) {
+entry:
+  %seed = add i32 %x, 2
+  br label %loop
+loop:
+  %sum = phi i32 [ %seed, %entry ], [ %next, %loop ]
+  %next = add i32 %sum, 1
+  %iv = phi i32 [ 0, %entry ], [ %inc, %loop ]
+  %inc = add i32 %iv, 1
+  %cmp = icmp ult i32 %inc, 3
+  br i1 %cmp, label %loop, label %exit
+exit:
+  %result = phi i32 [ %next, %loop ]
+  ret i32 %result
+}
+)IR";
+
+const char* kRepeatedPhiUse = R"IR(
+define i32 @repeated_phi(i32 %seed) {
+entry:
+  br label %loop
+loop:
+  %sum = phi i32 [ %seed, %entry ], [ %next, %loop ]
+  %double = add i32 %sum, %sum
+  %next = add i32 %double, 1
+  %iv = phi i32 [ 0, %entry ], [ %inc, %loop ]
+  %inc = add i32 %iv, 1
+  %cmp = icmp ult i32 %inc, 2
   br i1 %cmp, label %loop, label %exit
 exit:
   %result = phi i32 [ %next, %loop ]
@@ -295,10 +364,6 @@ void expectStatus(const char* text, const char* function,
 }
 
 void testBoundaryRejections() {
-  expectStatus(kDataPhi, "reduction",
-               cgra::frontend::llvm_frontend::LLVMFrontendStatus::UnsupportedLoopCarriedPHI);
-  expectStatus(kInductionDataUse, "iv_data",
-               cgra::frontend::llvm_frontend::LLVMFrontendStatus::UnsupportedInductionDataUse);
   expectStatus(kMemory, "memory",
                cgra::frontend::llvm_frontend::LLVMFrontendStatus::UnsupportedMemoryOperation);
   expectStatus(kFloat, "float_loop",
@@ -316,8 +381,121 @@ void testBoundaryRejections() {
          "multiple innermost loops must not select nondeterministically");
   options.loopHeader = "b";
   const auto selected = cgra::frontend::llvm_frontend::lowerInnermostLoop(*module, options);
-  expect(selected.ok() && selected.metadata->loopHeader == "b",
-         "explicit loop header must select the requested loop");
+  if (!(selected.ok() && selected.metadata->loopHeader == "b")) {
+    std::cerr << "explicit selection status="
+              << cgra::frontend::llvm_frontend::toString(selected.status)
+              << " message=" << selected.message << '\n';
+    throw std::runtime_error("explicit loop header must select the requested loop");
+  }
+}
+
+void testRecurrenceLowering() {
+  llvm::LLVMContext context;
+  cgra::frontend::llvm_frontend::LLVMFrontendOptions options;
+
+  auto reduction = parse(kDataPhi, context);
+  options.functionName = "reduction";
+  const auto reductionResult =
+      cgra::frontend::llvm_frontend::lowerInnermostLoop(*reduction, options);
+  if (!reductionResult.ok()) {
+    std::cerr << "reduction status="
+              << cgra::frontend::llvm_frontend::toString(reductionResult.status)
+              << " message=" << reductionResult.message << '\n';
+    throw std::runtime_error("canonical reduction PHI must lower");
+  }
+  expect(reductionResult.dfg->nodes().size() == 1, "reduction PHI must not become a node");
+  expect(reductionResult.dfg->edges().size() == 1, "reduction must have one recurrence edge");
+  const auto& reductionEdge = reductionResult.dfg->edge(0);
+  expect(reductionEdge.distance == 1 && reductionEdge.src == reductionEdge.dst,
+         "reduction must be a self recurrence with distance one");
+  const auto& reductionInfo = std::get<cgra::ir::DataEdgeInfo>(reductionEdge.info);
+  expect(reductionInfo.dstOperand == 0 && reductionInfo.boundary.has_value(),
+         "reduction recurrence must preserve the seed boundary");
+  expect(
+      std::holds_alternative<cgra::ir::ConstantRef>(reductionInfo.boundary->values.front().value),
+      "constant reduction seed must be a ConstantRef");
+  expect(reductionResult.provenance.recurrences.size() == 1,
+         "reduction must emit one recurrence descriptor");
+  const auto reductionVerification =
+      cgra::frontend::llvm_frontend::verifyFrontendResult(*reduction, options, reductionResult);
+  if (!reductionVerification.ok()) {
+    std::cerr << reductionVerification.format() << '\n';
+    throw std::runtime_error("reduction recurrence verifier");
+  }
+
+  auto induction = parse(kInductionDataUse, context);
+  options.functionName = "iv_data";
+  const auto inductionResult =
+      cgra::frontend::llvm_frontend::lowerInnermostLoop(*induction, options);
+  expect(inductionResult.ok(), "induction data recurrence must lower");
+  expect(inductionResult.dfg->nodes().size() == 2,
+         "induction update and data operation must be Generic nodes");
+  expect(inductionResult.dfg->edges().size() == 2, "induction must retain both recurrence uses");
+  for (const auto& edge : inductionResult.dfg->edges())
+    expect(edge.distance == 1, "induction edges must have iteration distance one");
+  expect(cgra::frontend::llvm_frontend::verifyFrontendResult(*induction, options, inductionResult)
+             .ok(),
+         "induction recurrence verifier");
+
+  auto externalReduction = parse(kExternalDataPhi, context);
+  options.functionName = "external_reduction";
+  const auto externalResult =
+      cgra::frontend::llvm_frontend::lowerInnermostLoop(*externalReduction, options);
+  expect(externalResult.ok() && externalResult.dfg->externalValues().size() == 1,
+         "external recurrence seed must be interned as one ExternalValue");
+  const auto& externalInfo = std::get<cgra::ir::DataEdgeInfo>(externalResult.dfg->edge(0).info);
+  expect(externalInfo.boundary && std::holds_alternative<cgra::ir::ExternalValueRef>(
+                                      externalInfo.boundary->values.front().value),
+         "external recurrence seed must remain an ExternalValueRef before ABI binding");
+  expect(cgra::frontend::llvm_frontend::verifyFrontendResult(*externalReduction, options,
+                                                             externalResult)
+             .ok(),
+         "external recurrence verifier");
+
+  auto preheaderExternal = parse(kPreheaderExternal, context);
+  options.functionName = "preheader_external";
+  const auto preheaderResult =
+      cgra::frontend::llvm_frontend::lowerInnermostLoop(*preheaderExternal, options);
+  expect(preheaderResult.ok() && preheaderResult.dfg->externalValues().size() == 1,
+         "preheader instruction seed must become one ExternalValue");
+  expect(cgra::frontend::llvm_frontend::verifyFrontendResult(*preheaderExternal, options,
+                                                             preheaderResult)
+             .ok(),
+         "preheader external recurrence verifier");
+
+  auto repeated = parse(kRepeatedPhiUse, context);
+  options.functionName = "repeated_phi";
+  const auto repeatedResult = cgra::frontend::llvm_frontend::lowerInnermostLoop(*repeated, options);
+  expect(repeatedResult.ok() && repeatedResult.dfg->edges().size() == 3,
+         "repeated PHI use must preserve both operand edges and the next recurrence");
+  expect(std::get<cgra::ir::DataEdgeInfo>(repeatedResult.dfg->edge(0).info).dstOperand == 0 &&
+             std::get<cgra::ir::DataEdgeInfo>(repeatedResult.dfg->edge(1).info).dstOperand == 1,
+         "same consumer PHI uses must retain distinct destination operands");
+
+  auto distanceCorrupt = reductionResult;
+  cgra::ir::DFGTestAccess::setEdgeDistance(*distanceCorrupt.dfg, 0, 0);
+  expect(!cgra::frontend::llvm_frontend::verifyFrontendResult(*reduction, options, distanceCorrupt)
+              .ok(),
+         "verifier must reject a recurrence edge with distance zero");
+
+  auto operandCorrupt = reductionResult;
+  cgra::ir::DFGTestAccess::setEdgeOperand(*operandCorrupt.dfg, 0, 1);
+  expect(!cgra::frontend::llvm_frontend::verifyFrontendResult(*reduction, options, operandCorrupt)
+              .ok(),
+         "verifier must reject a recurrence edge with the wrong operand");
+
+  auto boundaryCorrupt = reductionResult;
+  cgra::ir::DFGTestAccess::clearBoundary(*boundaryCorrupt.dfg, 0);
+  expect(!cgra::frontend::llvm_frontend::verifyFrontendResult(*reduction, options, boundaryCorrupt)
+              .ok(),
+         "verifier must reject a recurrence edge without its boundary");
+
+  auto sourceCorrupt = reductionResult;
+  sourceCorrupt.provenance.recurrences.front().backedge =
+      static_cast<const llvm::Value*>(sourceCorrupt.provenance.recurrences.front().phiValue);
+  expect(
+      !cgra::frontend::llvm_frontend::verifyFrontendResult(*reduction, options, sourceCorrupt).ok(),
+      "verifier must reject a recurrence with the wrong source provenance");
 }
 
 } // namespace
@@ -329,6 +507,7 @@ int main() {
     testVerifierRejectsCorruptedProvenance();
     testSupportedChainAndConstant();
     testBoundaryRejections();
+    testRecurrenceLowering();
     std::cout << "CGRA_LLVM_FRONTEND_TEST_PASS\n";
     return EXIT_SUCCESS;
   } catch (const std::exception& error) {

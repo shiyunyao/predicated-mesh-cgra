@@ -12,6 +12,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <functional>
 #include <memory>
 #include <sstream>
@@ -200,6 +201,40 @@ const LLVMFrontendNodeProvenance* nodeProvenance(const LLVMFrontendResult& resul
   return nullptr;
 }
 
+const LLVMRecurrenceProvenance* recurrenceForEdge(const LLVMFrontendResult& result,
+                                                  const llvm::Instruction* source,
+                                                  const llvm::Value* phi) {
+  for (const auto& recurrence : result.provenance.recurrences)
+    if (recurrence.backedge == source && recurrence.phiValue == phi)
+      return &recurrence;
+  return nullptr;
+}
+
+bool boundaryMatches(const LLVMFrontendResult& result, const ir::DFG& dfg,
+                     const LLVMRecurrenceProvenance& recurrence,
+                     const ir::RecurrenceBoundary& boundary) {
+  if (boundary.values.size() != 1 || boundary.values.front().iterationOffset != 0)
+    return false;
+  const auto& value = boundary.values.front().value;
+  if (const auto* constant = llvm::dyn_cast<llvm::ConstantInt>(recurrence.initial)) {
+    if (!std::holds_alternative<ir::ConstantRef>(value))
+      return false;
+    const auto id = std::get<ir::ConstantRef>(value).value;
+    if (!dfg.containsConstant(id))
+      return false;
+    const auto type = valueType(*constant);
+    return type && dfg.constant(id).type == *type &&
+           dfg.constant(id).bits == constant->getValue().getZExtValue();
+  }
+  if (!std::holds_alternative<ir::ExternalValueRef>(value))
+    return false;
+  const auto id = std::get<ir::ExternalValueRef>(value).value;
+  for (const auto& external : result.provenance.externals)
+    if (external.external == id && external.value == recurrence.initial)
+      return true;
+  return false;
+}
+
 } // namespace
 
 void LLVMFrontendVerificationReport::add(std::string code, std::string message) {
@@ -238,7 +273,10 @@ LLVMFrontendVerificationReport verifyFrontendResult(const llvm::Module& module,
     report.add("LLVM_FRONTEND_LOOP_SHAPE_MISMATCH", "selected loop shape changed after lowering");
     return report;
   }
-  const auto slice = controlSlice(*selection);
+  auto slice = controlSlice(*selection);
+  for (const auto& recurrence : result.provenance.recurrences)
+    if (const auto* backedge = llvm::dyn_cast_or_null<llvm::Instruction>(recurrence.backedge))
+      slice.erase(backedge);
   const auto dfgReport = ir::DFGVerifier::verify(*result.dfg);
   if (!dfgReport.ok())
     report.add("LLVM_FRONTEND_DFG_VERIFY_FAILED", dfgReport.format());
@@ -269,9 +307,9 @@ LLVMFrontendVerificationReport verifyFrontendResult(const llvm::Module& module,
   }
 
   for (const auto& edge : result.dfg->edges()) {
-    if (edge.kind() != ir::Edge::Kind::Data || edge.distance != 0) {
+    if (edge.kind() != ir::Edge::Kind::Data) {
       report.add("LLVM_FRONTEND_EDGE_SEMANTICS_MISMATCH",
-                 "T015 edges must be distance-zero Data edges");
+                 "LLVM frontend recurrence edges must be Data edges");
       continue;
     }
     const auto* source = nodeProvenance(result, edge.src);
@@ -280,11 +318,127 @@ LLVMFrontendVerificationReport verifyFrontendResult(const llvm::Module& module,
       report.add("LLVM_FRONTEND_EDGE_PROVENANCE_MISSING", "edge endpoint provenance is missing");
       continue;
     }
-    const auto operand = std::get<ir::DataEdgeInfo>(edge.info).dstOperand;
-    if (operand >= destination->instruction->getNumOperands() ||
-        destination->instruction->getOperand(operand) != source->instruction) {
-      report.add("LLVM_FRONTEND_EDGE_PROVENANCE_INVALID",
-                 "Generic data edge does not match the LLVM SSA def-use operand");
+    const auto info = std::get<ir::DataEdgeInfo>(edge.info);
+    if (edge.distance == 0) {
+      if (info.boundary || info.dstOperand >= destination->instruction->getNumOperands() ||
+          destination->instruction->getOperand(info.dstOperand) != source->instruction) {
+        report.add("LLVM_FRONTEND_EDGE_PROVENANCE_INVALID",
+                   "Generic data edge does not match the LLVM SSA def-use operand");
+      }
+      continue;
+    }
+    if (edge.distance != 1 || !info.boundary) {
+      report.add("LLVM_FRONTEND_RECURRENCE_EDGE_VERIFY_FAILED",
+                 "recurrence edge must have distance one and a boundary");
+      continue;
+    }
+    const auto* recurrence =
+        info.dstOperand < destination->instruction->getNumOperands()
+            ? recurrenceForEdge(result, source->instruction,
+                                destination->instruction->getOperand(info.dstOperand))
+            : nullptr;
+    if (!recurrence || !recurrence->phiValue ||
+        info.dstOperand >= destination->instruction->getNumOperands() ||
+        destination->instruction->getOperand(info.dstOperand) != recurrence->phiValue ||
+        !boundaryMatches(result, *result.dfg, *recurrence, *info.boundary)) {
+      report.add("LLVM_FRONTEND_RECURRENCE_EDGE_VERIFY_FAILED",
+                 "distance-one edge does not match a canonical LLVM PHI use and boundary");
+    }
+  }
+
+  std::unordered_set<const llvm::PHINode*> verifiedRecurrencePhis;
+  for (const auto& recurrence : result.provenance.recurrences) {
+    if (!recurrence.phiValue || !recurrence.backedge || recurrence.distance != 1) {
+      report.add("LLVM_FRONTEND_RECURRENCE_BOUNDARY_VERIFY_FAILED",
+                 "recurrence descriptor is incomplete");
+      continue;
+    }
+    verifiedRecurrencePhis.insert(recurrence.phiValue);
+    for (const auto& use : recurrence.uses) {
+      if (!result.dfg->containsEdge(use.edge)) {
+        report.add("LLVM_FRONTEND_RECURRENCE_EDGE_VERIFY_FAILED",
+                   "recurrence descriptor references a missing Generic edge");
+        continue;
+      }
+      const auto& edge = result.dfg->edge(use.edge);
+      const auto* source = nodeProvenance(result, edge.src);
+      const auto* destination = nodeProvenance(result, edge.dst);
+      if (edge.kind() != ir::Edge::Kind::Data || edge.distance != 1 ||
+          edge.dst != use.destination || !source || !destination ||
+          source->instruction != recurrence.backedge ||
+          std::get<ir::DataEdgeInfo>(edge.info).dstOperand != use.operand ||
+          !destination->instruction ||
+          destination->instruction->getOperand(use.operand) != recurrence.phiValue ||
+          !std::get<ir::DataEdgeInfo>(edge.info).boundary ||
+          !boundaryMatches(result, *result.dfg, recurrence,
+                           *std::get<ir::DataEdgeInfo>(edge.info).boundary)) {
+        report.add("LLVM_FRONTEND_RECURRENCE_EDGE_VERIFY_FAILED",
+                   "recurrence descriptor edge identity is inconsistent");
+      }
+    }
+  }
+  for (const auto& recurrence : result.provenance.recurrences) {
+    if (!recurrence.phiValue || !verifiedRecurrencePhis.contains(recurrence.phiValue))
+      continue;
+    bool sawEdge = false;
+    for (const auto& edge : result.dfg->edges()) {
+      if (edge.distance != 1 || edge.kind() != ir::Edge::Kind::Data)
+        continue;
+      const auto& info = std::get<ir::DataEdgeInfo>(edge.info);
+      const auto* destination = nodeProvenance(result, edge.dst);
+      const auto* source = nodeProvenance(result, edge.src);
+      if (!destination || !source || !destination->instruction || !source->instruction)
+        continue;
+      if (source->instruction == recurrence.backedge &&
+          info.dstOperand < destination->instruction->getNumOperands() &&
+          destination->instruction->getOperand(info.dstOperand) == recurrence.phiValue) {
+        sawEdge = true;
+        break;
+      }
+    }
+    if (!sawEdge)
+      report.add("LLVM_FRONTEND_RECURRENCE_EDGE_VERIFY_FAILED",
+                 "recurrence PHI has no corresponding Generic recurrence edge");
+
+    for (const auto* user : recurrence.phiValue->users()) {
+      const auto* instruction = llvm::dyn_cast<llvm::Instruction>(user);
+      if (!instruction || !selection->loop->contains(instruction) || slice.contains(instruction) ||
+          instruction->isTerminator() || llvm::isa<llvm::ICmpInst>(instruction) ||
+          ignored(*instruction))
+        continue;
+      const LLVMFrontendNodeProvenance* destination = nullptr;
+      bool found = false;
+      for (const auto& node : result.dfg->nodes()) {
+        const auto* candidate = nodeProvenance(result, node.id);
+        if (candidate && candidate->instruction == instruction) {
+          destination = candidate;
+          break;
+        }
+      }
+      if (!destination) {
+        report.add("LLVM_FRONTEND_RECURRENCE_EDGE_VERIFY_FAILED",
+                   "recurrence PHI data use has no Generic destination node");
+        continue;
+      }
+      for (unsigned operand = 0; operand < instruction->getNumOperands(); ++operand) {
+        if (instruction->getOperand(operand) != recurrence.phiValue)
+          continue;
+        for (const auto& edge : result.dfg->edges()) {
+          if (edge.distance != 1 || edge.kind() != ir::Edge::Kind::Data ||
+              edge.dst != destination->node)
+            continue;
+          const auto& info = std::get<ir::DataEdgeInfo>(edge.info);
+          const auto* source = nodeProvenance(result, edge.src);
+          if (source && source->instruction == recurrence.backedge && info.dstOperand == operand &&
+              info.boundary && boundaryMatches(result, *result.dfg, recurrence, *info.boundary)) {
+            found = true;
+            break;
+          }
+        }
+        if (!found)
+          report.add("LLVM_FRONTEND_RECURRENCE_EDGE_VERIFY_FAILED",
+                     "recurrence PHI data use is missing its Generic edge");
+      }
     }
   }
 
@@ -322,7 +476,8 @@ LLVMFrontendVerificationReport verifyFrontendResult(const llvm::Module& module,
   }
 
   for (const auto& instruction : *selection->block) {
-    if (instruction.isTerminator() || ignored(instruction) || slice.contains(&instruction))
+    if (instruction.isTerminator() || ignored(instruction) ||
+        llvm::isa<llvm::PHINode>(instruction) || slice.contains(&instruction))
       continue;
     if (!mappedInstructions.contains(&instruction))
       report.add("LLVM_FRONTEND_SILENT_INSTRUCTION_LOSS",
