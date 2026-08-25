@@ -64,6 +64,19 @@ cgra::ir::DFG sparseConstantAdd() {
   return builder.finish();
 }
 
+cgra::ir::DFG overfullConstantAdd() {
+  cgra::ir::DFGBuilder builder("overfull_constant_add");
+  std::vector<cgra::ir::ConstantId> constants;
+  for (std::uint32_t id = 0; id < 17; ++id)
+    constants.push_back(builder.importConstant({id, cgra::ir::ValueType::i32(), id + 1}));
+  const auto add = builder.addNode(cgra::ir::Opcode::Add,
+                                   {cgra::ir::ValueType::i32(), cgra::ir::ValueType::i32()},
+                                   cgra::ir::ValueType::i32());
+  builder.bindConstant(add, 0, constants[0]);
+  builder.bindConstant(add, 1, constants[1]);
+  return builder.finish();
+}
+
 void testConstantAllocationDecouplesSemanticIds(const cgra::TargetModel& model) {
   const auto legal = cgra::target::TargetLegalizer::legalize(sparseConstantAdd(), model);
   expect(legal.ok(), "sparse constants legalize");
@@ -71,6 +84,18 @@ void testConstantAllocationDecouplesSemanticIds(const cgra::TargetModel& model) 
   expect(image.entries.size() == 2, "distinct sparse constants are allocated");
   expect(image.address(100) == 0 && image.address(500) == 1,
          "semantic constant IDs are not physical addresses");
+}
+
+void testConstantCapacityFailure(const cgra::TargetModel& model) {
+  const auto legal = cgra::target::TargetLegalizer::legalize(overfullConstantAdd(), model);
+  expect(legal.ok(), "overfull constants legalize before allocation");
+  bool failed = false;
+  try {
+    (void)cgra::lowering::ConstantAllocator::allocate(*legal.dfg, model);
+  } catch (const std::exception& error) {
+    failed = std::string(error.what()).find("capacity exceeded") != std::string::npos;
+  }
+  expect(failed, "constant capacity failure is explicit and does not alias values");
 }
 
 void testDescriptorAndIdleRoundTrip(const cgra::TargetModel& model) {
@@ -159,6 +184,7 @@ int main() {
     const auto model = target();
     testDescriptorAndIdleRoundTrip(model);
     testConstantAllocationDecouplesSemanticIds(model);
+    testConstantCapacityFailure(model);
     testConstantLoweringAndManifest(model);
     testExternalProviderIsExplicitFailure(model);
     std::cout << "target lowering tests passed\n";

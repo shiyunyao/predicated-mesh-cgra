@@ -153,6 +153,92 @@ TEST(KernelABI, RejectsScratchpadValueOverflowBeforeNarrowing) {
                std::invalid_argument);
 }
 
+TEST(KernelABI, InvocationRejectsUnknownScalarInput) {
+  using namespace cgra::ir;
+  cgra::abi::KernelSignature signature;
+  signature.scalarInputs.push_back({0, "x", ValueType::i32()});
+  const nlohmann::json json = {{"schema", "cgra.kernel_invocation.v1"},
+                               {"trip_count", 1},
+                               {"scalar_inputs", {{"x", 7}, {"unknown", 11}}},
+                               {"scratchpad_preload", nlohmann::json::array()}};
+  EXPECT_THROW(cgra::abi::parseInvocation(json.dump(), signature), std::invalid_argument);
+}
+
+TEST(KernelABI, InvocationRejectsDuplicateScalarInput) {
+  using namespace cgra::ir;
+  cgra::abi::KernelSignature signature;
+  signature.scalarInputs.push_back({0, "x", ValueType::i32()});
+  const cgra::abi::KernelInvocation invocation{1, {{0, 7}, {0, 9}}, {}};
+  const auto validation = cgra::abi::validateInvocation(signature, invocation, 4096);
+  EXPECT_FALSE(validation.ok());
+  EXPECT_NE(validation.message.find("ABI_DUPLICATE_INPUT"), std::string::npos);
+}
+
+TEST(KernelABI, InvocationRejectsZeroTripCount) {
+  using namespace cgra::ir;
+  cgra::abi::KernelSignature signature;
+  signature.scalarInputs.push_back({0, "x", ValueType::i32()});
+  const cgra::abi::KernelInvocation invocation{0, {{0, 7}}, {}};
+  const auto validation = cgra::abi::validateInvocation(signature, invocation, 4096);
+  EXPECT_FALSE(validation.ok());
+  EXPECT_NE(validation.message.find("ABI_INVALID_TRIP_COUNT"), std::string::npos);
+}
+
+TEST(KernelABI, InvocationRejectsScalarWidthOverflow) {
+  using namespace cgra::ir;
+  cgra::abi::KernelSignature signature;
+  signature.scalarInputs.push_back({0, "x", ValueType::i32()});
+  const auto valid = cgra::abi::validateInvocation(signature, {1, {{0, 0xffffffffU}}, {}}, 4096);
+  EXPECT_TRUE(valid.ok()) << valid.message;
+  const auto invalid =
+      cgra::abi::validateInvocation(signature, {1, {{0, 0x100000000ULL}}, {}}, 4096);
+  EXPECT_FALSE(invalid.ok());
+  EXPECT_NE(invalid.message.find("ABI_INPUT_TYPE_MISMATCH"), std::string::npos);
+}
+
+TEST(KernelABI, InvocationRejectsInvalidPredicateBits) {
+  using namespace cgra::ir;
+  cgra::abi::KernelSignature signature;
+  signature.scalarInputs.push_back({0, "predicate", ValueType::predicate()});
+  EXPECT_TRUE(cgra::abi::validateInvocation(signature, {1, {{0, 0}}, {}}, 4096).ok());
+  EXPECT_TRUE(cgra::abi::validateInvocation(signature, {1, {{0, 1}}, {}}, 4096).ok());
+  const auto invalid = cgra::abi::validateInvocation(signature, {1, {{0, 2}}, {}}, 4096);
+  EXPECT_FALSE(invalid.ok());
+  EXPECT_NE(invalid.message.find("ABI_INPUT_TYPE_MISMATCH"), std::string::npos);
+}
+
+TEST(KernelABI, InvocationRejectsScratchpadAddressOutOfRange) {
+  using namespace cgra::ir;
+  cgra::abi::KernelSignature signature;
+  const auto validation = cgra::abi::validateInvocation(signature, {1, {}, {{4096, 1}}}, 4096);
+  EXPECT_FALSE(validation.ok());
+  EXPECT_NE(validation.message.find("ABI_SCRATCHPAD_ADDRESS_OUT_OF_RANGE"), std::string::npos);
+}
+
+TEST(KernelABI, InvocationRejectsConflictingDuplicatePreload) {
+  using namespace cgra::ir;
+  cgra::abi::KernelSignature signature;
+  const auto validation =
+      cgra::abi::validateInvocation(signature, {1, {}, {{17, 1}, {17, 2}}}, 4096);
+  EXPECT_FALSE(validation.ok());
+  EXPECT_NE(validation.message.find("ABI_DUPLICATE_PRELOAD"), std::string::npos);
+  EXPECT_TRUE(cgra::abi::validateInvocation(signature, {1, {}, {{17, 1}, {17, 1}}}, 4096).ok());
+}
+
+TEST(KernelABI, RejectsUnsupportedLiveOutType) {
+  using namespace cgra::ir;
+  DFGBuilder builder("abi_unsupported_liveout");
+  const auto zero = builder.addConstant(ValueType::i16(), 0);
+  const auto node =
+      builder.addNode(Opcode::Add, {ValueType::i16(), ValueType::i16()}, ValueType::i16());
+  builder.bindConstant(node, 0, zero);
+  builder.bindConstant(node, 1, zero);
+  builder.addLiveOut("narrow", ValueType::i16(), node);
+  const auto target = cgra::TargetModel::loadFromFile(targetPath());
+  const auto result = cgra::abi::KernelABIBinder::bind(builder.finish(), target, {1, {}, {}});
+  EXPECT_EQ(result.status, cgra::abi::KernelABIBindingStatus::UnsupportedLiveOutType);
+}
+
 TEST(KernelABI, SpecializesRecurrenceBoundaryWithoutChangingDistance) {
   using namespace cgra::ir;
   DFGBuilder builder("abi_recurrence");
