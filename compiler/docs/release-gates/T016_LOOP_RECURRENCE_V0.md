@@ -1,6 +1,6 @@
 # T016 Loop Recurrence V0 Release Gate
 
-Status: feature-head and PR merge-ref evidence complete; post-merge main evidence pending.
+Status: release sealed on main after feature-head, PR merge-ref, and post-merge evidence.
 
 Base `main` after T015: `741b8fddb0878e0659c4c5cc87e10d5fbeae12e6`
 
@@ -50,8 +50,15 @@ T013 compiler E2E, T014 Kernel ABI E2E, T015 LLVM frontend E2E, and T016
 recurrence E2E. The recurrence step completed the seed/trip-count matrix and
 layout-aware output checks.
 
-Post-merge `main` evidence will be recorded after the PR is merged.
+Post-merge `main` evidence for merge commit `43e92650ec507d4d8d482554330dae68f19ae931`:
 
-Release decision: **PENDING**
+- compiler-fast: [run 32903650045](https://github.com/shiyunyao/predicated-mesh-cgra/actions/runs/32903650045) — PASS
+- hardware-regression: [run 32903650074](https://github.com/shiyunyao/predicated-mesh-cgra/actions/runs/32903650074) — PASS
 
-Next task after green closure: **T-COMP-017**
+The post-merge hardware run executed the retained RTL, shared-memory,
+modulo-loop, T013 compiler E2E, T014 Kernel ABI E2E, T015 LLVM frontend E2E,
+and T016 recurrence E2E on the actual merged `main` commit.
+
+Release decision: **T-COMP-016: CLOSED**
+
+Next task: **GO T-COMP-017**
