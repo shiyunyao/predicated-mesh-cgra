@@ -27,12 +27,14 @@ model, and Verilator RTL.
 
 ## Release record
 
-Feature HEAD: `bcad773ad2c419d41651aaa3cdffbd31e5dadb80`
+Base `main` before T015: `b29ede21ffa492f79019f6df61f6228509df67bd`
+
+Final feature HEAD: `a8f20d68aa7f667e15e99b88ece5ee245e8befc2`
 
 Exact feature-head hosted evidence:
 
-- compiler-fast: [run 32880963656](https://github.com/shiyunyao/predicated-mesh-cgra/actions/runs/32880963656) — PASS
-- hardware-regression: [run 32880963552](https://github.com/shiyunyao/predicated-mesh-cgra/actions/runs/32880963552) — PASS
+- compiler-fast: [run 32882368321](https://github.com/shiyunyao/predicated-mesh-cgra/actions/runs/32882368321) — PASS
+- hardware-regression: [run 32882368262](https://github.com/shiyunyao/predicated-mesh-cgra/actions/runs/32882368262) — PASS
 
 The hardware job executed the retained RTL regression, shared-scratchpad
 checks, modulo-loop regression, T013 compiler-generated program E2E, T014
@@ -40,7 +42,22 @@ Kernel ABI E2E, and `make llvm-frontend-e2e`. The LLVM frontend E2E covered
 `.ll` and `.bc` loading, scalar `x+x` poison (`7 -> 14`, `9 -> 18`), and a
 second `x*x` program through the layout-aware ABI oracle.
 
-PR merge-ref and post-merge main evidence are recorded below after those gates
-complete. No generated manifest is checked in as an oracle.
+Draft PR #3 merge-ref evidence:
 
-Release decision: **PENDING — merge-ref and post-merge main gates remain.**
+- compiler-fast: [run 32883740793](https://github.com/shiyunyao/predicated-mesh-cgra/actions/runs/32883740793) — PASS
+- hardware-regression: [run 32883740806](https://github.com/shiyunyao/predicated-mesh-cgra/actions/runs/32883740806) — PASS
+
+The PR was merged as `48a0de0450984245dfe8481b60d8c2d952b096ef`. The
+post-merge `main` gates for that merge commit both passed:
+
+- compiler-fast: [run 32885204074](https://github.com/shiyunyao/predicated-mesh-cgra/actions/runs/32885204074) — PASS
+- hardware-regression: [run 32885204047](https://github.com/shiyunyao/predicated-mesh-cgra/actions/runs/32885204047) — PASS
+
+The post-merge hardware job executed the retained RTL regression,
+shared-scratchpad checks, modulo-loop regression, T013 compiler-generated
+program E2E, T014 Kernel ABI E2E, and `make llvm-frontend-e2e`. No generated
+manifest is checked in as an oracle.
+
+Release decision: **T-COMP-015: CLOSED**
+
+Next task: **GO T-COMP-016**
