@@ -13,6 +13,7 @@
 namespace llvm {
 class Instruction;
 class Module;
+class PHINode;
 class Value;
 } // namespace llvm
 
@@ -31,6 +32,11 @@ enum class LLVMFrontendStatus {
   UnsupportedControlFlow,
   UnsupportedLoopCarriedPHI,
   UnsupportedInductionDataUse,
+  UnsupportedRecurrenceShape,
+  UnsupportedRecurrenceType,
+  UnsupportedRecurrenceProvider,
+  UnsupportedPhiToPhiUse,
+  UnsupportedPhiLiveOutSemantics,
   UnsupportedExitMerge,
   DataDependentLoopControl,
   InvalidGenericDFG,
@@ -51,6 +57,14 @@ enum class LLVMFrontendDiagnosticCode {
   LLVM_FRONTEND_UNSUPPORTED_CONTROL_FLOW,
   LLVM_FRONTEND_LOOP_CARRIED_PHI,
   LLVM_FRONTEND_INDUCTION_DATA_USE,
+  LLVM_FRONTEND_UNSUPPORTED_RECURRENCE_SHAPE,
+  LLVM_FRONTEND_UNSUPPORTED_RECURRENCE_TYPE,
+  LLVM_FRONTEND_UNSUPPORTED_RECURRENCE_INITIAL_VALUE,
+  LLVM_FRONTEND_UNSUPPORTED_RECURRENCE_PRODUCER,
+  LLVM_FRONTEND_PHI_TO_PHI_USE,
+  LLVM_FRONTEND_PHI_LIVEOUT_SEMANTICS,
+  LLVM_FRONTEND_RECURRENCE_EDGE_VERIFY_FAILED,
+  LLVM_FRONTEND_RECURRENCE_BOUNDARY_VERIFY_FAILED,
   LLVM_FRONTEND_EXIT_MERGE,
   LLVM_FRONTEND_DATA_DEPENDENT_CONTROL,
   LLVM_FRONTEND_DFG_VERIFY_FAILED,
@@ -105,10 +119,33 @@ struct LLVMFrontendLiveOutProvenance {
   const llvm::Value* value = nullptr;
 };
 
+struct LLVMRecurrenceUseProvenance {
+  std::string consumer;
+  std::uint32_t operand = 0;
+  ir::NodeId destination = 0;
+  ir::EdgeId edge = 0;
+};
+
+struct LLVMRecurrenceProvenance {
+  std::uint32_t id = 0;
+  std::string phi;
+  std::string type;
+  std::string preheader;
+  std::string initialValue;
+  std::string latch;
+  std::string backedgeValue;
+  std::uint32_t distance = 1;
+  std::vector<LLVMRecurrenceUseProvenance> uses;
+  const llvm::PHINode* phiValue = nullptr;
+  const llvm::Value* initial = nullptr;
+  const llvm::Value* backedge = nullptr;
+};
+
 struct LLVMFrontendProvenance {
   std::vector<LLVMFrontendNodeProvenance> nodes;
   std::vector<LLVMFrontendExternalProvenance> externals;
   std::vector<LLVMFrontendLiveOutProvenance> liveOuts;
+  std::vector<LLVMRecurrenceProvenance> recurrences;
   std::vector<std::string> controlSlice;
 };
 

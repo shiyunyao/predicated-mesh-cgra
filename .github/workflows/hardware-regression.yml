@@ -8,6 +8,7 @@ on:
       - compiler/target-contract-v2
       - compiler/kernel-abi-v0
       - compiler/llvm-frontend-v0
+      - compiler/loop-recurrence-v0
   workflow_dispatch:
 
 permissions:
@@ -79,6 +80,8 @@ jobs:
         run: make kernel-abi-e2e
       - name: LLVM frontend V0 E2E
         run: make llvm-frontend-e2e
+      - name: LLVM recurrence V0 E2E
+        run: make llvm-recurrence-e2e
       - name: Upload backend diagnostics
         if: failure()
         uses: actions/upload-artifact@v4

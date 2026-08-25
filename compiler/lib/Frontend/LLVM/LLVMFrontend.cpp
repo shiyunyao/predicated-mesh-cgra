@@ -39,6 +39,7 @@ struct LoopSelection {
   llvm::Loop* loop = nullptr;
   llvm::BasicBlock* block = nullptr;
   llvm::BasicBlock* exit = nullptr;
+  llvm::BasicBlock* preheader = nullptr;
   llvm::BranchInst* branch = nullptr;
   std::unique_ptr<llvm::DominatorTree> dominatorTree;
   std::unique_ptr<llvm::LoopInfo> loopInfo;
@@ -49,6 +50,8 @@ struct LoweringState {
   std::unordered_set<const llvm::Instruction*> controlSlice;
   std::unordered_map<const llvm::Value*, ir::NodeId> nodes;
   std::unordered_map<const llvm::Value*, ir::ExternalValueId> externals;
+  std::unordered_map<const llvm::PHINode*, std::size_t> recurrences;
+  std::unordered_set<const llvm::Instruction*> recurrenceBackedges;
   std::map<std::pair<std::uint16_t, std::uint64_t>, ir::ConstantId> constants;
   std::set<std::string> externalNames;
   std::set<std::string> liveOutNames;
@@ -123,6 +126,20 @@ std::optional<ir::Opcode> opcode(const llvm::Instruction& instruction) {
   }
 }
 
+std::string valueSummary(const llvm::Value& value) {
+  if (value.hasName())
+    return "%" + value.getName().str();
+  if (const auto* constant = llvm::dyn_cast<llvm::ConstantInt>(&value)) {
+    std::string text;
+    llvm::raw_string_ostream stream(text);
+    constant->print(stream);
+    return stream.str();
+  }
+  if (const auto* instruction = llvm::dyn_cast<llvm::Instruction>(&value))
+    return instruction->getOpcodeName();
+  return "external";
+}
+
 bool ignoredInstruction(const llvm::Instruction& instruction) {
   if (llvm::isa<llvm::DbgInfoIntrinsic>(instruction))
     return true;
@@ -138,6 +155,13 @@ bool isMemoryInstruction(const llvm::Instruction& instruction) {
          llvm::isa<llvm::AtomicRMWInst>(instruction) ||
          llvm::isa<llvm::AtomicCmpXchgInst>(instruction) ||
          llvm::isa<llvm::FenceInst>(instruction) || llvm::isa<llvm::GetElementPtrInst>(instruction);
+}
+
+bool recurrenceFailure(LLVMFrontendResult& error, LLVMFrontendStatus status,
+                       LLVMFrontendDiagnosticCode code, std::string message,
+                       const LoopSelection& selection, const llvm::Instruction* instruction) {
+  error = failure(status, code, std::move(message), &selection, instruction);
+  return false;
 }
 
 std::vector<llvm::Loop*> innermostLoops(llvm::LoopInfo& loopInfo) {
@@ -211,6 +235,7 @@ std::optional<LoopSelection> selectLoop(llvm::Module& module, const LLVMFrontend
   selection.loop = selected;
   selection.block = selected->getHeader();
   selection.exit = selected->getExitBlock();
+  selection.preheader = selected->getLoopPreheader();
   selection.branch = llvm::dyn_cast<llvm::BranchInst>(selection.block->getTerminator());
   selection.dominatorTree = std::move(dominatorTree);
   selection.loopInfo = std::move(loopInfo);
@@ -249,6 +274,146 @@ bool shapeIsValid(const LoopSelection& selection, LLVMFrontendResult& error) {
   return true;
 }
 
+bool discoverRecurrences(LoweringState& state, LLVMFrontendResult& error) {
+  for (const auto& instruction : *state.selection.block) {
+    const auto* phi = llvm::dyn_cast<llvm::PHINode>(&instruction);
+    if (!phi)
+      continue;
+
+    if (!state.selection.preheader) {
+      bool hasDataUse = false;
+      for (const auto* user : phi->users()) {
+        const auto* userInstruction = llvm::dyn_cast<llvm::Instruction>(user);
+        if (userInstruction && state.selection.loop->contains(userInstruction) &&
+            !state.controlSlice.contains(userInstruction) && !userInstruction->isTerminator() &&
+            !ignoredInstruction(*userInstruction)) {
+          hasDataUse = true;
+          break;
+        }
+      }
+      if (!hasDataUse)
+        continue;
+    }
+
+    if (phi->getNumIncomingValues() != 2)
+      return recurrenceFailure(
+          error, LLVMFrontendStatus::UnsupportedRecurrenceShape,
+          LLVMFrontendDiagnosticCode::LLVM_FRONTEND_UNSUPPORTED_RECURRENCE_SHAPE,
+          "canonical recurrence PHI must have exactly two incoming values", state.selection, phi);
+    int preheaderIndex = -1;
+    int latchIndex = -1;
+    for (unsigned index = 0; index < phi->getNumIncomingValues(); ++index) {
+      if (phi->getIncomingBlock(index) == state.selection.preheader)
+        preheaderIndex = static_cast<int>(index);
+      else if (phi->getIncomingBlock(index) == state.selection.block)
+        latchIndex = static_cast<int>(index);
+      else
+        return recurrenceFailure(
+            error, LLVMFrontendStatus::UnsupportedRecurrenceShape,
+            LLVMFrontendDiagnosticCode::LLVM_FRONTEND_UNSUPPORTED_RECURRENCE_SHAPE,
+            "recurrence PHI must have one preheader and one latch incoming", state.selection, phi);
+    }
+    if (preheaderIndex < 0 || latchIndex < 0)
+      return recurrenceFailure(
+          error, LLVMFrontendStatus::UnsupportedRecurrenceShape,
+          LLVMFrontendDiagnosticCode::LLVM_FRONTEND_UNSUPPORTED_RECURRENCE_SHAPE,
+          "recurrence PHI is missing a canonical preheader or latch incoming", state.selection,
+          phi);
+    const auto type = valueType(*phi);
+    if (!type)
+      return recurrenceFailure(
+          error, LLVMFrontendStatus::UnsupportedRecurrenceType,
+          LLVMFrontendDiagnosticCode::LLVM_FRONTEND_UNSUPPORTED_RECURRENCE_TYPE,
+          "recurrence PHI must have a scalar integer type", state.selection, phi);
+
+    bool dataUse = false;
+    for (const auto* user : phi->users()) {
+      const auto* userInstruction = llvm::dyn_cast<llvm::Instruction>(user);
+      if (!userInstruction)
+        continue;
+      if (!state.selection.loop->contains(userInstruction))
+        return recurrenceFailure(
+            error, LLVMFrontendStatus::UnsupportedPhiLiveOutSemantics,
+            LLVMFrontendDiagnosticCode::LLVM_FRONTEND_PHI_LIVEOUT_SEMANTICS,
+            "header PHI cannot be used directly outside the loop; use a trivial LCSSA value",
+            state.selection, userInstruction);
+      if (llvm::isa<llvm::PHINode>(userInstruction))
+        return recurrenceFailure(error, LLVMFrontendStatus::UnsupportedPhiToPhiUse,
+                                 LLVMFrontendDiagnosticCode::LLVM_FRONTEND_PHI_TO_PHI_USE,
+                                 "PHI-to-PHI data recurrence is outside the V0 subset",
+                                 state.selection, userInstruction);
+      if (userInstruction->isTerminator() || llvm::isa<llvm::ICmpInst>(userInstruction))
+        continue;
+      if (state.controlSlice.contains(userInstruction))
+        continue;
+      if (ignoredInstruction(*userInstruction))
+        continue;
+      if (isMemoryInstruction(*userInstruction))
+        return recurrenceFailure(error, LLVMFrontendStatus::UnsupportedMemoryOperation,
+                                 LLVMFrontendDiagnosticCode::LLVM_FRONTEND_UNSUPPORTED_MEMORY,
+                                 "memory-carried recurrence is deferred to T018", state.selection,
+                                 userInstruction);
+      if (!opcode(*userInstruction))
+        return recurrenceFailure(error, LLVMFrontendStatus::UnsupportedInstruction,
+                                 LLVMFrontendDiagnosticCode::LLVM_FRONTEND_UNSUPPORTED_OPCODE,
+                                 "recurrence PHI data use is outside the scalar integer subset",
+                                 state.selection, userInstruction);
+      dataUse = true;
+    }
+    if (!dataUse)
+      continue; // A control-only induction PHI remains in LoopControlSlice.
+
+    const auto* initial = phi->getIncomingValue(static_cast<unsigned>(preheaderIndex));
+    if (!valueType(*initial))
+      return recurrenceFailure(
+          error, LLVMFrontendStatus::UnsupportedRecurrenceType,
+          LLVMFrontendDiagnosticCode::LLVM_FRONTEND_UNSUPPORTED_RECURRENCE_TYPE,
+          "recurrence initial provider has an unsupported type", state.selection, phi);
+    if (!llvm::isa<llvm::ConstantInt>(initial)) {
+      if (llvm::isa<llvm::Constant>(initial))
+        return recurrenceFailure(
+            error, LLVMFrontendStatus::UnsupportedRecurrenceProvider,
+            LLVMFrontendDiagnosticCode::LLVM_FRONTEND_UNSUPPORTED_RECURRENCE_INITIAL_VALUE,
+            "recurrence initial provider must be ConstantInt or loop-external scalar",
+            state.selection, phi);
+      if (const auto* initialInstruction = llvm::dyn_cast<llvm::Instruction>(initial);
+          initialInstruction && state.selection.loop->contains(initialInstruction))
+        return recurrenceFailure(
+            error, LLVMFrontendStatus::UnsupportedRecurrenceProvider,
+            LLVMFrontendDiagnosticCode::LLVM_FRONTEND_UNSUPPORTED_RECURRENCE_INITIAL_VALUE,
+            "recurrence initial provider must be defined outside the selected loop",
+            state.selection, phi);
+    }
+
+    const auto* backedge = phi->getIncomingValue(static_cast<unsigned>(latchIndex));
+    const auto* backedgeInstruction = llvm::dyn_cast<llvm::Instruction>(backedge);
+    if (!backedgeInstruction || !state.selection.loop->contains(backedgeInstruction) ||
+        llvm::isa<llvm::PHINode>(backedgeInstruction) || !opcode(*backedgeInstruction))
+      return recurrenceFailure(
+          error, LLVMFrontendStatus::UnsupportedRecurrenceProvider,
+          LLVMFrontendDiagnosticCode::LLVM_FRONTEND_UNSUPPORTED_RECURRENCE_PRODUCER,
+          "recurrence latch incoming must be a supported in-loop data instruction", state.selection,
+          phi);
+
+    LLVMRecurrenceProvenance descriptor;
+    descriptor.id = static_cast<std::uint32_t>(state.provenance.recurrences.size());
+    descriptor.phi = valueSummary(*phi);
+    descriptor.type = type->toString();
+    descriptor.preheader = blockName(*state.selection.function, *state.selection.preheader);
+    descriptor.initialValue = valueSummary(*initial);
+    descriptor.latch = blockName(*state.selection.function, *state.selection.block);
+    descriptor.backedgeValue = valueSummary(*backedge);
+    descriptor.distance = 1;
+    descriptor.phiValue = phi;
+    descriptor.initial = initial;
+    descriptor.backedge = backedge;
+    state.recurrences.emplace(phi, state.provenance.recurrences.size());
+    state.recurrenceBackedges.insert(backedgeInstruction);
+    state.provenance.recurrences.push_back(std::move(descriptor));
+  }
+  return true;
+}
+
 bool buildControlSlice(LoweringState& state, LLVMFrontendResult& error) {
   const auto* condition = state.selection.branch->getCondition();
   const auto* compare = llvm::dyn_cast<llvm::ICmpInst>(condition);
@@ -283,16 +448,29 @@ bool buildControlSlice(LoweringState& state, LLVMFrontendResult& error) {
                   "unsupported instruction in loop-control slice", &state.selection, instruction);
       return false;
     }
+  }
+  return true;
+}
+
+bool validateControlDataUses(LoweringState& state, LLVMFrontendResult& error) {
+  for (const auto* instruction : state.controlSlice) {
+    const bool recurrenceValue =
+        state.recurrenceBackedges.contains(instruction) ||
+        (llvm::isa<llvm::PHINode>(instruction) &&
+         state.recurrences.contains(llvm::cast<llvm::PHINode>(instruction)));
     for (const auto* user : instruction->users()) {
       const auto* userInstruction = llvm::dyn_cast<llvm::Instruction>(user);
-      if (userInstruction && state.selection.loop->contains(userInstruction) &&
-          !state.controlSlice.contains(userInstruction) && !userInstruction->isTerminator()) {
-        error = failure(LLVMFrontendStatus::UnsupportedInductionDataUse,
-                        LLVMFrontendDiagnosticCode::LLVM_FRONTEND_INDUCTION_DATA_USE,
-                        "loop-control value is used by the data path", &state.selection,
-                        userInstruction);
-        return false;
-      }
+      if (!userInstruction || !state.selection.loop->contains(userInstruction) ||
+          state.controlSlice.contains(userInstruction) || userInstruction->isTerminator() ||
+          ignoredInstruction(*userInstruction))
+        continue;
+      if (recurrenceValue)
+        continue;
+      error =
+          failure(LLVMFrontendStatus::UnsupportedInductionDataUse,
+                  LLVMFrontendDiagnosticCode::LLVM_FRONTEND_INDUCTION_DATA_USE,
+                  "loop-control value is used by the data path", &state.selection, userInstruction);
+      return false;
     }
   }
   return true;
@@ -401,21 +579,21 @@ LLVMFrontendResult lowerSelectedLoop(llvm::Module& module, const LLVMFrontendOpt
   state.selection = std::move(*selected);
   if (!buildControlSlice(state, error))
     return error;
+  if (!discoverRecurrences(state, error))
+    return error;
+  for (const auto* backedge : state.recurrenceBackedges)
+    state.controlSlice.erase(backedge);
+  if (!validateControlDataUses(state, error))
+    return error;
 
   ir::DFGBuilder builder(state.selection.function->getName().str());
 
   std::uint32_t instructionOrdinal = 0;
   for (const auto& instruction : *state.selection.block) {
     if (ignoredInstruction(instruction) || instruction.isTerminator() ||
-        state.controlSlice.contains(&instruction)) {
+        state.controlSlice.contains(&instruction) || llvm::isa<llvm::PHINode>(instruction)) {
       ++instructionOrdinal;
       continue;
-    }
-    if (llvm::isa<llvm::PHINode>(instruction)) {
-      return failure(LLVMFrontendStatus::UnsupportedLoopCarriedPHI,
-                     LLVMFrontendDiagnosticCode::LLVM_FRONTEND_LOOP_CARRIED_PHI,
-                     "loop-carried PHI participates in the data path", &state.selection,
-                     &instruction);
     }
     if (isMemoryInstruction(instruction)) {
       return failure(LLVMFrontendStatus::UnsupportedMemoryOperation,
@@ -461,7 +639,40 @@ LLVMFrontendResult lowerSelectedLoop(llvm::Module& module, const LLVMFrontendOpt
     const auto dst = state.nodes.at(&instruction);
     std::uint32_t operandIndex = 0;
     for (const auto& operand : instruction.operands()) {
-      if (const auto* producer = llvm::dyn_cast<llvm::Instruction>(operand)) {
+      if (const auto* phi = llvm::dyn_cast<llvm::PHINode>(operand)) {
+        const auto recurrence = state.recurrences.find(phi);
+        if (recurrence == state.recurrences.end())
+          return failure(LLVMFrontendStatus::UnsupportedLoopCarriedPHI,
+                         LLVMFrontendDiagnosticCode::LLVM_FRONTEND_LOOP_CARRIED_PHI,
+                         "data instruction consumes an unsupported loop-carried PHI " +
+                             valueSummary(*phi),
+                         &state.selection, &instruction);
+        auto& descriptor = state.provenance.recurrences[recurrence->second];
+        const auto sourceIterator = state.nodes.find(descriptor.backedge);
+        if (sourceIterator == state.nodes.end())
+          return failure(LLVMFrontendStatus::UnsupportedRecurrenceProvider,
+                         LLVMFrontendDiagnosticCode::LLVM_FRONTEND_UNSUPPORTED_RECURRENCE_PRODUCER,
+                         "recurrence backedge provider was not lowered to a Generic node",
+                         &state.selection, &instruction);
+        ir::RecurrenceBoundary boundary;
+        const auto initialType = valueType(*descriptor.initial);
+        if (!initialType)
+          return failure(LLVMFrontendStatus::UnsupportedRecurrenceType,
+                         LLVMFrontendDiagnosticCode::LLVM_FRONTEND_UNSUPPORTED_RECURRENCE_TYPE,
+                         "recurrence boundary has an unsupported type", &state.selection,
+                         &instruction);
+        ir::ExternalOperandBinding initialBinding;
+        if (const auto* constant = llvm::dyn_cast<llvm::ConstantInt>(descriptor.initial)) {
+          initialBinding = ir::ConstantRef{getConstant(state, builder, *constant, *initialType)};
+        } else {
+          initialBinding =
+              ir::ExternalValueRef{getExternal(state, builder, *descriptor.initial, *initialType)};
+        }
+        boundary.values.push_back({0, initialBinding});
+        const auto edge =
+            builder.addDataEdge(sourceIterator->second, dst, operandIndex, 1, std::move(boundary));
+        descriptor.uses.push_back({valueSummary(instruction), operandIndex, dst, edge});
+      } else if (const auto* producer = llvm::dyn_cast<llvm::Instruction>(operand)) {
         const auto iterator = state.nodes.find(producer);
         if (iterator == state.nodes.end()) {
           return failure(LLVMFrontendStatus::UnsupportedInductionDataUse,
@@ -599,6 +810,7 @@ LLVMFrontendResult lowerSelectedLoop(llvm::Module& module, const LLVMFrontendOpt
         {id, value->hasName() ? value->getName().str() : "",
          valueType(*value) ? valueType(*value)->toString() : "unsupported", value});
   result.provenance.liveOuts = std::move(state.provenance.liveOuts);
+  result.provenance.recurrences = std::move(state.provenance.recurrences);
   std::sort(state.provenance.controlSlice.begin(), state.provenance.controlSlice.end());
   result.provenance.controlSlice = std::move(state.provenance.controlSlice);
   return result;
@@ -632,6 +844,16 @@ std::string_view toString(LLVMFrontendStatus status) noexcept {
     return "unsupported_loop_carried_phi";
   case LLVMFrontendStatus::UnsupportedInductionDataUse:
     return "unsupported_induction_data_use";
+  case LLVMFrontendStatus::UnsupportedRecurrenceShape:
+    return "unsupported_recurrence_shape";
+  case LLVMFrontendStatus::UnsupportedRecurrenceType:
+    return "unsupported_recurrence_type";
+  case LLVMFrontendStatus::UnsupportedRecurrenceProvider:
+    return "unsupported_recurrence_provider";
+  case LLVMFrontendStatus::UnsupportedPhiToPhiUse:
+    return "unsupported_phi_to_phi_use";
+  case LLVMFrontendStatus::UnsupportedPhiLiveOutSemantics:
+    return "unsupported_phi_liveout_semantics";
   case LLVMFrontendStatus::UnsupportedExitMerge:
     return "unsupported_exit_merge";
   case LLVMFrontendStatus::DataDependentLoopControl:
@@ -668,6 +890,22 @@ std::string_view toString(LLVMFrontendDiagnosticCode code) noexcept {
     return "LLVM_FRONTEND_LOOP_CARRIED_PHI";
   case LLVMFrontendDiagnosticCode::LLVM_FRONTEND_INDUCTION_DATA_USE:
     return "LLVM_FRONTEND_INDUCTION_DATA_USE";
+  case LLVMFrontendDiagnosticCode::LLVM_FRONTEND_UNSUPPORTED_RECURRENCE_SHAPE:
+    return "LLVM_FRONTEND_UNSUPPORTED_RECURRENCE_SHAPE";
+  case LLVMFrontendDiagnosticCode::LLVM_FRONTEND_UNSUPPORTED_RECURRENCE_TYPE:
+    return "LLVM_FRONTEND_UNSUPPORTED_RECURRENCE_TYPE";
+  case LLVMFrontendDiagnosticCode::LLVM_FRONTEND_UNSUPPORTED_RECURRENCE_INITIAL_VALUE:
+    return "LLVM_FRONTEND_UNSUPPORTED_RECURRENCE_INITIAL_VALUE";
+  case LLVMFrontendDiagnosticCode::LLVM_FRONTEND_UNSUPPORTED_RECURRENCE_PRODUCER:
+    return "LLVM_FRONTEND_UNSUPPORTED_RECURRENCE_PRODUCER";
+  case LLVMFrontendDiagnosticCode::LLVM_FRONTEND_PHI_TO_PHI_USE:
+    return "LLVM_FRONTEND_PHI_TO_PHI_USE";
+  case LLVMFrontendDiagnosticCode::LLVM_FRONTEND_PHI_LIVEOUT_SEMANTICS:
+    return "LLVM_FRONTEND_PHI_LIVEOUT_SEMANTICS";
+  case LLVMFrontendDiagnosticCode::LLVM_FRONTEND_RECURRENCE_EDGE_VERIFY_FAILED:
+    return "LLVM_FRONTEND_RECURRENCE_EDGE_VERIFY_FAILED";
+  case LLVMFrontendDiagnosticCode::LLVM_FRONTEND_RECURRENCE_BOUNDARY_VERIFY_FAILED:
+    return "LLVM_FRONTEND_RECURRENCE_BOUNDARY_VERIFY_FAILED";
   case LLVMFrontendDiagnosticCode::LLVM_FRONTEND_EXIT_MERGE:
     return "LLVM_FRONTEND_EXIT_MERGE";
   case LLVMFrontendDiagnosticCode::LLVM_FRONTEND_DATA_DEPENDENT_CONTROL:
@@ -703,7 +941,8 @@ std::string LLVMFrontendResult::toJson() const {
   root["provenance"] = Json{{"control_slice", provenance.controlSlice},
                             {"nodes", Json::array()},
                             {"externals", Json::array()},
-                            {"live_outs", Json::array()}};
+                            {"live_outs", Json::array()},
+                            {"recurrences", Json::array()}};
   for (const auto& node : provenance.nodes)
     root["provenance"]["nodes"].push_back({{"node", node.node},
                                            {"function", node.function},
@@ -718,6 +957,23 @@ std::string LLVMFrontendResult::toJson() const {
     root["provenance"]["live_outs"].push_back({{"live_out", liveOut.liveOut},
                                                {"source_node", liveOut.sourceNode},
                                                {"value", liveOut.valueName}});
+  for (const auto& recurrence : provenance.recurrences) {
+    Json item = {{"id", recurrence.id},
+                 {"phi", recurrence.phi},
+                 {"type", recurrence.type},
+                 {"preheader", recurrence.preheader},
+                 {"initial_value", recurrence.initialValue},
+                 {"latch", recurrence.latch},
+                 {"backedge_value", recurrence.backedgeValue},
+                 {"distance", recurrence.distance},
+                 {"uses", Json::array()}};
+    for (const auto& use : recurrence.uses)
+      item["uses"].push_back({{"consumer", use.consumer},
+                              {"operand", use.operand},
+                              {"destination", use.destination},
+                              {"edge", use.edge}});
+    root["provenance"]["recurrences"].push_back(std::move(item));
+  }
   for (const auto& diagnostic : diagnostics)
     root["diagnostics"].push_back({{"code", toString(diagnostic.code)},
                                    {"message", diagnostic.message},

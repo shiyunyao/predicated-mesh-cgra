@@ -8,6 +8,7 @@ on:
       - compiler/target-contract-v2
       - compiler/kernel-abi-v0
       - compiler/llvm-frontend-v0
+      - compiler/loop-recurrence-v0
   workflow_dispatch:
 
 permissions:
