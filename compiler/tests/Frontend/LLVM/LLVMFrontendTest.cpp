@@ -10,6 +10,7 @@
 #include <llvm/Support/SourceMgr.h>
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdlib>
 #include <iostream>
 #include <iterator>

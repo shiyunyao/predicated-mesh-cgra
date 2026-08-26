@@ -63,23 +63,58 @@ Release decision: **T-COMP-016: CLOSED**
 
 Next task: **GO T-COMP-017**
 
-## Evidence hardening candidate
+## Post-release evidence hardening
+
+Final evidence branch HEAD:
+`b0abf0d31c6899704eeec61d28229a76560aef59`.
+
+Merged `main` SHA:
+`4679644c5ef79a16920eea15ac4c73e7f628f304`.
 
 The follow-up `compiler/frontend-evidence-hardening` branch adds:
 
 - explicit `staticTripCount` versus `KernelInvocation.tripCount` validation;
 - separate loop-selection, recurrence, loop-control, provenance, and result
   artifact schemas;
-- named negative tests for unsupported recurrence shapes and verifier
-  corruption;
-- an independent LLVM recurrence → TargetLegalizer → MII → ModuloMapper
-  preservation regression.
+- named rejection tests for PHIs with more than two incoming values,
+  PHI-to-PHI recurrence use, pointer/float/vector recurrence types, and raw
+  header-PHI live-outs;
+- verifier corruption tests for boundary provider and offset, missing repeated
+  PHI-use edges, spurious edges, wrong destination, and descriptor edge ID;
+- an independent LLVM recurrence -> TargetLegalizer -> MIIAnalyzer ->
+  ModuloMapper -> ModuloMappingVerifier regression;
+- a scalar-induction Golden/RTL matrix: `x=7 -> 10` and `x=20 -> 23`, with
+  stable Generic DFG topology and changed ABI-bound DFG/manifest hashes.
 
-The required scalar-induction Golden/RTL gate is intentionally not marked
-green yet. On the current target contract, the canonical `%iv.next = add
-%iv, 1` fixture produces a self distance-one recurrence whose storage segment
-has `write=0`, `read=II`, while `same_cycle_read_write_same_address` is
-`illegal`. The production RF allocator therefore rejects it with
-`RFA_FIXED_REGISTER_SELF_OVERLAP`; this is a target capability limitation,
-not a mapper budget result. No evidence-hardening merge or T018 release is
-authorized until this scope decision is resolved explicitly.
+The direct one-node `%iv.next = add %iv, 1` periodic representation remains a
+documented fixed-RF V0 limitation: it requires a same-address read and next
+iteration write at the same periodic instant, which the target contract marks
+illegal. The evidence fixture preserves the same scalar induction semantics
+with a two-node periodic recurrence (`add` followed by an identity `or`) and
+uses the ordinary mapped recurrence, route, and RF allocation. No MVE,
+rotating register, target change, or fixed-II override is introduced.
+
+The mapper retry correction is generic: a lower II may consume only its
+deterministic share of the global search budget, leaving capacity for a less
+constrained higher II. Candidate ordering is unchanged, and exhausting any
+per-II share without finding a solution still produces `BudgetExceeded`, not
+`Infeasible`.
+
+Local closure evidence:
+
+- debug CTest: PASS (19/19);
+- ASan/UBSan CTest: PASS (19/19);
+- `make llvm-recurrence-e2e`: PASS for seed/trip-count outputs `6`, `9`, `12`,
+  `24` and induction outputs `10`, `23`, with Golden/RTL agreement.
+
+Hosted follow-up evidence:
+
+- exact feature-head compiler-fast: [run 32977340011](https://github.com/shiyunyao/predicated-mesh-cgra/actions/runs/32977340011) — PASS;
+- exact feature-head hardware-regression: [run 32977340029](https://github.com/shiyunyao/predicated-mesh-cgra/actions/runs/32977340029) — PASS;
+- PR #6 merge-ref compiler-fast: [run 32977345256](https://github.com/shiyunyao/predicated-mesh-cgra/actions/runs/32977345256) — PASS;
+- PR #6 merge-ref hardware-regression: [run 32977345094](https://github.com/shiyunyao/predicated-mesh-cgra/actions/runs/32977345094) — PASS;
+- post-merge main compiler-fast: [run 32979292348](https://github.com/shiyunyao/predicated-mesh-cgra/actions/runs/32979292348) — PASS;
+- post-merge main hardware-regression: [run 32979292306](https://github.com/shiyunyao/predicated-mesh-cgra/actions/runs/32979292306) — PASS.
+
+The evidence hardening is sealed on `main`; the original T016 release decision
+remains **T-COMP-016: CLOSED**.

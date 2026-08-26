@@ -227,7 +227,7 @@ private:
     }
 
     if (result_.stats.routeSearchCalls >= limits_.routeSearchCalls) {
-      addDiagnostic(result_, ModuloMapperDiagnosticCode::MAP_GLOBAL_BUDGET_EXCEEDED,
+      addDiagnostic(result_, ModuloMapperDiagnosticCode::MAP_II_BUDGET_SHARE_EXHAUSTED,
                     "per-II route-search budget share was exhausted", ii_, std::nullopt, edge.id);
       return SearchOutcome::PerIIBudgetExceeded;
     }
@@ -393,7 +393,7 @@ private:
     }
     for (const auto& candidate : nodeCandidates) {
       if (result_.stats.nodeCandidateAttempts >= limits_.nodeCandidateAttempts) {
-        addDiagnostic(result_, ModuloMapperDiagnosticCode::MAP_GLOBAL_BUDGET_EXCEEDED,
+        addDiagnostic(result_, ModuloMapperDiagnosticCode::MAP_II_BUDGET_SHARE_EXHAUSTED,
                       "per-II node-candidate budget share was exhausted", ii_, node);
         return SearchOutcome::PerIIBudgetExceeded;
       }
@@ -422,7 +422,7 @@ private:
           childOutcome == SearchOutcome::PostMappingAbort)
         return childOutcome;
       if (result_.stats.backtracks >= limits_.backtracks) {
-        addDiagnostic(result_, ModuloMapperDiagnosticCode::MAP_GLOBAL_BUDGET_EXCEEDED,
+        addDiagnostic(result_, ModuloMapperDiagnosticCode::MAP_II_BUDGET_SHARE_EXHAUSTED,
                       "per-II backtrack budget share was exhausted", ii_, node);
         return SearchOutcome::PerIIBudgetExceeded;
       }
@@ -486,6 +486,8 @@ std::string_view toString(ModuloMapperDiagnosticCode code) noexcept {
     return "MAP_ROUTE_BUDGET_EXCEEDED";
   case ModuloMapperDiagnosticCode::MAP_POST_MAPPING_REJECTED:
     return "MAP_POST_MAPPING_REJECTED";
+  case ModuloMapperDiagnosticCode::MAP_II_BUDGET_SHARE_EXHAUSTED:
+    return "MAP_II_BUDGET_SHARE_EXHAUSTED";
   case ModuloMapperDiagnosticCode::MAP_GLOBAL_BUDGET_EXCEEDED:
     return "MAP_GLOBAL_BUDGET_EXCEEDED";
   case ModuloMapperDiagnosticCode::MAP_NO_MAPPING_WITHIN_II_LIMIT:
