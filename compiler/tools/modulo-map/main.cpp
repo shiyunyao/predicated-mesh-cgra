@@ -15,7 +15,7 @@ void usage(const char* program) {
   std::cerr << "usage: " << program
             << " target_dfg.json --target target.json --max-ii II"
                " [-o mapping.json] [--json-report report.json]"
-               " [--max-node-attempts N] [--max-backtracks N]"
+               " [--min-ii N] [--max-node-attempts N] [--max-backtracks N]"
                " [--max-route-calls N] [--route-max-expansions N]\n";
 }
 
@@ -51,6 +51,8 @@ int main(int argc, char** argv) {
         targetPath = next();
       else if (option == "--max-ii")
         options.maxII = static_cast<std::uint32_t>(parseUnsigned(next(), "--max-ii"));
+      else if (option == "--min-ii")
+        options.minII = static_cast<std::uint32_t>(parseUnsigned(next(), "--min-ii"));
       else if (option == "--max-node-attempts")
         options.budget.maxNodeCandidateAttempts = parseUnsigned(next(), "--max-node-attempts");
       else if (option == "--max-backtracks")
