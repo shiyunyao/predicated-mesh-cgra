@@ -876,6 +876,18 @@ bool isConditionalStore(const llvm::StoreInst& store, const BranchRegion& region
   return store.getParent() == region.trueBlock || store.getParent() == region.falseBlock;
 }
 
+std::optional<std::uint64_t> inferStaticTripCount(LoopSelection& selection) {
+  llvm::TargetLibraryInfoImpl libraryInfoImpl;
+  llvm::TargetLibraryInfo libraryInfo(libraryInfoImpl);
+  llvm::AssumptionCache assumptions(*selection.function);
+  llvm::ScalarEvolution scalarEvolution(*selection.function, libraryInfo, assumptions,
+                                        *selection.dominatorTree, *selection.loopInfo);
+  const auto tripCount = scalarEvolution.getSmallConstantTripCount(selection.loop);
+  if (tripCount == 0)
+    return std::nullopt;
+  return tripCount;
+}
+
 std::optional<ir::ValueType> addressTypeForStore(const llvm::Value& address) {
   if (address.getType()->isPointerTy())
     return ir::ValueType::i32();
@@ -989,11 +1001,9 @@ LLVMFrontendResult lowerIfConvertedLoop(llvm::Module& module, const LLVMFrontend
     }
   }
 
-  std::vector<llvm::BasicBlock*> blocks;
-  for (auto* block : selection.loop->getBlocks())
-    blocks.push_back(block);
   // LLVM LoopInfo order is stable; retain it rather than depending on pointer order.
-  blocks.assign(selection.loop->getBlocks().begin(), selection.loop->getBlocks().end());
+  std::vector<llvm::BasicBlock*> blocks(selection.loop->getBlocks().begin(),
+                                        selection.loop->getBlocks().end());
 
   auto shouldSkip = [&](const llvm::Instruction& instruction) {
     if (ignoredInstruction(instruction) || instruction.isTerminator() ||
@@ -1324,6 +1334,7 @@ LLVMFrontendResult lowerIfConvertedLoop(llvm::Module& module, const LLVMFrontend
   metadata.loopDepth = selection.loop->getLoopDepth();
   metadata.loopBlockCount = selection.loop->getBlocks().size();
   metadata.requiresTripCount = true;
+  metadata.staticTripCount = inferStaticTripCount(selection);
   result.metadata = std::move(metadata);
   std::unordered_map<const llvm::Instruction*, std::uint32_t> ordinals;
   for (const auto& block : *selection.function) {
@@ -1595,17 +1606,7 @@ LLVMFrontendResult lowerSelectedLoop(llvm::Module& module, const LLVMFrontendOpt
   metadata.loopDepth = state.selection.loop->getLoopDepth();
   metadata.loopBlockCount = state.selection.loop->getBlocks().size();
   metadata.requiresTripCount = true;
-  llvm::Function& function = *state.selection.function;
-  auto& dominatorTree = *state.selection.dominatorTree;
-  auto& loopInfo = *state.selection.loopInfo;
-  llvm::TargetLibraryInfoImpl libraryInfoImpl;
-  llvm::TargetLibraryInfo libraryInfo(libraryInfoImpl);
-  llvm::AssumptionCache assumptions(function);
-  llvm::ScalarEvolution scalarEvolution(function, libraryInfo, assumptions, dominatorTree,
-                                        loopInfo);
-  if (const auto tripCount = scalarEvolution.getSmallConstantTripCount(state.selection.loop);
-      tripCount != 0)
-    metadata.staticTripCount = tripCount;
+  metadata.staticTripCount = inferStaticTripCount(state.selection);
   result.metadata = std::move(metadata);
 
   instructionOrdinal = 0;

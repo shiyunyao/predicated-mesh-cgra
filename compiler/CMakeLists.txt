@@ -408,6 +408,14 @@ if(CGRA_BUILD_TESTS)
     NAME cgra-target-lowering-tests
     TYPE semantic
     SOURCES tests/Lowering/TargetLoweringTest.cpp tests/IR/Fixtures.cpp
+    LIBRARIES cgra_lowering
+    DEFINITIONS CGRA_REPOSITORY_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/.."
+  )
+
+  cgra_add_test(
+    NAME cgra-target-lowering-e2e-tests
+    TYPE e2e
+    SOURCES tests/Lowering/TargetLoweringE2ETest.cpp tests/support/TestArtifacts.cpp
     LIBRARIES cgra_pipeline
     DEFINITIONS CGRA_REPOSITORY_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/.."
   )

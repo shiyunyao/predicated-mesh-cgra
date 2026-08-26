@@ -200,9 +200,17 @@ std::optional<Selection> select(const llvm::Module& module, const LLVMFrontendOp
 
 std::unordered_set<const llvm::Instruction*> controlSlice(const Selection& selection) {
   std::unordered_set<const llvm::Instruction*> result;
-  if (!selection.branch || !selection.branch->isConditional())
-    return result;
-  std::vector<const llvm::Value*> work{selection.branch->getCondition()};
+  std::vector<const llvm::Value*> work;
+  for (const auto* block : selection.loop->getBlocks()) {
+    const auto* branch = llvm::dyn_cast<llvm::BranchInst>(block->getTerminator());
+    if (!branch || !branch->isConditional())
+      continue;
+    bool exitsLoop = false;
+    for (unsigned successor = 0; successor < branch->getNumSuccessors(); ++successor)
+      exitsLoop |= !selection.loop->contains(branch->getSuccessor(successor));
+    if (exitsLoop)
+      work.push_back(branch->getCondition());
+  }
   while (!work.empty()) {
     const auto* value = work.back();
     work.pop_back();
@@ -385,7 +393,10 @@ bool providerMatches(const LLVMFrontendResult& result, const llvm::Value* value,
         if (provenance.external == external->value && provenance.value == value)
           return true;
     } else if (const auto* constant = llvm::dyn_cast<llvm::ConstantInt>(value)) {
-      const auto id = std::get<ir::ConstantRef>(binding.source).value;
+      const auto* reference = std::get_if<ir::ConstantRef>(&binding.source);
+      if (!reference)
+        return false;
+      const auto id = reference->value;
       if (result.dfg->containsConstant(id) &&
           result.dfg->constant(id).bits == constant->getValue().getZExtValue() &&
           valueType(*constant) && result.dfg->constant(id).type == *valueType(*constant))
@@ -393,6 +404,346 @@ bool providerMatches(const LLVMFrontendResult& result, const llvm::Value* value,
     }
   }
   return false;
+}
+
+llvm::BasicBlock* unconditionalSuccessor(llvm::BasicBlock* block) {
+  const auto* branch = block ? llvm::dyn_cast<llvm::BranchInst>(block->getTerminator()) : nullptr;
+  if (!branch || !branch->isUnconditional())
+    return nullptr;
+  return branch->getSuccessor(0);
+}
+
+llvm::BasicBlock* branchMerge(const llvm::BranchInst& branch) {
+  auto* trueBlock = branch.getSuccessor(0);
+  auto* falseBlock = branch.getSuccessor(1);
+  auto* trueSuccessor = unconditionalSuccessor(trueBlock);
+  auto* falseSuccessor = unconditionalSuccessor(falseBlock);
+  if (trueSuccessor && trueSuccessor == falseBlock)
+    return falseBlock;
+  if (falseSuccessor && falseSuccessor == trueBlock)
+    return trueBlock;
+  if (trueSuccessor && trueSuccessor == falseSuccessor)
+    return trueSuccessor;
+  return nullptr;
+}
+
+std::uint32_t correspondingLLVMOperand(const LLVMFrontendResult& result,
+                                       const llvm::Instruction& instruction,
+                                       std::uint32_t genericOperand) {
+  if (llvm::isa<llvm::StoreInst>(instruction) && genericOperand < 2)
+    return 1U - genericOperand;
+  const auto* compare = llvm::dyn_cast<llvm::ICmpInst>(&instruction);
+  if (!compare || genericOperand >= compare->getNumOperands())
+    return genericOperand;
+  const auto predicate = icmpPredicate(*compare);
+  if (!predicate || !complementSwapsOperands(*predicate))
+    return genericOperand;
+  for (const auto& region : result.provenance.ifConversions)
+    if (region.conditionValue == compare && region.predicateComplemented)
+      return 1U - genericOperand;
+  return genericOperand;
+}
+
+void verifyIfRegionStructure(const Selection& selection, const LLVMFrontendResult& result,
+                             LLVMFrontendVerificationReport& report) {
+  std::vector<const llvm::BranchInst*> internalBranches;
+  for (const auto* block : selection.loop->getBlocks()) {
+    const auto* branch = llvm::dyn_cast<llvm::BranchInst>(block->getTerminator());
+    if (branch && branch->isConditional() && selection.loop->contains(branch->getSuccessor(0)) &&
+        selection.loop->contains(branch->getSuccessor(1)))
+      internalBranches.push_back(branch);
+  }
+
+  std::size_t describedBranches = 0;
+  for (const auto& region : result.provenance.ifConversions) {
+    if (!region.branch)
+      continue;
+    ++describedBranches;
+    if (internalBranches.size() != 1 || region.branch != internalBranches.front()) {
+      report.add("LLVM_FRONTEND_IFCONV_VERIFY_FAILED",
+                 "if-conversion plan does not identify the unique internal branch");
+      continue;
+    }
+    const auto* branch = internalBranches.front();
+    if (region.conditionValue != branch->getCondition() ||
+        region.conditionBlock != blockName(*selection.function, *branch->getParent())) {
+      report.add("LLVM_FRONTEND_IFCONV_VERIFY_FAILED",
+                 "if-conversion condition does not match the LLVM branch");
+    }
+    auto* trueBlock = branch->getSuccessor(region.predicateComplemented ? 1 : 0);
+    auto* falseBlock = branch->getSuccessor(region.predicateComplemented ? 0 : 1);
+    if (region.trueBlock != blockName(*selection.function, *trueBlock) ||
+        region.falseBlock != blockName(*selection.function, *falseBlock)) {
+      report.add("LLVM_FRONTEND_IFCONV_VERIFY_FAILED",
+                 "normalized branch arms do not match LLVM CFG successors");
+    }
+
+    auto* merge = branchMerge(*branch);
+    if (!merge || region.mergeBlock != blockName(*selection.function, *merge))
+      report.add("LLVM_FRONTEND_IFCONV_VERIFY_FAILED",
+                 "if-conversion merge does not match the LLVM diamond or triangle");
+  }
+  if (describedBranches != internalBranches.size())
+    report.add("LLVM_FRONTEND_IFCONV_VERIFY_FAILED",
+               "internal LLVM branch coverage does not match if-conversion plans");
+}
+
+void verifyIfDataflow(const Selection& selection, const LLVMFrontendResult& result,
+                      LLVMFrontendVerificationReport& report) {
+  auto slice = controlSlice(selection);
+  removeRecurrenceProducerClosure(selection, slice);
+  std::unordered_set<const llvm::Instruction*> mappedInstructions;
+  std::unordered_set<ir::NodeId> plannedSelects;
+  std::unordered_set<ir::NodeId> plannedStores;
+  for (const auto& region : result.provenance.ifConversions) {
+    for (const auto& select : region.selects)
+      if (!plannedSelects.insert(select.node).second)
+        report.add("LLVM_FRONTEND_IFCONV_VERIFY_FAILED",
+                   "Select is duplicated across if-conversion plans");
+    for (const auto store : region.predicatedStores)
+      if (!plannedStores.insert(store).second)
+        report.add("LLVM_FRONTEND_IFCONV_VERIFY_FAILED",
+                   "Store is duplicated across if-conversion plans");
+  }
+
+  std::unordered_set<const llvm::PHINode*> mergePhis;
+  for (const auto* block : selection.loop->getBlocks()) {
+    const auto* branch = llvm::dyn_cast<llvm::BranchInst>(block->getTerminator());
+    if (!branch || !branch->isConditional() || !selection.loop->contains(branch->getSuccessor(0)) ||
+        !selection.loop->contains(branch->getSuccessor(1)))
+      continue;
+    const auto* merge = branchMerge(*branch);
+    if (!merge)
+      continue;
+    for (const auto& instruction : *merge) {
+      const auto* phi = llvm::dyn_cast<llvm::PHINode>(&instruction);
+      if (!phi)
+        break;
+      mergePhis.insert(phi);
+    }
+  }
+
+  for (const auto* phi : mergePhis) {
+    std::vector<ir::NodeId> matchingNodes;
+    for (const auto& provenance : result.provenance.nodes)
+      if (provenance.instruction == phi && result.dfg->containsNode(provenance.node) &&
+          result.dfg->node(provenance.node).opcode == ir::Opcode::Select)
+        matchingNodes.push_back(provenance.node);
+    std::vector<ir::NodeId> plannedNodes;
+    for (const auto& region : result.provenance.ifConversions)
+      for (const auto& select : region.selects)
+        if (select.phiValue == phi)
+          plannedNodes.push_back(select.node);
+    if (matchingNodes.size() != 1 || plannedNodes.size() != 1 ||
+        (matchingNodes.size() == 1 && plannedNodes.size() == 1 &&
+         matchingNodes.front() != plannedNodes.front()))
+      report.add("LLVM_FRONTEND_SELECT_SEMANTICS_MISMATCH",
+                 "LLVM control-merge PHI must correspond to exactly one planned Generic Select");
+  }
+
+  for (const auto& node : result.dfg->nodes()) {
+    const auto* provenance = nodeProvenance(result, node.id);
+    if (!provenance || !provenance->instruction) {
+      report.add("LLVM_FRONTEND_NODE_PROVENANCE_MISSING",
+                 "Generic node has no LLVM instruction provenance");
+      continue;
+    }
+    const auto* instruction = provenance->instruction;
+    if (!selection.loop->contains(instruction) || slice.contains(instruction) ||
+        ignored(*instruction)) {
+      report.add("LLVM_FRONTEND_NODE_PROVENANCE_INVALID",
+                 "node provenance is outside the selected data path");
+      continue;
+    }
+    mappedInstructions.insert(instruction);
+    if (const auto expected = opcode(*instruction)) {
+      const auto type = valueType(*instruction);
+      if (!type || node.opcode != *expected || node.resultType != *type)
+        report.add("LLVM_FRONTEND_NODE_SEMANTICS_MISMATCH",
+                   "Generic arithmetic node does not match its LLVM instruction");
+    } else if (llvm::isa<llvm::SelectInst>(instruction) || llvm::isa<llvm::PHINode>(instruction)) {
+      if (node.opcode != ir::Opcode::Select || !plannedSelects.contains(node.id))
+        report.add("LLVM_FRONTEND_SELECT_SEMANTICS_MISMATCH",
+                   "Generic Select is not covered by exactly one LLVM merge/select plan");
+    } else if (llvm::isa<llvm::StoreInst>(instruction)) {
+      if (node.opcode != ir::Opcode::Store || !plannedStores.contains(node.id))
+        report.add("LLVM_FRONTEND_STORE_SEMANTICS_MISMATCH",
+                   "Generic Store is not covered by exactly one predicated Store plan");
+    } else if (!llvm::isa<llvm::ICmpInst>(instruction)) {
+      report.add("LLVM_FRONTEND_NODE_SEMANTICS_MISMATCH",
+                 "Generic node provenance names an unsupported LLVM instruction");
+    }
+    if (opcode(*instruction) || llvm::isa<llvm::ICmpInst>(instruction)) {
+      for (std::uint32_t operand = 0; operand < node.operandTypes.size(); ++operand) {
+        const auto llvmOperand = correspondingLLVMOperand(result, *instruction, operand);
+        if (llvmOperand >= instruction->getNumOperands() ||
+            !providerMatches(result, instruction->getOperand(llvmOperand), node.id, operand))
+          report.add("LLVM_FRONTEND_EDGE_PROVENANCE_INVALID",
+                     "Generic operand provider does not match its LLVM SSA operand");
+      }
+    }
+  }
+
+  for (const auto& edge : result.dfg->edges()) {
+    if (edge.kind() != ir::Edge::Kind::Data)
+      continue;
+    const auto* source = nodeProvenance(result, edge.src);
+    const auto* destination = nodeProvenance(result, edge.dst);
+    if (!source || !destination || !source->instruction || !destination->instruction) {
+      report.add("LLVM_FRONTEND_EDGE_PROVENANCE_MISSING", "edge endpoint provenance is missing");
+      continue;
+    }
+    const auto info = std::get<ir::DataEdgeInfo>(edge.info);
+    const auto llvmOperand =
+        correspondingLLVMOperand(result, *destination->instruction, info.dstOperand);
+    if (edge.distance == 0) {
+      if (llvm::isa<llvm::PHINode>(destination->instruction) ||
+          llvm::isa<llvm::SelectInst>(destination->instruction) ||
+          llvm::isa<llvm::StoreInst>(destination->instruction))
+        continue;
+      if (info.boundary || llvmOperand >= destination->instruction->getNumOperands() ||
+          destination->instruction->getOperand(llvmOperand) != source->instruction)
+        report.add("LLVM_FRONTEND_EDGE_PROVENANCE_INVALID",
+                   "Generic data edge does not match the LLVM SSA def-use operand");
+      continue;
+    }
+    const auto* recurrence =
+        llvmOperand < destination->instruction->getNumOperands()
+            ? recurrenceForEdge(result, source->instruction,
+                                destination->instruction->getOperand(llvmOperand))
+            : nullptr;
+    if (edge.distance != 1 || !info.boundary || !recurrence ||
+        !boundaryMatches(result, *result.dfg, *recurrence, *info.boundary))
+      report.add("LLVM_FRONTEND_RECURRENCE_EDGE_VERIFY_FAILED",
+                 "distance-one edge does not match a canonical LLVM PHI use and boundary");
+  }
+
+  for (const auto& recurrence : result.provenance.recurrences) {
+    if (!recurrence.phiValue || !recurrence.backedge || recurrence.distance != 1) {
+      report.add("LLVM_FRONTEND_RECURRENCE_BOUNDARY_VERIFY_FAILED",
+                 "recurrence descriptor is incomplete");
+      continue;
+    }
+    for (const auto& use : recurrence.uses) {
+      if (!result.dfg->containsEdge(use.edge)) {
+        report.add("LLVM_FRONTEND_RECURRENCE_EDGE_VERIFY_FAILED",
+                   "recurrence descriptor references a missing Generic edge");
+        continue;
+      }
+      const auto& edge = result.dfg->edge(use.edge);
+      const auto* source = nodeProvenance(result, edge.src);
+      const auto* destination = nodeProvenance(result, edge.dst);
+      const auto* info = std::get_if<ir::DataEdgeInfo>(&edge.info);
+      const auto llvmOperand =
+          info && destination && destination->instruction
+              ? correspondingLLVMOperand(result, *destination->instruction, info->dstOperand)
+              : 0;
+      if (edge.kind() != ir::Edge::Kind::Data || edge.distance != 1 ||
+          edge.dst != use.destination || !source || !destination || !destination->instruction ||
+          source->instruction != recurrence.backedge || !info || info->dstOperand != use.operand ||
+          llvmOperand >= destination->instruction->getNumOperands() ||
+          destination->instruction->getOperand(llvmOperand) != recurrence.phiValue ||
+          !info->boundary || !boundaryMatches(result, *result.dfg, recurrence, *info->boundary))
+        report.add("LLVM_FRONTEND_RECURRENCE_EDGE_VERIFY_FAILED",
+                   "recurrence descriptor edge identity is inconsistent");
+    }
+
+    for (const auto* user : recurrence.phiValue->users()) {
+      const auto* instruction = llvm::dyn_cast<llvm::Instruction>(user);
+      if (!instruction || !selection.loop->contains(instruction) || slice.contains(instruction) ||
+          instruction->isTerminator() || ignored(*instruction))
+        continue;
+      const auto destination = std::ranges::find_if(result.provenance.nodes, [&](const auto& item) {
+        return item.instruction == instruction;
+      });
+      if (destination == result.provenance.nodes.end()) {
+        report.add("LLVM_FRONTEND_RECURRENCE_EDGE_VERIFY_FAILED",
+                   "recurrence PHI data use has no Generic destination node");
+        continue;
+      }
+      for (unsigned operand = 0; operand < instruction->getNumOperands(); ++operand) {
+        if (instruction->getOperand(operand) != recurrence.phiValue)
+          continue;
+        const auto genericOperand = correspondingLLVMOperand(result, *instruction, operand);
+        const auto* edge =
+            findProviderEdge(*result.dfg, destination->node, genericOperand, ir::Edge::Kind::Data);
+        const auto* info = edge ? std::get_if<ir::DataEdgeInfo>(&edge->info) : nullptr;
+        const auto* source = edge ? nodeProvenance(result, edge->src) : nullptr;
+        if (!edge || edge->distance != 1 || !source || source->instruction != recurrence.backedge ||
+            !info || !info->boundary ||
+            !boundaryMatches(result, *result.dfg, recurrence, *info->boundary))
+          report.add("LLVM_FRONTEND_RECURRENCE_EDGE_VERIFY_FAILED",
+                     "recurrence PHI data use is missing its Generic edge");
+      }
+    }
+  }
+
+  std::unordered_set<const llvm::Value*> externalValues;
+  for (const auto& external : result.dfg->externalValues()) {
+    const auto provenance =
+        std::ranges::find_if(result.provenance.externals,
+                             [&](const auto& item) { return item.external == external.id; });
+    if (provenance == result.provenance.externals.end() || !provenance->value) {
+      report.add("LLVM_FRONTEND_EXTERNAL_PROVENANCE_MISSING",
+                 "ExternalValue has no LLVM value provenance");
+      continue;
+    }
+    const auto* definingInstruction = llvm::dyn_cast<llvm::Instruction>(provenance->value);
+    const bool supportedPointerBridge = provenance->value->getType()->isPointerTy();
+    const auto expectedType = supportedPointerBridge ? std::optional{ir::ValueType::i32()}
+                                                     : valueType(*provenance->value);
+    bool referenced = false;
+    for (const auto& binding : result.dfg->externalBindings())
+      if (const auto* reference = std::get_if<ir::ExternalValueRef>(&binding.source))
+        referenced |= reference->value == external.id;
+    for (const auto& edge : result.dfg->edges()) {
+      const auto* data = std::get_if<ir::DataEdgeInfo>(&edge.info);
+      if (!data || !data->boundary)
+        continue;
+      for (const auto& boundary : data->boundary->values)
+        if (const auto* reference = std::get_if<ir::ExternalValueRef>(&boundary.value))
+          referenced |= reference->value == external.id;
+    }
+    if ((definingInstruction && selection.loop->contains(definingInstruction)) ||
+        llvm::isa<llvm::ConstantInt>(provenance->value) || !expectedType ||
+        external.type != *expectedType || !referenced ||
+        !externalValues.insert(provenance->value).second)
+      report.add("LLVM_FRONTEND_EXTERNAL_PROVENANCE_INVALID",
+                 "ExternalValue provenance is not a unique loop-external scalar/base");
+  }
+
+  for (const auto& liveOut : result.dfg->liveOuts()) {
+    const auto provenance = std::ranges::find_if(
+        result.provenance.liveOuts, [&](const auto& item) { return item.liveOut == liveOut.id; });
+    const auto* source = nodeProvenance(result, liveOut.source);
+    if (provenance == result.provenance.liveOuts.end() || !provenance->value || !source ||
+        source->instruction != provenance->value || !hasOutsideUse(*provenance->value, selection))
+      report.add("LLVM_FRONTEND_LIVEOUT_PROVENANCE_INVALID",
+                 "LiveOut does not identify an in-loop value with an outside use");
+  }
+
+  for (const auto& provenance : result.provenance.nodes) {
+    if (!provenance.instruction || !result.dfg->containsNode(provenance.node) ||
+        result.dfg->node(provenance.node).resultType == ir::ValueType::voidTy() ||
+        !hasOutsideUse(*provenance.instruction, selection))
+      continue;
+    const auto count = std::ranges::count_if(result.dfg->liveOuts(), [&](const auto& liveOut) {
+      return liveOut.source == provenance.node;
+    });
+    if (count != 1)
+      report.add("LLVM_FRONTEND_LIVEOUT_PROVENANCE_INVALID",
+                 "outside-used LLVM value must correspond to exactly one Generic LiveOut");
+  }
+
+  for (const auto* block : selection.loop->getBlocks())
+    for (const auto& instruction : *block) {
+      if (instruction.isTerminator() || ignored(instruction) ||
+          llvm::isa<llvm::PHINode>(instruction) || slice.contains(&instruction))
+        continue;
+      if (!mappedInstructions.contains(&instruction))
+        report.add("LLVM_FRONTEND_SILENT_INSTRUCTION_LOSS",
+                   "semantic LLVM instruction is absent from Generic DFG provenance");
+    }
 }
 
 LLVMFrontendVerificationReport verifyIfConvertedResult(const llvm::Module& module,
@@ -405,6 +756,8 @@ LLVMFrontendVerificationReport verifyIfConvertedResult(const llvm::Module& modul
   const auto dfgReport = ir::DFGVerifier::verify(*result.dfg);
   if (!dfgReport.ok())
     report.add("LLVM_FRONTEND_DFG_VERIFY_FAILED", dfgReport.format());
+  verifyIfRegionStructure(*selection, result, report);
+  verifyIfDataflow(*selection, result, report);
 
   for (const auto& node : result.dfg->nodes()) {
     const auto* provenance = nodeProvenance(result, node.id);

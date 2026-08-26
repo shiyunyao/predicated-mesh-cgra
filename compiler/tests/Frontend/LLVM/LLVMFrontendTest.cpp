@@ -28,6 +28,9 @@ public:
     std::get<DataEdgeInfo>(dfg.edges_[edge].info).dstOperand = operand;
   }
   static void setEdgeSource(DFG& dfg, EdgeId edge, NodeId source) { dfg.edges_[edge].src = source; }
+  static void setNodeOpcode(DFG& dfg, NodeId node, Opcode opcode) {
+    dfg.nodes_[dfg.nodeIndices_.at(node)].opcode = opcode;
+  }
   static void setEdgeDestination(DFG& dfg, EdgeId edge, NodeId destination) {
     dfg.edges_[edge].dst = destination;
   }
@@ -49,6 +52,31 @@ public:
     duplicate.id = static_cast<EdgeId>(dfg.edges_.size());
     dfg.appendEdge(std::move(duplicate));
   }
+  static NodeId appendDuplicateNode(DFG& dfg, NodeId nodeId) {
+    auto duplicate = dfg.node(nodeId);
+    duplicate.id = std::ranges::max(dfg.nodes_, {}, &Node::id).id + 1;
+    const auto duplicateId = dfg.appendNode(std::move(duplicate));
+    std::vector<Edge> incoming;
+    for (const auto& edge : dfg.edges_)
+      if (edge.dst == nodeId)
+        incoming.push_back(edge);
+    EdgeId nextEdge = dfg.edges_.empty() ? 0 : std::ranges::max(dfg.edges_, {}, &Edge::id).id + 1;
+    for (auto edge : incoming) {
+      edge.id = nextEdge++;
+      edge.dst = duplicateId;
+      dfg.appendEdge(std::move(edge));
+    }
+    std::vector<OperandBinding> bindings;
+    for (const auto& binding : dfg.bindings_)
+      if (binding.node == nodeId) {
+        auto copy = binding;
+        copy.node = duplicateId;
+        bindings.push_back(std::move(copy));
+      }
+    for (auto& binding : bindings)
+      dfg.appendBinding(std::move(binding));
+    return duplicateId;
+  }
   static void eraseEdge(DFG& dfg, EdgeId edgeId) {
     const auto position = dfg.edgeIndices_.at(edgeId);
     dfg.edges_.erase(dfg.edges_.begin() + static_cast<std::ptrdiff_t>(position));
@@ -63,6 +91,37 @@ public:
       dfg.incoming_.at(dfg.nodeIndices_.at(edge.dst)).push_back(edge.id);
       dfg.outgoing_.at(dfg.nodeIndices_.at(edge.src)).push_back(edge.id);
     }
+  }
+  static void eraseNode(DFG& dfg, NodeId nodeId) {
+    std::vector<EdgeId> incident;
+    for (const auto& edge : dfg.edges_)
+      if (edge.src == nodeId || edge.dst == nodeId)
+        incident.push_back(edge.id);
+    for (const auto edge : incident)
+      eraseEdge(dfg, edge);
+    std::erase_if(dfg.bindings_, [&](const auto& binding) { return binding.node == nodeId; });
+    std::erase_if(dfg.liveOuts_, [&](const auto& liveOut) { return liveOut.source == nodeId; });
+    dfg.liveOutIndices_.clear();
+    for (std::size_t index = 0; index < dfg.liveOuts_.size(); ++index)
+      dfg.liveOutIndices_.emplace(dfg.liveOuts_[index].id, index);
+    const auto position = dfg.nodeIndices_.at(nodeId);
+    dfg.nodes_.erase(dfg.nodes_.begin() + static_cast<std::ptrdiff_t>(position));
+    dfg.incoming_.erase(dfg.incoming_.begin() + static_cast<std::ptrdiff_t>(position));
+    dfg.outgoing_.erase(dfg.outgoing_.begin() + static_cast<std::ptrdiff_t>(position));
+    dfg.nodeIndices_.clear();
+    for (std::size_t index = 0; index < dfg.nodes_.size(); ++index)
+      dfg.nodeIndices_.emplace(dfg.nodes_[index].id, index);
+  }
+  static void setBindingExternal(DFG& dfg, NodeId node, std::uint32_t operand,
+                                 ExternalValueId external) {
+    const auto binding = std::ranges::find_if(dfg.bindings_, [&](const auto& item) {
+      return item.node == node && item.operand == operand;
+    });
+    binding->source = ExternalValueRef{external};
+  }
+  static void clearLiveOuts(DFG& dfg) {
+    dfg.liveOuts_.clear();
+    dfg.liveOutIndices_.clear();
   }
 };
 } // namespace cgra::ir
@@ -855,6 +914,68 @@ void testPredicationLowering() {
   cgra::ir::DFGTestAccess::setEdgeSource(*swappedArms.dfg, secondArm, firstSource);
   expect(!cgra::frontend::llvm_frontend::verifyFrontendResult(*diamond, options, swappedArms).ok(),
          "Select verifier must reject swapped arm providers");
+  auto omittedSelectPlan = diamondResult;
+  omittedSelectPlan.provenance.ifConversions.front().selects.clear();
+  expect(!cgra::frontend::llvm_frontend::verifyFrontendResult(*diamond, options, omittedSelectPlan)
+              .ok(),
+         "verifier must reject a Generic Select omitted from the if-conversion plan");
+  auto wrongArmOpcode = diamondResult;
+  const auto armNode = std::ranges::find_if(wrongArmOpcode.provenance.nodes, [](const auto& item) {
+    return item.instruction && item.instruction->hasName() && item.instruction->getName() == "a";
+  });
+  expect(armNode != wrongArmOpcode.provenance.nodes.end(),
+         "diamond fixture must expose a true-arm arithmetic node");
+  cgra::ir::DFGTestAccess::setNodeOpcode(*wrongArmOpcode.dfg, armNode->node, cgra::ir::Opcode::Mul);
+  expect(
+      !cgra::frontend::llvm_frontend::verifyFrontendResult(*diamond, options, wrongArmOpcode).ok(),
+      "if-conversion verifier must reject corrupted ordinary arithmetic semantics");
+  auto wrongArmExternal = diamondResult;
+  const auto yExternal =
+      std::ranges::find_if(wrongArmExternal.provenance.externals, [](const auto& item) {
+        return item.value && item.value->hasName() && item.value->getName() == "y";
+      });
+  expect(yExternal != wrongArmExternal.provenance.externals.end(),
+         "diamond fixture must expose y as an ExternalValue");
+  cgra::ir::DFGTestAccess::setBindingExternal(*wrongArmExternal.dfg, armNode->node, 0,
+                                              yExternal->external);
+  expect(!cgra::frontend::llvm_frontend::verifyFrontendResult(*diamond, options, wrongArmExternal)
+              .ok(),
+         "if-conversion verifier must reject a wrong ordinary external provider");
+
+  const auto selectNode = diamondResult.provenance.ifConversions.front().selects.front().node;
+  auto missingSelect = diamondResult;
+  cgra::ir::DFGTestAccess::eraseNode(*missingSelect.dfg, selectNode);
+  std::erase_if(missingSelect.provenance.nodes,
+                [&](const auto& item) { return item.node == selectNode; });
+  missingSelect.provenance.ifConversions.front().selects.clear();
+  missingSelect.provenance.liveOuts.clear();
+  expect(
+      !cgra::frontend::llvm_frontend::verifyFrontendResult(*diamond, options, missingSelect).ok(),
+      "verifier must reconstruct a missing merge Select from the LLVM CFG");
+
+  auto duplicateSelect = diamondResult;
+  const auto duplicateNode =
+      cgra::ir::DFGTestAccess::appendDuplicateNode(*duplicateSelect.dfg, selectNode);
+  const auto selectNodeProvenance = std::ranges::find_if(
+      duplicateSelect.provenance.nodes, [&](const auto& item) { return item.node == selectNode; });
+  expect(selectNodeProvenance != duplicateSelect.provenance.nodes.end(),
+         "diamond fixture must expose Select node provenance");
+  auto duplicateNodeProvenance = *selectNodeProvenance;
+  duplicateNodeProvenance.node = duplicateNode;
+  duplicateSelect.provenance.nodes.push_back(std::move(duplicateNodeProvenance));
+  auto duplicatePlan = duplicateSelect.provenance.ifConversions.front().selects.front();
+  duplicatePlan.node = duplicateNode;
+  duplicateSelect.provenance.ifConversions.front().selects.push_back(std::move(duplicatePlan));
+  expect(
+      !cgra::frontend::llvm_frontend::verifyFrontendResult(*diamond, options, duplicateSelect).ok(),
+      "verifier must reject a duplicate Generic Select for one LLVM merge PHI");
+
+  auto missingLiveOut = diamondResult;
+  cgra::ir::DFGTestAccess::clearLiveOuts(*missingLiveOut.dfg);
+  missingLiveOut.provenance.liveOuts.clear();
+  expect(
+      !cgra::frontend::llvm_frontend::verifyFrontendResult(*diamond, options, missingLiveOut).ok(),
+      "verifier must reconstruct a missing LiveOut from LLVM outside uses");
 
   auto triangle = parse(kTriangle, context);
   options.functionName = "triangle";
@@ -870,6 +991,14 @@ void testPredicationLowering() {
   options.functionName = "predicated_store";
   const auto storeResult = cgra::frontend::llvm_frontend::lowerInnermostLoop(*store, options);
   expect(storeResult.ok(), "predicated Store must lower");
+  expect(storeResult.metadata->staticTripCount == 4,
+         "if-converted loop must preserve ScalarEvolution static trip count");
+  cgra::abi::KernelInvocation mismatchedInvocation;
+  mismatchedInvocation.tripCount = 3;
+  expect(!cgra::frontend::llvm_frontend::validateFrontendInvocation(*storeResult.metadata,
+                                                                    mismatchedInvocation)
+              .ok(),
+         "if-converted loop must reject a mismatched concrete trip count");
   const auto storeNode = storeResult.dfg->nodes().back().id;
   expect(storeResult.dfg->node(storeNode).opcode == cgra::ir::Opcode::Store,
          "predicated Store node exists");
@@ -930,14 +1059,25 @@ void testPredicationLowering() {
   expect(!cgra::frontend::llvm_frontend::verifyFrontendResult(*store, options, missingWaw).ok(),
          "Store verifier must reject a missing self WAW");
 
+  auto badRecurrence = storeResult;
+  const auto recurrenceEdge =
+      std::ranges::find_if(badRecurrence.dfg->edges(), [](const auto& edge) {
+        return edge.kind() == cgra::ir::Edge::Kind::Data && edge.distance == 1;
+      });
+  expect(recurrenceEdge != badRecurrence.dfg->edges().end(),
+         "predicated Store fixture needs a recurrence edge");
+  cgra::ir::DFGTestAccess::setEdgeDistance(*badRecurrence.dfg, recurrenceEdge->id, 0);
+  expect(!cgra::frontend::llvm_frontend::verifyFrontendResult(*store, options, badRecurrence).ok(),
+         "if-conversion verifier must reject corrupted recurrence semantics");
+
   auto falseStore = parse(kFalseArmStore, context);
   options.functionName = "false_arm_store";
   const auto falseStoreResult =
       cgra::frontend::llvm_frontend::lowerInnermostLoop(*falseStore, options);
   expect(falseStoreResult.ok(), "false-arm Store must lower through predicate complement");
-  expect(cgra::frontend::llvm_frontend::verifyFrontendResult(*falseStore, options, falseStoreResult)
-             .ok(),
-         "false-arm Store verifier");
+  const auto falseStoreVerification =
+      cgra::frontend::llvm_frontend::verifyFrontendResult(*falseStore, options, falseStoreResult);
+  expect(falseStoreVerification.ok(), "false-arm Store verifier");
   expect(falseStoreResult.provenance.ifConversions.front().predicateComplemented,
          "false-arm Store must record normalized predicate polarity");
 
