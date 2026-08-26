@@ -54,6 +54,7 @@ struct SearchLimits {
 struct Candidate {
   TileCoord tile;
   ModuloSlot slot;
+  std::uint64_t stageWraps = 0;
   std::uint64_t locality = 0;
   std::uint64_t slotAffinity = 0;
 };
@@ -114,6 +115,7 @@ private:
 
   NodeId selectNode() const {
     const cgra::target::TargetNode* selected = nullptr;
+    std::uint64_t selectedUnmappedInputs = 0;
     std::uint64_t selectedMapped = 0;
     std::uint64_t selectedDegree = 0;
     std::uint64_t selectedLoop = 0;
@@ -123,6 +125,7 @@ private:
       std::uint64_t mapped = 0;
       std::uint64_t degree = 0;
       std::uint64_t loop = 0;
+      std::uint64_t unmappedInputs = 0;
       for (const auto& edge : dfg_.edges()) {
         if (edge.src != node.id && edge.dst != node.id)
           continue;
@@ -132,12 +135,18 @@ private:
         const auto other = edge.src == node.id ? edge.dst : edge.src;
         if (hasPlacement(other))
           ++mapped;
+        if (edge.dst == node.id && edge.src != node.id && edge.distance == 0 &&
+            edge.kind() != cgra::ir::Edge::Kind::Memory && !hasPlacement(edge.src))
+          ++unmappedInputs;
       }
       if (!selected ||
-          std::tuple{mapped, degree, loop, std::numeric_limits<NodeId>::max() - node.id} >
-              std::tuple{selectedMapped, selectedDegree, selectedLoop,
+          std::tuple{std::numeric_limits<std::uint64_t>::max() - unmappedInputs, mapped, degree,
+                     loop, std::numeric_limits<NodeId>::max() - node.id} >
+              std::tuple{std::numeric_limits<std::uint64_t>::max() - selectedUnmappedInputs,
+                         selectedMapped, selectedDegree, selectedLoop,
                          std::numeric_limits<NodeId>::max() - selected->id}) {
         selected = &node;
+        selectedUnmappedInputs = unmappedInputs;
         selectedMapped = mapped;
         selectedDegree = degree;
         selectedLoop = loop;
@@ -155,28 +164,46 @@ private:
       const TileCoord tile{row, col};
       for (std::uint32_t slot = 0; slot < ii_; ++slot) {
         std::uint64_t affinity = 0;
+        std::uint64_t stageWraps = 0;
         for (const auto& edge : dfg_.edges()) {
           if (edge.src != node && edge.dst != node)
             continue;
           const auto other = edge.src == node ? edge.dst : edge.src;
           const auto found = placements_.find(other);
-          if (found == placements_.end() || edge.kind() == cgra::ir::Edge::Kind::Memory)
+          if (edge.kind() == cgra::ir::Edge::Kind::Memory)
             continue;
           const auto& sourceNode = dfg_.node(edge.src);
           const auto ready = sourceNode.producerOutputReadyOffset.value_or(0U) + 1U;
+          if (found == placements_.end()) {
+            if (edge.distance == 0 || edge.src == edge.dst)
+              continue;
+            const auto preferred = edge.src == node ? (ii_ - ready % ii_) % ii_ : 0U;
+            if (slot != preferred)
+              ++affinity;
+            continue;
+          }
+          if (edge.distance == 0) {
+            const auto separation =
+                edge.dst == node
+                    ? static_cast<std::int64_t>(slot) - found->second.issueSlot.value()
+                    : static_cast<std::int64_t>(found->second.issueSlot.value()) - slot;
+            if (separation < static_cast<std::int64_t>(ready))
+              ++stageWraps;
+          }
           const auto preferred = edge.dst == node
                                      ? (found->second.issueSlot.value() + ready) % ii_
                                      : (found->second.issueSlot.value() + ii_ - ready % ii_) % ii_;
           if (slot != preferred)
             ++affinity;
         }
-        values.push_back({tile, ModuloSlot(slot), locality(node, tile), affinity});
+        values.push_back({tile, ModuloSlot(slot), stageWraps, locality(node, tile), affinity});
       }
     }
     std::ranges::sort(values, [](const Candidate& lhs, const Candidate& rhs) {
-      return std::tuple{lhs.locality, lhs.slotAffinity, lhs.tile.row, lhs.tile.col,
-                        lhs.slot.value()} < std::tuple{rhs.locality, rhs.slotAffinity, rhs.tile.row,
-                                                       rhs.tile.col, rhs.slot.value()};
+      return std::tuple{lhs.stageWraps, lhs.locality, lhs.slotAffinity,
+                        lhs.tile.row,   lhs.tile.col, lhs.slot.value()} <
+             std::tuple{rhs.stageWraps, rhs.locality, rhs.slotAffinity,
+                        rhs.tile.row,   rhs.tile.col, rhs.slot.value()};
     });
     return values;
   }

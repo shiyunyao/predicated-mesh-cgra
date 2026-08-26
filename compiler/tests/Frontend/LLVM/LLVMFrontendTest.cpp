@@ -842,8 +842,16 @@ void expectStatus(const char* text, const char* function,
 }
 
 void testBoundaryRejections() {
-  expectStatus(kMemory, "memory",
-               cgra::frontend::llvm_frontend::LLVMFrontendStatus::UnsupportedMemoryOperation);
+  llvm::LLVMContext memoryContext;
+  auto memory = parse(kMemory, memoryContext);
+  cgra::frontend::llvm_frontend::LLVMFrontendOptions memoryOptions;
+  memoryOptions.functionName = "memory";
+  const auto memoryResult =
+      cgra::frontend::llvm_frontend::lowerInnermostLoop(*memory, memoryOptions);
+  expect(memoryResult.ok(), "T018 must lower an invariant direct Load");
+  expect(cgra::frontend::llvm_frontend::verifyFrontendResult(*memory, memoryOptions, memoryResult)
+             .ok(),
+         "T018 direct Load must pass frontend verification");
   expectStatus(kFloat, "float_loop",
                cgra::frontend::llvm_frontend::LLVMFrontendStatus::UnsupportedLLVMType);
   expectStatus(kUndefOperand, "undef_operand",
@@ -1093,10 +1101,23 @@ void testPredicationLowering() {
                cgra::frontend::llvm_frontend::LLVMFrontendStatus::MultipleInternalBranches);
   expectStatus(kUnsafeSpeculation, "unsafe_speculation",
                cgra::frontend::llvm_frontend::LLVMFrontendStatus::UnsafeSpeculation);
-  expectStatus(kMultipleStores, "multiple_stores",
-               cgra::frontend::llvm_frontend::LLVMFrontendStatus::MultipleStoresRequireT018);
-  expectStatus(kGEPStore, "gep_store",
-               cgra::frontend::llvm_frontend::LLVMFrontendStatus::MemoryPatternRequiresT018);
+  auto multipleStores = parse(kMultipleStores, context);
+  options.functionName = "multiple_stores";
+  const auto multipleStoreResult =
+      cgra::frontend::llvm_frontend::lowerInnermostLoop(*multipleStores, options);
+  expect(multipleStoreResult.ok(), "T018 must order multiple same-path predicated Stores");
+  expect(cgra::frontend::llvm_frontend::verifyFrontendResult(*multipleStores, options,
+                                                             multipleStoreResult)
+             .ok(),
+         "multiple Store memory/predicate semantics must verify");
+
+  auto gepStore = parse(kGEPStore, context);
+  options.functionName = "gep_store";
+  const auto gepStoreResult = cgra::frontend::llvm_frontend::lowerInnermostLoop(*gepStore, options);
+  expect(gepStoreResult.ok(), "T018 must lower a constant-offset predicated Store GEP");
+  expect(
+      cgra::frontend::llvm_frontend::verifyFrontendResult(*gepStore, options, gepStoreResult).ok(),
+      "predicated GEP Store must pass memory/predicate verification");
   expectStatus(kConditionalRecurrence, "conditional_recurrence",
                cgra::frontend::llvm_frontend::LLVMFrontendStatus::ConditionalRecurrenceUnsupported);
 }

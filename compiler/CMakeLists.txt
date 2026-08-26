@@ -183,6 +183,7 @@ cgra_enable_sanitizers(cgra_abi)
 add_library(cgra_llvm_frontend
   lib/Frontend/LLVM/LLVMFrontend.cpp
   lib/Frontend/LLVM/LLVMFrontendVerifier.cpp
+  lib/Frontend/LLVM/LLVMMemoryAnalysis.cpp
 )
 target_include_directories(cgra_llvm_frontend PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_include_directories(cgra_llvm_frontend SYSTEM PUBLIC ${LLVM_INCLUDE_DIRS})
@@ -373,6 +374,14 @@ if(CGRA_BUILD_TESTS)
   )
 
   cgra_add_test(
+    NAME cgra-modulo-mapper-rf-feasibility-test
+    TYPE semantic
+    SOURCES tests/Mapping/ModuloMapperRFFeasibilityTest.cpp
+    LIBRARIES cgra_pipeline
+    DEFINITIONS CGRA_REPOSITORY_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/.."
+  )
+
+  cgra_add_test(
     NAME cgra-mii-analysis-tests
     TYPE semantic
     SOURCES tests/Analysis/MIIAnalyzerTest.cpp tests/IR/Fixtures.cpp
@@ -477,6 +486,22 @@ if(CGRA_BUILD_TESTS)
     NAME cgra-llvm-recurrence-backend-test
     TYPE semantic
     SOURCES tests/Frontend/LLVM/LLVMRecurrenceBackendTest.cpp
+    LIBRARIES cgra_frontend_composition cgra_mapping cgra_analysis ${CGRA_LLVM_LIBS}
+    DEFINITIONS CGRA_REPOSITORY_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/.."
+  )
+
+  cgra_add_test(
+    NAME cgra-llvm-memory-tests
+    TYPE semantic
+    SOURCES tests/Frontend/LLVM/LLVMMemoryAnalysisTest.cpp
+    LIBRARIES cgra_frontend_composition ${CGRA_LLVM_LIBS}
+    DEFINITIONS CGRA_REPOSITORY_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/.."
+  )
+
+  cgra_add_test(
+    NAME cgra-llvm-memory-backend-test
+    TYPE semantic
+    SOURCES tests/Frontend/LLVM/LLVMMemoryBackendTest.cpp
     LIBRARIES cgra_frontend_composition cgra_mapping cgra_analysis ${CGRA_LLVM_LIBS}
     DEFINITIONS CGRA_REPOSITORY_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/.."
   )
