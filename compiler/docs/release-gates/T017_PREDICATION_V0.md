@@ -1,15 +1,15 @@
 # T017 Predication V0 Release Gate
 
-Status: functional closure complete; hosted exact-head, PR merge-ref, and
-post-merge `main` evidence pending.
+Status: T017 closed; feature-head, PR merge-ref, and post-merge `main`
+evidence are green.
 
 Base `main` after T015/T016 evidence hardening:
 `4679644c5ef79a16920eea15ac4c73e7f628f304`
 
 Feature branch: `compiler/predication-v0`
 
-Closure implementation SHA:
-`2ec558243e94dea615fbc046e5198690febcc77a`
+Final feature source candidate SHA:
+`06a49195e7d2141333bc3dbe3a736a8291ad4446`
 
 ## Frozen V0 Scope
 
@@ -86,26 +86,24 @@ and unsupported conditional recurrence forms.
 
 ## Hosted Evidence
 
-The first exact closure candidate was `3eba4307d94c77f9dbcbd6b81592cca83f73035b`.
-Its feature-head gates passed:
+The final feature source candidate was `06a49195e7d2141333bc3dbe3a736a8291ad4446`.
+Its native push gates passed:
 
-- exact feature-head compiler-fast: [run 32986749691](https://github.com/shiyunyao/predicated-mesh-cgra/actions/runs/32986749691) — PASS.
-- exact feature-head hardware-regression: [run 32986749710](https://github.com/shiyunyao/predicated-mesh-cgra/actions/runs/32986749710) — PASS, including T013/T014/T015/T016 and T017 predicated-Store E2E.
+- exact feature-head compiler-fast: [run 32989535033](https://github.com/shiyunyao/predicated-mesh-cgra/actions/runs/32989535033) — PASS.
+- exact feature-head hardware-regression: [run 32989535026](https://github.com/shiyunyao/predicated-mesh-cgra/actions/runs/32989535026) — PASS, including T013/T014/T015/T016 and T017 predicated-Store E2E.
 
-PR [#5](https://github.com/shiyunyao/predicated-mesh-cgra/pull/5) merge-ref
-for the same source head also passed:
+PR [#5](https://github.com/shiyunyao/predicated-mesh-cgra/pull/5) tested the
+synthetic merge ref for that source head:
 
-- PR merge-ref compiler-fast: [run 32986742094](https://github.com/shiyunyao/predicated-mesh-cgra/actions/runs/32986742094) — PASS.
-- PR merge-ref hardware-regression: [run 32986742093](https://github.com/shiyunyao/predicated-mesh-cgra/actions/runs/32986742093) — PASS, including the full backend and T017 predicated-Store E2E.
+- PR merge-ref SHA: `4ce99ee824adfce36a175f2762e2039bb757dac9`.
+- PR merge-ref compiler-fast: [run 32990413385](https://github.com/shiyunyao/predicated-mesh-cgra/actions/runs/32990413385) — PASS.
+- PR merge-ref hardware-regression: [run 32990413480](https://github.com/shiyunyao/predicated-mesh-cgra/actions/runs/32990413480) — PASS, including the full backend and T017 predicated-Store E2E.
 
-This documentation update will be pushed as a new feature head and its
-exact-head gates will be recorded here as well. The final merge and main runs
-remain pending:
+PR #5 was merged after both merge-ref gates passed.
 
-- final feature-head compiler-fast: PENDING
-- final feature-head hardware-regression: PENDING
-- merged-main compiler-fast: PENDING
-- merged-main hardware-regression: PENDING
+- merged-main SHA: `43424fdc26c15cd6fdb326cb839df9db0dda6546`.
+- merged-main compiler-fast: [run 32992555461](https://github.com/shiyunyao/predicated-mesh-cgra/actions/runs/32992555461) — PASS.
+- merged-main hardware-regression: [run 32992555491](https://github.com/shiyunyao/predicated-mesh-cgra/actions/runs/32992555491) — PASS, including retained RTL/shared-scratchpad/modulo-loop regressions and T013/T014/T015/T016/T017 E2E targets.
 
 The hardware workflow must continue to execute retained RTL/shared-scratchpad/
 modulo-loop regressions and T013, T014, T015, T016, T017 value-merge, and T017
@@ -113,8 +111,15 @@ predicated-Store E2E targets.
 
 ## Release Decision
 
-**STOP pending final documentation-head and post-merge gates.** Functional T017
-closure and the first exact-head/merge-ref gates are green. T018 must not begin
-until this documentation update's exact feature-head gates pass, PR #5 is
-merged, post-merge `main` gates pass, and this record is sealed with those
-immutable SHAs and run URLs.
+**T-COMP-015: CLOSED**
+
+**T-COMP-016: CLOSED / evidence sealed**
+
+**T-COMP-017: CLOSED**
+
+**GO T-COMP-018**
+
+The release condition is satisfied at feature source candidate
+`06a49195e7d2141333bc3dbe3a736a8291ad4446`; PR #5 merge-ref and merged-main
+checks are green for the immutable SHAs recorded above. This documentation
+seal is committed on `main` after the post-merge gates.
