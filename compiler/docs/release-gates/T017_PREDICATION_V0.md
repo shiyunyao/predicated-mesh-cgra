@@ -5,7 +5,7 @@ Store hardware gate and hosted evidence.
 
 Base `main`: `90ca9b77e371201a1cf9f358ca63c7a78d463bcc`
 Feature branch: `compiler/predication-v0`
-Feature candidate SHA: `7e6893566069cb720f9ebedb82be70dae1bc898b`
+Feature candidate SHA: `f975260805cdcf421b503410d7712693327182dc`
 
 ## Implemented scope
 
@@ -32,6 +32,11 @@ predicate, and Store self-WAW distance.
 - `make llvm-predication-e2e`: PASS for compiler-generated LLVM value-merge
   cases, including Golden/Verilator replay and layout-aware ABI observation.
 - Direct predicated-Store lowering and verifier corruption tests: PASS.
+
+Exact-head hosted evidence for candidate `f975260805cdcf421b503410d7712693327182dc`:
+
+- compiler-fast: [run 32944316063](https://github.com/shiyunyao/predicated-mesh-cgra/actions/runs/32944316063) — PASS.
+- hardware-regression: [run 32944316067](https://github.com/shiyunyao/predicated-mesh-cgra/actions/runs/32944316067) — PASS. The run executed retained RTL, shared scratchpad, modulo-loop, T013/T014/T015/T016 E2E, and the LLVM predication value-merge E2E.
 
 ## Remaining release blockers
 
