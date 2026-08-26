@@ -408,7 +408,7 @@ if(CGRA_BUILD_TESTS)
     NAME cgra-target-lowering-tests
     TYPE semantic
     SOURCES tests/Lowering/TargetLoweringTest.cpp tests/IR/Fixtures.cpp
-    LIBRARIES cgra_lowering
+    LIBRARIES cgra_pipeline
     DEFINITIONS CGRA_REPOSITORY_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/.."
   )
 

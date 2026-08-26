@@ -550,6 +550,29 @@ bool validateControlDataUses(LoweringState& state, LLVMFrontendResult& error) {
   return true;
 }
 
+void promoteRecurrenceProducerClosure(LoweringState& state) {
+  std::vector<const llvm::Instruction*> work(state.recurrenceBackedges.begin(),
+                                             state.recurrenceBackedges.end());
+  while (!work.empty()) {
+    const auto* instruction = work.back();
+    work.pop_back();
+    if (!state.controlSlice.erase(instruction))
+      continue;
+    for (const auto& operand : instruction->operands()) {
+      const auto* dependency = llvm::dyn_cast<llvm::Instruction>(operand.get());
+      if (!dependency || !state.selection.loop->contains(dependency) ||
+          llvm::isa<llvm::PHINode>(dependency) || !opcode(*dependency))
+        continue;
+      work.push_back(dependency);
+    }
+  }
+
+  state.provenance.controlSlice.clear();
+  for (const auto& instruction : *state.selection.block)
+    if (state.controlSlice.contains(&instruction))
+      state.provenance.controlSlice.push_back(instruction.getOpcodeName());
+}
+
 std::string externalName(const llvm::Value& value, std::uint32_t ordinal) {
   if (value.hasName())
     return value.getName().str();
@@ -869,6 +892,24 @@ LLVMFrontendResult lowerIfConvertedLoop(llvm::Module& module, const LLVMFrontend
   if (discoveredRegion)
     state.region = *discoveredRegion;
   collectTerminationSlice(state);
+
+  if (const auto* latch = selection.loop->getLoopLatch()) {
+    for (const auto& instruction : *selection.block) {
+      const auto* phi = llvm::dyn_cast<llvm::PHINode>(&instruction);
+      if (!phi)
+        continue;
+      const int backedgeIndex = phi->getBasicBlockIndex(latch);
+      if (backedgeIndex < 0)
+        continue;
+      const auto* backedgePhi = llvm::dyn_cast<llvm::PHINode>(
+          phi->getIncomingValue(static_cast<unsigned>(backedgeIndex)));
+      if (backedgePhi && selection.loop->contains(backedgePhi))
+        return failure(LLVMFrontendStatus::ConditionalRecurrenceUnsupported,
+                       LLVMFrontendDiagnosticCode::LLVM_FRONTEND_CONDITIONAL_RECURRENCE_UNSUPPORTED,
+                       "a control-merge PHI cannot provide a loop recurrence in T017 V0",
+                       &selection, phi);
+    }
+  }
   discoverIfRecurrences(state);
 
   std::vector<const llvm::StoreInst*> stores;
@@ -1351,8 +1392,7 @@ LLVMFrontendResult lowerSelectedLoop(llvm::Module& module, const LLVMFrontendOpt
     return error;
   if (!discoverRecurrences(state, error))
     return error;
-  for (const auto* backedge : state.recurrenceBackedges)
-    state.controlSlice.erase(backedge);
+  promoteRecurrenceProducerClosure(state);
   if (!validateControlDataUses(state, error))
     return error;
 

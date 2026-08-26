@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 #include "cgra/Frontend/LLVM/LLVMFrontend.h"
+#include "cgra/Frontend/LLVM/FrontendInvocationValidation.h"
 #include "cgra/Frontend/LLVM/LLVMFrontendVerifier.h"
 
 #include <llvm/AsmParser/Parser.h>
@@ -26,8 +27,41 @@ public:
     std::get<DataEdgeInfo>(dfg.edges_[edge].info).dstOperand = operand;
   }
   static void setEdgeSource(DFG& dfg, EdgeId edge, NodeId source) { dfg.edges_[edge].src = source; }
+  static void setEdgeDestination(DFG& dfg, EdgeId edge, NodeId destination) {
+    dfg.edges_[edge].dst = destination;
+  }
   static void clearBoundary(DFG& dfg, EdgeId edge) {
     std::get<DataEdgeInfo>(dfg.edges_[edge].info).boundary.reset();
+  }
+  static void setBoundaryOffset(DFG& dfg, EdgeId edge, std::uint32_t offset) {
+    auto& boundary = std::get<DataEdgeInfo>(dfg.edges_[edge].info).boundary;
+    if (boundary && !boundary->values.empty())
+      boundary->values.front().iterationOffset = offset;
+  }
+  static void setBoundaryConstant(DFG& dfg, EdgeId edge, ConstantId constant) {
+    auto& boundary = std::get<DataEdgeInfo>(dfg.edges_[edge].info).boundary;
+    if (boundary && !boundary->values.empty())
+      boundary->values.front().value = ConstantRef{constant};
+  }
+  static void appendDuplicateEdge(DFG& dfg, EdgeId edgeId) {
+    auto duplicate = dfg.edges_[edgeId];
+    duplicate.id = static_cast<EdgeId>(dfg.edges_.size());
+    dfg.appendEdge(std::move(duplicate));
+  }
+  static void eraseEdge(DFG& dfg, EdgeId edgeId) {
+    const auto position = dfg.edgeIndices_.at(edgeId);
+    dfg.edges_.erase(dfg.edges_.begin() + static_cast<std::ptrdiff_t>(position));
+    dfg.edgeIndices_.clear();
+    for (auto& incoming : dfg.incoming_)
+      incoming.clear();
+    for (auto& outgoing : dfg.outgoing_)
+      outgoing.clear();
+    for (std::size_t index = 0; index < dfg.edges_.size(); ++index) {
+      const auto& edge = dfg.edges_[index];
+      dfg.edgeIndices_.emplace(edge.id, index);
+      dfg.incoming_.at(dfg.nodeIndices_.at(edge.dst)).push_back(edge.id);
+      dfg.outgoing_.at(dfg.nodeIndices_.at(edge.src)).push_back(edge.id);
+    }
   }
 };
 } // namespace cgra::ir
@@ -151,6 +185,96 @@ loop:
 exit:
   %result = phi i32 [ %y, %loop ]
   ret i32 %result
+}
+)IR";
+
+const char* kThreeIncomingPhi = R"IR(
+define i32 @three_incoming(i32 %x) {
+entry:
+  br label %loop
+loop:
+  %iv = phi i32 [ 0, %entry ], [ %next, %loop ], [ 1, %entry ]
+  %next = add i32 %iv, %x
+  %cmp = icmp ult i32 %next, 2
+  br i1 %cmp, label %loop, label %exit
+exit:
+  ret i32 %next
+}
+)IR";
+
+const char* kPhiToPhi = R"IR(
+define i32 @phi_to_phi(i32 %x) {
+entry:
+  br label %loop
+loop:
+  %a = phi i32 [ 0, %entry ], [ %b, %loop ]
+  %b = phi i32 [ 1, %entry ], [ %a, %loop ]
+  %next = add i32 %a, %b
+  %cmp = icmp ult i32 %next, 2
+  br i1 %cmp, label %loop, label %exit
+exit:
+  ret i32 %next
+}
+)IR";
+
+const char* kPointerPhi = R"IR(
+define i32 @pointer_phi(i32* %base) {
+entry:
+  br label %loop
+loop:
+  %ptr = phi i32* [ %base, %entry ], [ %ptr, %loop ]
+  %iv = phi i32 [ 0, %entry ], [ %next, %loop ]
+  %next = add i32 %iv, 1
+  %cmp = icmp ult i32 %next, 2
+  br i1 %cmp, label %loop, label %exit
+exit:
+  ret i32 %next
+}
+)IR";
+
+const char* kFloatPhi = R"IR(
+define i32 @float_phi(float %x) {
+entry:
+  br label %loop
+loop:
+  %sum = phi float [ 0.0, %entry ], [ %next, %loop ]
+  %next = fadd float %sum, %x
+  %iv = phi i32 [ 0, %entry ], [ %inc, %loop ]
+  %inc = add i32 %iv, 1
+  %cmp = icmp ult i32 %inc, 2
+  br i1 %cmp, label %loop, label %exit
+exit:
+  ret i32 %inc
+}
+)IR";
+
+const char* kVectorPhi = R"IR(
+define i32 @vector_phi(<2 x i32> %x) {
+entry:
+  br label %loop
+loop:
+  %sum = phi <2 x i32> [ zeroinitializer, %entry ], [ %next, %loop ]
+  %next = add <2 x i32> %sum, %x
+  %iv = phi i32 [ 0, %entry ], [ %inc, %loop ]
+  %inc = add i32 %iv, 1
+  %cmp = icmp ult i32 %inc, 2
+  br i1 %cmp, label %loop, label %exit
+exit:
+  ret i32 %inc
+}
+)IR";
+
+const char* kRawPhiLiveOut = R"IR(
+define i32 @raw_phi_liveout(i32 %x) {
+entry:
+  br label %loop
+loop:
+  %sum = phi i32 [ 0, %entry ], [ %next, %loop ]
+  %next = add i32 %sum, %x
+  %cmp = icmp ult i32 %next, 2
+  br i1 %cmp, label %loop, label %exit
+exit:
+  ret i32 %sum
 }
 )IR";
 
@@ -432,6 +556,99 @@ exit:
 }
 )IR";
 
+const char* kUnsafeSpeculation = R"IR(
+define i32 @unsafe_speculation(i32 %x, i32 %d) {
+entry:
+  br label %loop
+loop:
+  %iv = phi i32 [ 0, %entry ], [ %inc, %merge ]
+  %p = icmp ult i32 %x, 3
+  br i1 %p, label %then, label %else
+then:
+  %a = sdiv i32 %x, %d
+  br label %merge
+else:
+  %b = add i32 %x, 1
+  br label %merge
+merge:
+  %v = phi i32 [ %a, %then ], [ %b, %else ]
+  %inc = add i32 %iv, 1
+  %done = icmp ult i32 %inc, 2
+  br i1 %done, label %loop, label %exit
+exit:
+  ret i32 %v
+}
+)IR";
+
+const char* kMultipleStores = R"IR(
+define void @multiple_stores(i32 %x, i32* %a, i32* %b) {
+entry:
+  br label %loop
+loop:
+  %iv = phi i32 [ 0, %entry ], [ %inc, %merge ]
+  %p = icmp ult i32 %x, 3
+  br i1 %p, label %then, label %else
+then:
+  store i32 %x, i32* %a
+  store i32 %x, i32* %b
+  br label %merge
+else:
+  br label %merge
+merge:
+  %inc = add i32 %iv, 1
+  %done = icmp ult i32 %inc, 2
+  br i1 %done, label %loop, label %exit
+exit:
+  ret void
+}
+)IR";
+
+const char* kGEPStore = R"IR(
+define void @gep_store(i32 %x, i32* %out) {
+entry:
+  br label %loop
+loop:
+  %iv = phi i32 [ 0, %entry ], [ %inc, %merge ]
+  %p = icmp ult i32 %x, 3
+  br i1 %p, label %then, label %else
+then:
+  %addr = getelementptr i32, i32* %out, i32 1
+  store i32 %x, i32* %addr
+  br label %merge
+else:
+  br label %merge
+merge:
+  %inc = add i32 %iv, 1
+  %done = icmp ult i32 %inc, 2
+  br i1 %done, label %loop, label %exit
+exit:
+  ret void
+}
+)IR";
+
+const char* kConditionalRecurrence = R"IR(
+define i32 @conditional_recurrence(i32 %seed, i32 %x) {
+entry:
+  br label %loop
+loop:
+  %state = phi i32 [ %seed, %entry ], [ %next, %merge ]
+  %p = icmp ult i32 %state, %x
+  br i1 %p, label %then, label %else
+then:
+  %a = add i32 %state, 1
+  br label %merge
+else:
+  %b = add i32 %state, 2
+  br label %merge
+merge:
+  %next = phi i32 [ %a, %then ], [ %b, %else ]
+  %done = icmp ult i32 %state, 4
+  br i1 %done, label %loop, label %exit
+exit:
+  ret i32 %next
+}
+)IR";
+
 void expect(bool condition, const char* message) {
   if (!condition)
     throw std::runtime_error(message);
@@ -461,6 +678,34 @@ void testScalarAddLoop() {
   expect(result.dfg->liveOuts().size() == 1, "LCSSA value must become one LiveOut");
   const auto report = cgra::frontend::llvm_frontend::verifyFrontendResult(*module, options, result);
   expect(report.ok(), report.format().c_str());
+}
+
+void testFrontendInvocationValidation() {
+  llvm::LLVMContext context;
+  auto module = parse(kScalarAdd, context);
+  cgra::frontend::llvm_frontend::LLVMFrontendOptions options;
+  options.functionName = "kernel";
+  const auto result = cgra::frontend::llvm_frontend::lowerInnermostLoop(*module, options);
+  expect(result.ok() && result.metadata, "invocation validation fixture must lower");
+
+  cgra::abi::KernelInvocation matching{4, {}, {}};
+  const auto match =
+      cgra::frontend::llvm_frontend::validateFrontendInvocation(*result.metadata, matching);
+  expect(match.ok(), "matching static trip count must pass composition validation");
+
+  cgra::abi::KernelInvocation mismatching{3, {}, {}};
+  const auto mismatch =
+      cgra::frontend::llvm_frontend::validateFrontendInvocation(*result.metadata, mismatching);
+  expect(!mismatch.ok() && mismatch.status ==
+                               cgra::frontend::llvm_frontend::FrontendInvocationValidationStatus::
+                                   FrontendInvocationMismatch,
+         "mismatching static trip count must fail composition validation");
+
+  auto unknown = *result.metadata;
+  unknown.staticTripCount.reset();
+  const auto unknownReport =
+      cgra::frontend::llvm_frontend::validateFrontendInvocation(unknown, mismatching);
+  expect(unknownReport.ok(), "unknown static trip count must defer to invocation validation");
 }
 
 void testDeterministicSerialization() {
@@ -649,6 +894,41 @@ void testPredicationLowering() {
   }
   expect(!cgra::frontend::llvm_frontend::verifyFrontendResult(*store, options, badWaw).ok(),
          "Store verifier must reject a non-loop-carried self WAW");
+
+  auto missingPredicate = storeResult;
+  auto missingPredicateEdge =
+      std::find_if(missingPredicate.dfg->edges().begin(), missingPredicate.dfg->edges().end(),
+                   [](const auto& edge) { return edge.kind() == cgra::ir::Edge::Kind::Predicate; });
+  expect(missingPredicateEdge != missingPredicate.dfg->edges().end(),
+         "predicated Store fixture needs a predicate edge");
+  cgra::ir::DFGTestAccess::eraseEdge(*missingPredicate.dfg, missingPredicateEdge->id);
+  expect(
+      !cgra::frontend::llvm_frontend::verifyFrontendResult(*store, options, missingPredicate).ok(),
+      "Store verifier must reject a missing commit predicate edge");
+
+  auto wrongStorePredicate = storeResult;
+  auto wrongPredicateEdge =
+      std::find_if(wrongStorePredicate.dfg->edges().begin(), wrongStorePredicate.dfg->edges().end(),
+                   [](const auto& edge) { return edge.kind() == cgra::ir::Edge::Kind::Predicate; });
+  expect(wrongPredicateEdge != wrongStorePredicate.dfg->edges().end(),
+         "predicated Store fixture needs a predicate edge for corruption");
+  cgra::ir::DFGTestAccess::setEdgeSource(*wrongStorePredicate.dfg, wrongPredicateEdge->id,
+                                         storeNode);
+  expect(!cgra::frontend::llvm_frontend::verifyFrontendResult(*store, options, wrongStorePredicate)
+              .ok(),
+         "Store verifier must reject the wrong commit predicate source");
+
+  auto missingWaw = storeResult;
+  auto wawEdge = std::find_if(missingWaw.dfg->edges().begin(), missingWaw.dfg->edges().end(),
+                              [&](const auto& edge) {
+                                return edge.kind() == cgra::ir::Edge::Kind::Memory &&
+                                       edge.src == storeNode && edge.dst == storeNode;
+                              });
+  expect(wawEdge != missingWaw.dfg->edges().end(), "predicated Store fixture needs a self WAW");
+  cgra::ir::DFGTestAccess::eraseEdge(*missingWaw.dfg, wawEdge->id);
+  expect(!cgra::frontend::llvm_frontend::verifyFrontendResult(*store, options, missingWaw).ok(),
+         "Store verifier must reject a missing self WAW");
+
   auto falseStore = parse(kFalseArmStore, context);
   options.functionName = "false_arm_store";
   const auto falseStoreResult =
@@ -660,10 +940,24 @@ void testPredicationLowering() {
   expect(falseStoreResult.provenance.ifConversions.front().predicateComplemented,
          "false-arm Store must record normalized predicate polarity");
 
+  auto wrongPolarity = falseStoreResult;
+  wrongPolarity.provenance.ifConversions.front().predicateComplemented = false;
+  expect(!cgra::frontend::llvm_frontend::verifyFrontendResult(*falseStore, options, wrongPolarity)
+              .ok(),
+         "verifier must reject corrupted false-arm predicate polarity");
+
   expectStatus(kPredicatedLoad, "predicated_load",
                cgra::frontend::llvm_frontend::LLVMFrontendStatus::PredicatedLoadUnsupported);
   expectStatus(kMultipleBranches, "multiple_branches",
                cgra::frontend::llvm_frontend::LLVMFrontendStatus::MultipleInternalBranches);
+  expectStatus(kUnsafeSpeculation, "unsafe_speculation",
+               cgra::frontend::llvm_frontend::LLVMFrontendStatus::UnsafeSpeculation);
+  expectStatus(kMultipleStores, "multiple_stores",
+               cgra::frontend::llvm_frontend::LLVMFrontendStatus::MultipleStoresRequireT018);
+  expectStatus(kGEPStore, "gep_store",
+               cgra::frontend::llvm_frontend::LLVMFrontendStatus::MemoryPatternRequiresT018);
+  expectStatus(kConditionalRecurrence, "conditional_recurrence",
+               cgra::frontend::llvm_frontend::LLVMFrontendStatus::ConditionalRecurrenceUnsupported);
 }
 
 void testRecurrenceLowering() {
@@ -750,29 +1044,93 @@ void testRecurrenceLowering() {
          "same consumer PHI uses must retain distinct destination operands");
 
   auto distanceCorrupt = reductionResult;
+  cgra::frontend::llvm_frontend::LLVMFrontendOptions reductionOptions;
+  reductionOptions.functionName = "reduction";
   cgra::ir::DFGTestAccess::setEdgeDistance(*distanceCorrupt.dfg, 0, 0);
-  expect(!cgra::frontend::llvm_frontend::verifyFrontendResult(*reduction, options, distanceCorrupt)
+  expect(!cgra::frontend::llvm_frontend::verifyFrontendResult(*reduction, reductionOptions,
+                                                              distanceCorrupt)
               .ok(),
          "verifier must reject a recurrence edge with distance zero");
 
   auto operandCorrupt = reductionResult;
   cgra::ir::DFGTestAccess::setEdgeOperand(*operandCorrupt.dfg, 0, 1);
-  expect(!cgra::frontend::llvm_frontend::verifyFrontendResult(*reduction, options, operandCorrupt)
+  expect(!cgra::frontend::llvm_frontend::verifyFrontendResult(*reduction, reductionOptions,
+                                                              operandCorrupt)
               .ok(),
          "verifier must reject a recurrence edge with the wrong operand");
 
   auto boundaryCorrupt = reductionResult;
   cgra::ir::DFGTestAccess::clearBoundary(*boundaryCorrupt.dfg, 0);
-  expect(!cgra::frontend::llvm_frontend::verifyFrontendResult(*reduction, options, boundaryCorrupt)
+  expect(!cgra::frontend::llvm_frontend::verifyFrontendResult(*reduction, reductionOptions,
+                                                              boundaryCorrupt)
               .ok(),
          "verifier must reject a recurrence edge without its boundary");
 
   auto sourceCorrupt = reductionResult;
   sourceCorrupt.provenance.recurrences.front().backedge =
       static_cast<const llvm::Value*>(sourceCorrupt.provenance.recurrences.front().phiValue);
+  expect(!cgra::frontend::llvm_frontend::verifyFrontendResult(*reduction, reductionOptions,
+                                                              sourceCorrupt)
+              .ok(),
+         "verifier must reject a recurrence with the wrong source provenance");
+
+  auto boundaryProviderCorrupt = reductionResult;
+  cgra::ir::DFGTestAccess::setBoundaryConstant(*boundaryProviderCorrupt.dfg, 0, 999);
+  expect(!cgra::frontend::llvm_frontend::verifyFrontendResult(*reduction, reductionOptions,
+                                                              boundaryProviderCorrupt)
+              .ok(),
+         "verifier must reject a recurrence with the wrong boundary provider");
+
+  auto offsetCorrupt = reductionResult;
+  cgra::ir::DFGTestAccess::setBoundaryOffset(*offsetCorrupt.dfg, 0, 1);
+  expect(!cgra::frontend::llvm_frontend::verifyFrontendResult(*reduction, reductionOptions,
+                                                              offsetCorrupt)
+              .ok(),
+         "verifier must reject a recurrence with the wrong iteration offset");
+
+  auto extraEdge = reductionResult;
+  cgra::ir::DFGTestAccess::appendDuplicateEdge(*extraEdge.dfg, 0);
   expect(
-      !cgra::frontend::llvm_frontend::verifyFrontendResult(*reduction, options, sourceCorrupt).ok(),
-      "verifier must reject a recurrence with the wrong source provenance");
+      !cgra::frontend::llvm_frontend::verifyFrontendResult(*reduction, reductionOptions, extraEdge)
+           .ok(),
+      "verifier must reject a spurious duplicate recurrence edge");
+
+  auto wrongDestination = inductionResult;
+  cgra::ir::DFGTestAccess::setEdgeDestination(*wrongDestination.dfg, 0, 1);
+  expect(!cgra::frontend::llvm_frontend::verifyFrontendResult(*induction, options, wrongDestination)
+              .ok(),
+         "verifier must reject a recurrence edge with the wrong destination");
+
+  auto missingRepeatedUse = repeatedResult;
+  cgra::ir::DFGTestAccess::eraseEdge(*missingRepeatedUse.dfg, 1);
+  cgra::frontend::llvm_frontend::LLVMFrontendOptions repeatedOptions;
+  repeatedOptions.functionName = "repeated_phi";
+  expect(!cgra::frontend::llvm_frontend::verifyFrontendResult(*repeated, repeatedOptions,
+                                                              missingRepeatedUse)
+              .ok(),
+         "verifier must reject a missing recurrence edge for a repeated PHI use");
+
+  auto descriptorEdgeCorrupt = reductionResult;
+  descriptorEdgeCorrupt.provenance.recurrences.front().uses.front().edge = 999;
+  expect(!cgra::frontend::llvm_frontend::verifyFrontendResult(*reduction, reductionOptions,
+                                                              descriptorEdgeCorrupt)
+              .ok(),
+         "verifier must reject a descriptor referring to the wrong edge ID");
+}
+
+void testRecurrenceNegativeCorpus() {
+  expectStatus(kThreeIncomingPhi, "three_incoming",
+               cgra::frontend::llvm_frontend::LLVMFrontendStatus::UnsupportedRecurrenceShape);
+  expectStatus(kPhiToPhi, "phi_to_phi",
+               cgra::frontend::llvm_frontend::LLVMFrontendStatus::UnsupportedPhiToPhiUse);
+  expectStatus(kPointerPhi, "pointer_phi",
+               cgra::frontend::llvm_frontend::LLVMFrontendStatus::UnsupportedRecurrenceType);
+  expectStatus(kFloatPhi, "float_phi",
+               cgra::frontend::llvm_frontend::LLVMFrontendStatus::UnsupportedRecurrenceType);
+  expectStatus(kVectorPhi, "vector_phi",
+               cgra::frontend::llvm_frontend::LLVMFrontendStatus::UnsupportedRecurrenceType);
+  expectStatus(kRawPhiLiveOut, "raw_phi_liveout",
+               cgra::frontend::llvm_frontend::LLVMFrontendStatus::UnsupportedPhiLiveOutSemantics);
 }
 
 } // namespace
@@ -780,11 +1138,13 @@ void testRecurrenceLowering() {
 int main() {
   try {
     testScalarAddLoop();
+    testFrontendInvocationValidation();
     testDeterministicSerialization();
     testVerifierRejectsCorruptedProvenance();
     testSupportedChainAndConstant();
     testBoundaryRejections();
     testRecurrenceLowering();
+    testRecurrenceNegativeCorpus();
     testPredicationLowering();
     std::cout << "CGRA_LLVM_FRONTEND_TEST_PASS\n";
     return EXIT_SUCCESS;

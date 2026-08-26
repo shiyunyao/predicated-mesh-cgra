@@ -37,11 +37,18 @@ void addDiagnostic(ModuloMapperResult& result, ModuloMapperDiagnosticCode code, 
 enum class SearchOutcome {
   Success,
   Exhausted,
+  PerIIBudgetExceeded,
   BudgetExceeded,
   RouteBudgetExceeded,
   VerificationFailure,
   InternalError,
   PostMappingAbort,
+};
+
+struct SearchLimits {
+  std::uint64_t nodeCandidateAttempts = 0;
+  std::uint64_t backtracks = 0;
+  std::uint64_t routeSearchCalls = 0;
 };
 
 struct Candidate {
@@ -61,10 +68,10 @@ struct CandidateDelta {
 class MappingSearchState {
 public:
   MappingSearchState(const cgra::target::TargetDFG& dfg, const cgra::TargetModel& target,
-                     const ModuloMapperOptions& options, std::uint32_t ii,
+                     const ModuloMapperOptions& options, SearchLimits limits, std::uint32_t ii,
                      ModuloMapperResult& result)
       : dfg_(dfg), target_(target), options_(options), ii_(ii), resources_(target, ii),
-        reservations_(resources_), result_(result) {}
+        reservations_(resources_), result_(result), limits_(limits) {}
 
   SearchOutcome run() { return search(0); }
 
@@ -78,6 +85,7 @@ private:
   ModuloResourceModel resources_;
   ResourceReservationTable reservations_;
   ModuloMapperResult& result_;
+  SearchLimits limits_;
   std::map<NodeId, NodePlacement> placements_;
   std::map<EdgeId, MappedDependence> dependences_;
   std::optional<ModuloMapping> mapping_;
@@ -218,10 +226,10 @@ private:
       return SearchOutcome::Success;
     }
 
-    if (result_.stats.routeSearchCalls >= options_.budget.maxRouteSearchCalls) {
+    if (result_.stats.routeSearchCalls >= limits_.routeSearchCalls) {
       addDiagnostic(result_, ModuloMapperDiagnosticCode::MAP_GLOBAL_BUDGET_EXCEEDED,
-                    "maximum route-search call budget was exhausted", ii_, std::nullopt, edge.id);
-      return SearchOutcome::BudgetExceeded;
+                    "per-II route-search budget share was exhausted", ii_, std::nullopt, edge.id);
+      return SearchOutcome::PerIIBudgetExceeded;
     }
     ++result_.stats.routeSearchCalls;
     auto routeOptions = options_.routeOptions;
@@ -384,10 +392,10 @@ private:
       return SearchOutcome::Exhausted;
     }
     for (const auto& candidate : nodeCandidates) {
-      if (result_.stats.nodeCandidateAttempts >= options_.budget.maxNodeCandidateAttempts) {
+      if (result_.stats.nodeCandidateAttempts >= limits_.nodeCandidateAttempts) {
         addDiagnostic(result_, ModuloMapperDiagnosticCode::MAP_GLOBAL_BUDGET_EXCEEDED,
-                      "maximum node-candidate budget was exhausted", ii_, node);
-        return SearchOutcome::BudgetExceeded;
+                      "per-II node-candidate budget share was exhausted", ii_, node);
+        return SearchOutcome::PerIIBudgetExceeded;
       }
       ++result_.stats.nodeCandidateAttempts;
       CandidateDelta delta;
@@ -406,22 +414,35 @@ private:
       if (childOutcome == SearchOutcome::Success)
         return childOutcome;
       rollback(delta);
-      if (childOutcome == SearchOutcome::BudgetExceeded ||
+      if (childOutcome == SearchOutcome::PerIIBudgetExceeded ||
+          childOutcome == SearchOutcome::BudgetExceeded ||
           childOutcome == SearchOutcome::RouteBudgetExceeded ||
           childOutcome == SearchOutcome::VerificationFailure ||
           childOutcome == SearchOutcome::InternalError ||
           childOutcome == SearchOutcome::PostMappingAbort)
         return childOutcome;
-      if (result_.stats.backtracks >= options_.budget.maxBacktracks) {
+      if (result_.stats.backtracks >= limits_.backtracks) {
         addDiagnostic(result_, ModuloMapperDiagnosticCode::MAP_GLOBAL_BUDGET_EXCEEDED,
-                      "maximum backtrack budget was exhausted", ii_, node);
-        return SearchOutcome::BudgetExceeded;
+                      "per-II backtrack budget share was exhausted", ii_, node);
+        return SearchOutcome::PerIIBudgetExceeded;
       }
       ++result_.stats.backtracks;
     }
     return SearchOutcome::Exhausted;
   }
 };
+
+std::uint64_t fairShareLimit(std::uint64_t maximum, std::uint64_t used,
+                             std::uint64_t attemptsRemaining) {
+  if (used >= maximum)
+    return used;
+  const auto remaining = maximum - used;
+  // Spend at most half of the remaining global budget below the final II. This
+  // favors low-II solutions while guaranteeing deterministic search capacity
+  // for a later, less constrained II.
+  const auto share = attemptsRemaining == 1 ? remaining : remaining / 2 + remaining % 2;
+  return used + share;
+}
 
 } // namespace
 
@@ -567,16 +588,28 @@ ModuloMapperResult ModuloMapper::map(const cgra::target::TargetDFG& dfg,
     return result;
   }
 
+  bool perIIBudgetExceeded = false;
   for (std::uint64_t ii = startII; ii <= maxII; ++ii) {
     ++result.stats.iiAttempts;
     const auto currentII = static_cast<std::uint32_t>(ii);
-    MappingSearchState state(dfg, target, options, currentII, result);
+    const auto attemptsRemaining = static_cast<std::uint64_t>(maxII) - ii + 1;
+    const SearchLimits limits{
+        fairShareLimit(options.budget.maxNodeCandidateAttempts, result.stats.nodeCandidateAttempts,
+                       attemptsRemaining),
+        fairShareLimit(options.budget.maxBacktracks, result.stats.backtracks, attemptsRemaining),
+        fairShareLimit(options.budget.maxRouteSearchCalls, result.stats.routeSearchCalls,
+                       attemptsRemaining)};
+    MappingSearchState state(dfg, target, options, limits, currentII, result);
     const auto outcome = state.run();
     result.stats.finalII = currentII;
     if (outcome == SearchOutcome::Success) {
       result.status = ModuloMapperStatus::Success;
       result.mapping = state.mapping();
       return result;
+    }
+    if (outcome == SearchOutcome::PerIIBudgetExceeded) {
+      perIIBudgetExceeded = true;
+      continue;
     }
     if (outcome == SearchOutcome::BudgetExceeded) {
       result.status = ModuloMapperStatus::BudgetExceeded;
@@ -596,6 +629,10 @@ ModuloMapperResult ModuloMapper::map(const cgra::target::TargetDFG& dfg,
       result.mapping.reset();
       return result;
     }
+  }
+  if (perIIBudgetExceeded) {
+    result.status = ModuloMapperStatus::BudgetExceeded;
+    return result;
   }
   result.status = ModuloMapperStatus::NoMappingWithinIILimit;
   addDiagnostic(result, ModuloMapperDiagnosticCode::MAP_NO_MAPPING_WITHIN_II_LIMIT,

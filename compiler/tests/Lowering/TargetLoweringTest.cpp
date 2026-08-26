@@ -5,6 +5,7 @@
 #include "cgra/Lowering/ConstantAllocator.h"
 #include "cgra/Lowering/TargetLowering.h"
 #include "cgra/Mapping/ModuloMapper.h"
+#include "cgra/Pipeline/CompileDFG.h"
 #include "cgra/RegisterAllocation/RFAllocator.h"
 #include "cgra/Schedule/MaterializedScheduleVerifier.h"
 #include "cgra/Schedule/ScheduleMaterializer.h"
@@ -74,6 +75,36 @@ cgra::ir::DFG overfullConstantAdd() {
                                    cgra::ir::ValueType::i32());
   builder.bindConstant(add, 0, constants[0]);
   builder.bindConstant(add, 1, constants[1]);
+  return builder.finish();
+}
+
+cgra::ir::DFG recurrencePredicatedStore() {
+  using namespace cgra::ir;
+  DFGBuilder builder("recurrence_predicated_store");
+  const auto zero = builder.addConstant(ValueType::i32(), 0);
+  const auto one = builder.addConstant(ValueType::i32(), 1);
+  const auto limit = builder.addConstant(ValueType::i32(), 2);
+  const auto address = builder.addConstant(ValueType::i32(), 17);
+  const auto compare = builder.addNode(Opcode::ICmp, {ValueType::i32(), ValueType::i32()},
+                                       ValueType::predicate(), ICmpPredicate::ULT);
+  const auto increment =
+      builder.addNode(Opcode::Add, {ValueType::i32(), ValueType::i32()}, ValueType::i32());
+  const auto next =
+      builder.addNode(Opcode::Add, {ValueType::i32(), ValueType::i32()}, ValueType::i32());
+  const auto store =
+      builder.addNode(Opcode::Store, {ValueType::i32(), ValueType::i32(), ValueType::predicate()},
+                      ValueType::voidTy(), std::nullopt, MemoryOpInfo{32, false});
+  const auto boundary = RecurrenceBoundary{{{0, ConstantRef{zero}}}};
+  builder.addDataEdge(next, compare, 0, 1, boundary);
+  builder.bindConstant(compare, 1, limit);
+  builder.addDataEdge(next, increment, 0, 1, boundary);
+  builder.bindConstant(increment, 1, one);
+  builder.addDataEdge(increment, next, 0);
+  builder.bindConstant(next, 1, zero);
+  builder.bindConstant(store, 0, address);
+  builder.addDataEdge(next, store, 1, 1, boundary);
+  builder.addPredicateEdge(compare, store, 2);
+  builder.addMemoryEdge(store, store, MemoryDepKind::WAW, 1);
   return builder.finish();
 }
 
@@ -177,6 +208,29 @@ void testExternalProviderIsExplicitFailure(const cgra::TargetModel& model) {
   expect(result.status == cgra::lowering::TargetLoweringStatus::UnsupportedExternalProvider,
          "unsupported external provider is classified explicitly");
 }
+
+void testNodeIssueUsesResolvedPlacementForRFOperands() {
+  const auto model = cgra::TargetModel::loadFromFile(Root / "target/cgra_v3.json");
+  cgra::pipeline::CompileDFGOptions options;
+  options.tripCount = 4;
+  options.targetPath = Root / "target/cgra_v3.json";
+  options.mapper = mapperOptions();
+  options.mapper.maxII = 8;
+  const auto result =
+      cgra::pipeline::compileGenericDFG(recurrencePredicatedStore(), model, options);
+  expect(result.ok(), result.message.c_str());
+
+  const auto path =
+      std::filesystem::temp_directory_path() / "cgra-target-lowering-rf-operand-manifest.json";
+  std::ofstream output(path);
+  output << result.manifest->json << '\n';
+  output.close();
+  const auto checker = Root / "tools/check_schedule.py";
+  const auto command = "python3 " + checker.string() + " " + path.string();
+  expect(std::system(command.c_str()) == 0,
+         "lowered RF-backed operand must pass the independent schedule checker");
+  std::filesystem::remove(path);
+}
 } // namespace
 
 int main() {
@@ -187,6 +241,7 @@ int main() {
     testConstantCapacityFailure(model);
     testConstantLoweringAndManifest(model);
     testExternalProviderIsExplicitFailure(model);
+    testNodeIssueUsesResolvedPlacementForRFOperands();
     std::cout << "target lowering tests passed\n";
     return 0;
   } catch (const std::exception& error) {

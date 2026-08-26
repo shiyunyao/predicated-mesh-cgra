@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: MIT
+#include "cgra/ABI/KernelSignature.h"
+#include "cgra/Frontend/LLVM/FrontendInvocationValidation.h"
 #include "cgra/Frontend/LLVM/LLVMFrontend.h"
 #include "cgra/Frontend/LLVM/LLVMFrontendVerifier.h"
 #include "cgra/IR/DFGSerialization.h"
@@ -11,6 +13,8 @@
 #include <llvm/IRReader/IRReader.h>
 #include <llvm/Support/SourceMgr.h>
 #include <llvm/Support/raw_ostream.h>
+
+#include <nlohmann/json.hpp>
 
 #include <cstdint>
 #include <filesystem>
@@ -27,7 +31,7 @@ void usage(const char* name) {
   std::cerr << "usage: " << name
             << " input.ll|input.bc --function name [--loop-header block]"
                " --artifact-dir dir -o generic_dfg.json\n"
-               "       "
+               "       [--invocation invocation.json]\n"
             << name << " input.ll|input.bc [--function name] --list-loops\n";
 }
 
@@ -77,6 +81,7 @@ int main(int argc, char** argv) {
     const auto inputPath = std::filesystem::path(argv[1]);
     std::filesystem::path artifactDirectory;
     std::filesystem::path outputPath;
+    std::filesystem::path invocationPath;
     cgra::frontend::llvm_frontend::LLVMFrontendOptions options;
     bool listLoops = false;
     for (int index = 2; index < argc; ++index) {
@@ -92,6 +97,8 @@ int main(int argc, char** argv) {
         options.loopHeader = next();
       else if (argument == "--artifact-dir")
         artifactDirectory = next();
+      else if (argument == "--invocation")
+        invocationPath = next();
       else if (argument == "-o" || argument == "--output")
         outputPath = next();
       else if (argument == "--list-loops")
@@ -159,12 +166,37 @@ int main(int argc, char** argv) {
     const auto verification =
         cgra::frontend::llvm_frontend::verifyFrontendResult(*module, options, result);
     if (!artifactDirectory.empty()) {
+      const auto resultJson = nlohmann::json::parse(result.toJson());
       writeArtifact(artifactDirectory / "01_loop_selection.json",
-                    result.metadata ? result.toJson() : "{}\n");
-      writeArtifact(artifactDirectory / "02_recurrence_analysis.json", result.toJson());
-      writeArtifact(artifactDirectory / "02_if_conversion.json", result.toJson());
-      writeArtifact(artifactDirectory / "02_loop_control_slice.json", result.toJson());
-      writeArtifact(artifactDirectory / "03_frontend_provenance.json", result.toJson());
+                    result.metadata ? (nlohmann::json{{"schema", "cgra.llvm_loop_selection.v1"},
+                                                      {"metadata", resultJson["metadata"]}}
+                                           .dump(2) +
+                                       "\n")
+                                    : "{}\n");
+      writeArtifact(artifactDirectory / "02_recurrence_analysis.json",
+                    (nlohmann::json{{"schema", "cgra.llvm_recurrence_analysis.v1"},
+                                    {"recurrences", resultJson["provenance"]["recurrences"]}}
+                         .dump(2) +
+                     "\n"));
+      writeArtifact(artifactDirectory / "02_loop_control_slice.json",
+                    (nlohmann::json{{"schema", "cgra.llvm_loop_control_slice.v1"},
+                                    {"instructions", resultJson["provenance"]["control_slice"]}}
+                         .dump(2) +
+                     "\n"));
+      writeArtifact(artifactDirectory / "03_frontend_provenance.json",
+                    (nlohmann::json{{"schema", "cgra.llvm_frontend_provenance.v1"},
+                                    {"nodes", resultJson["provenance"]["nodes"]},
+                                    {"externals", resultJson["provenance"]["externals"]},
+                                    {"live_outs", resultJson["provenance"]["live_outs"]}}
+                         .dump(2) +
+                     "\n"));
+      if (resultJson["provenance"].contains("if_conversions"))
+        writeArtifact(
+            artifactDirectory / "02_if_conversion.json",
+            (nlohmann::json{{"schema", "cgra.llvm_if_conversion.v1"},
+                            {"if_conversions", resultJson["provenance"]["if_conversions"]}}
+                 .dump(2) +
+             "\n"));
       writeArtifact(artifactDirectory / "04_generic_dfg.json", cgra::ir::toJson(*result.dfg));
       writeArtifact(artifactDirectory / "05_generic_dfg_verification.json",
                     cgra::ir::DFGVerifier::verify(*result.dfg).toJson());
@@ -174,6 +206,24 @@ int main(int argc, char** argv) {
     if (!verification.ok()) {
       std::cerr << verification.format() << '\n';
       return 1;
+    }
+    if (!invocationPath.empty()) {
+      std::ifstream input(invocationPath);
+      if (!input)
+        throw std::runtime_error("cannot read invocation: " + invocationPath.string());
+      const std::string invocationJson((std::istreambuf_iterator<char>(input)),
+                                       std::istreambuf_iterator<char>());
+      const auto signature = cgra::abi::inferSignature(*result.dfg);
+      const auto invocation = cgra::abi::parseInvocation(invocationJson, signature);
+      const auto invocationReport =
+          cgra::frontend::llvm_frontend::validateFrontendInvocation(*result.metadata, invocation);
+      if (!artifactDirectory.empty())
+        writeArtifact(artifactDirectory / "08_invocation_validation.json",
+                      invocationReport.toJson());
+      if (!invocationReport.ok()) {
+        std::cerr << invocationReport.message << '\n';
+        return 1;
+      }
     }
     writeArtifact(outputPath, cgra::ir::toJson(*result.dfg));
     std::cout << "status: success\nfunction: " << result.metadata->functionName
