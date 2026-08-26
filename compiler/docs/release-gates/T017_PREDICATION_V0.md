@@ -5,6 +5,7 @@ Store hardware gate and hosted evidence.
 
 Base `main`: `90ca9b77e371201a1cf9f358ca63c7a78d463bcc`
 Feature branch: `compiler/predication-v0`
+Feature candidate SHA: `7e6893566069cb720f9ebedb82be70dae1bc898b`
 
 ## Implemented scope
 
