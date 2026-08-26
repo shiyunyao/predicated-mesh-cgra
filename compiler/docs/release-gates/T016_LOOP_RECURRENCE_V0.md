@@ -62,3 +62,56 @@ and T016 recurrence E2E on the actual merged `main` commit.
 Release decision: **T-COMP-016: CLOSED**
 
 Next task: **GO T-COMP-017**
+
+## Post-release evidence hardening
+
+Source evidence commit:
+`7e1e8dd33d91e1753e36f08ce5e4bf05996bf59b`.
+
+The follow-up `compiler/frontend-evidence-hardening` branch adds:
+
+- explicit `staticTripCount` versus `KernelInvocation.tripCount` validation;
+- separate loop-selection, recurrence, loop-control, provenance, and result
+  artifact schemas;
+- named rejection tests for PHIs with more than two incoming values,
+  PHI-to-PHI recurrence use, pointer/float/vector recurrence types, and raw
+  header-PHI live-outs;
+- verifier corruption tests for boundary provider and offset, missing repeated
+  PHI-use edges, spurious edges, wrong destination, and descriptor edge ID;
+- an independent LLVM recurrence -> TargetLegalizer -> MIIAnalyzer ->
+  ModuloMapper -> ModuloMappingVerifier regression;
+- a scalar-induction Golden/RTL matrix: `x=7 -> 10` and `x=20 -> 23`, with
+  stable Generic DFG topology and changed ABI-bound DFG/manifest hashes.
+
+The direct one-node `%iv.next = add %iv, 1` periodic representation remains a
+documented fixed-RF V0 limitation: it requires a same-address read and next
+iteration write at the same periodic instant, which the target contract marks
+illegal. The evidence fixture preserves the same scalar induction semantics
+with a two-node periodic recurrence (`add` followed by an identity `or`) and
+uses the ordinary mapped recurrence, route, and RF allocation. No MVE,
+rotating register, target change, or fixed-II override is introduced.
+
+The mapper retry correction is generic: a lower II may consume only its
+deterministic share of the global search budget, leaving capacity for a less
+constrained higher II. Candidate ordering is unchanged, and exhausting any
+per-II share without finding a solution still produces `BudgetExceeded`, not
+`Infeasible`.
+
+Local closure evidence:
+
+- debug CTest: PASS (19/19);
+- ASan/UBSan CTest: PASS (19/19);
+- `make llvm-recurrence-e2e`: PASS for seed/trip-count outputs `6`, `9`, `12`,
+  `24` and induction outputs `10`, `23`, with Golden/RTL agreement.
+
+Hosted follow-up evidence:
+
+- exact feature-head compiler-fast: PENDING;
+- exact feature-head hardware-regression: PENDING;
+- PR merge-ref compiler-fast: PENDING;
+- PR merge-ref hardware-regression: PENDING;
+- post-merge main compiler-fast: PENDING;
+- post-merge main hardware-regression: PENDING.
+
+The original T016 release decision remains **CLOSED**. The evidence hardening
+is not sealed until the pending hosted checks and merge are complete.

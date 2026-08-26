@@ -61,3 +61,22 @@ manifest is checked in as an oracle.
 Release decision: **T-COMP-015: CLOSED**
 
 Next task: **GO T-COMP-016**
+
+## Post-release evidence hardening
+
+The `compiler/frontend-evidence-hardening` follow-up keeps the released T015
+lowering contract unchanged while tightening composition evidence:
+
+- `FrontendInvocationValidation` rejects a concrete invocation whose trip
+  count differs from a known `staticTripCount`; unknown static trip counts
+  continue to accept any positive T014 invocation count.
+- `cgra-llvm-loop-lower --invocation` runs that validation before a kernel is
+  handed to `cgrac-compile-kernel` and emits an explicit validation report.
+- loop selection, loop-control slice, recurrence analysis, if-conversion, and
+  frontend provenance artifacts now use distinct versioned schemas instead of
+  repeating the complete frontend result JSON.
+
+This hardening is evidence and composition validation, not a T015 semantic
+reopening. Its source evidence commit is
+`7e1e8dd33d91e1753e36f08ce5e4bf05996bf59b`; hosted merge evidence is recorded
+with T016 once the follow-up branch is integrated.

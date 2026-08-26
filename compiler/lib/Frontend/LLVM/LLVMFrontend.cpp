@@ -476,6 +476,29 @@ bool validateControlDataUses(LoweringState& state, LLVMFrontendResult& error) {
   return true;
 }
 
+void promoteRecurrenceProducerClosure(LoweringState& state) {
+  std::vector<const llvm::Instruction*> work(state.recurrenceBackedges.begin(),
+                                             state.recurrenceBackedges.end());
+  while (!work.empty()) {
+    const auto* instruction = work.back();
+    work.pop_back();
+    if (!state.controlSlice.erase(instruction))
+      continue;
+    for (const auto& operand : instruction->operands()) {
+      const auto* dependency = llvm::dyn_cast<llvm::Instruction>(operand.get());
+      if (!dependency || !state.selection.loop->contains(dependency) ||
+          llvm::isa<llvm::PHINode>(dependency) || !opcode(*dependency))
+        continue;
+      work.push_back(dependency);
+    }
+  }
+
+  state.provenance.controlSlice.clear();
+  for (const auto& instruction : *state.selection.block)
+    if (state.controlSlice.contains(&instruction))
+      state.provenance.controlSlice.push_back(instruction.getOpcodeName());
+}
+
 std::string externalName(const llvm::Value& value, std::uint32_t ordinal) {
   if (value.hasName())
     return value.getName().str();
@@ -581,8 +604,7 @@ LLVMFrontendResult lowerSelectedLoop(llvm::Module& module, const LLVMFrontendOpt
     return error;
   if (!discoverRecurrences(state, error))
     return error;
-  for (const auto* backedge : state.recurrenceBackedges)
-    state.controlSlice.erase(backedge);
+  promoteRecurrenceProducerClosure(state);
   if (!validateControlDataUses(state, error))
     return error;
 

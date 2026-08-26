@@ -269,8 +269,10 @@ RFAllocationResult RFAllocator::allocate(const cgra::target::TargetDFG& dfg,
     if (fixedRegisterSelfOverlaps(segment, ii, bank->sameAddressReadWritePolicy)) {
       result.status = RFAllocationStatus::FixedRegisterSelfOverlap;
       add(result, RFAllocationDiagnosticCode::RFA_FIXED_REGISTER_SELF_OVERLAP,
-          "storage lifetime overlaps its own next II-periodic iteration", segment.edge, segment.id,
-          segment.tile, bank->id);
+          "storage lifetime overlaps its own next II-periodic iteration (write=" +
+              std::to_string(segment.writeTime) + " read=" + std::to_string(segment.readTime) +
+              " ii=" + std::to_string(ii) + ")",
+          segment.edge, segment.id, segment.tile, bank->id);
       return result;
     }
   }

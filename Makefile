@@ -229,8 +229,8 @@ llvm-frontend-e2e: llvm-frontend-c-smoke
 		root="$$case_dir/$$name"; mkdir -p "$$root/source" "$$root/frontend" "$$root/backend"; \
 		"$(LLVM_FRONTEND_CLANG)" -O0 -Xclang -disable-O0-optnone -fno-discard-value-names -S -emit-llvm "$$source" -o "$$root/source/kernel.raw.ll"; \
 		"$(LLVM_FRONTEND_OPT)" -S -passes='mem2reg,loop-simplify,lcssa,simplifycfg' "$$root/source/kernel.raw.ll" -o "$$root/source/kernel.ll"; \
-		"$(LLVM_FRONTEND_BUILD_DIR)/bin/cgra-llvm-loop-lower" "$$root/source/kernel.ll" --function kernel --artifact-dir "$$root/frontend" -o "$$root/frontend/generic_dfg.json"; \
 		printf '%s\n' '{"schema":"cgra.kernel_invocation.v1","trip_count":4,"scalar_inputs":{"x":'"$$input"'},"scratchpad_preload":[]}' > "$$root/invocation.json"; \
+		"$(LLVM_FRONTEND_BUILD_DIR)/bin/cgra-llvm-loop-lower" "$$root/source/kernel.ll" --function kernel --artifact-dir "$$root/frontend" --invocation "$$root/invocation.json" -o "$$root/frontend/generic_dfg.json"; \
 		"$(LLVM_FRONTEND_BUILD_DIR)/bin/cgrac-compile-kernel" "$$root/frontend/generic_dfg.json" --target target/cgra_v3.json --invocation "$$root/invocation.json" --artifact-dir "$$root/backend" -o "$$root/program_manifest.json"; \
 		$(MAKE) --no-print-directory program BUILD_DIR="$$root" PROGRAM_MANIFEST="$$root/program_manifest.json"; \
 		printf '%s\n' '{"schema":"cgra.kernel_abi.expectation.v1","outputs":{"'"$$output_name"'":{"final_value":'"$$expected"',"store_count":4}}}' > "$$root/expected.json"; \
@@ -261,8 +261,8 @@ llvm-recurrence-e2e:
 	compile_case() { \
 		name="$$1"; seed="$$2"; trips="$$3"; expected="$$4"; \
 		root="$$case_dir/$$name"; mkdir -p "$$root/frontend" "$$root/backend"; \
-		"$(LLVM_FRONTEND_BUILD_DIR)/bin/cgra-llvm-loop-lower" compiler/tests/Frontend/LLVM/fixtures/recurrence_seed.ll --function kernel --artifact-dir "$$root/frontend" -o "$$root/frontend/generic_dfg.json"; \
 		printf '%s\n' '{"schema":"cgra.kernel_invocation.v1","trip_count":'"$$trips"',"scalar_inputs":{"seed":'"$$seed"'},"scratchpad_preload":[]}' > "$$root/invocation.json"; \
+		"$(LLVM_FRONTEND_BUILD_DIR)/bin/cgra-llvm-loop-lower" compiler/tests/Frontend/LLVM/fixtures/recurrence_seed.ll --function kernel --artifact-dir "$$root/frontend" --invocation "$$root/invocation.json" -o "$$root/frontend/generic_dfg.json"; \
 		"$(LLVM_FRONTEND_BUILD_DIR)/bin/cgrac-compile-kernel" "$$root/frontend/generic_dfg.json" --target target/cgra_v3.json --invocation "$$root/invocation.json" --max-ii 8 --artifact-dir "$$root/backend" -o "$$root/program_manifest.json"; \
 		$(MAKE) --no-print-directory program BUILD_DIR="$$root" PROGRAM_MANIFEST="$$root/program_manifest.json"; \
 		printf '%s\n' '{"schema":"cgra.kernel_abi.expectation.v1","outputs":{"next":{"final_value":'"$$expected"',"store_count":'"$$trips"'}}}' > "$$root/expected.json"; \
@@ -273,7 +273,23 @@ llvm-recurrence-e2e:
 	compile_case seed5_trip7 5 7 12; \
 	compile_case seed20_trip4 20 4 24; \
 	test "$$(sha256sum "$$case_dir/seed5_trip4/frontend/generic_dfg.json" | cut -d' ' -f1)" = "$$(sha256sum "$$case_dir/seed20_trip4/frontend/generic_dfg.json" | cut -d' ' -f1)"; \
-	test "$$(sha256sum "$$case_dir/seed5_trip4/backend/03_abi_bound.generic_dfg.json" | cut -d' ' -f1)" != "$$(sha256sum "$$case_dir/seed20_trip4/backend/03_abi_bound.generic_dfg.json" | cut -d' ' -f1)"
+	test "$$(sha256sum "$$case_dir/seed5_trip4/backend/03_abi_bound.generic_dfg.json" | cut -d' ' -f1)" != "$$(sha256sum "$$case_dir/seed20_trip4/backend/03_abi_bound.generic_dfg.json" | cut -d' ' -f1)"; \
+	compile_induction_case() { \
+		name="$$1"; input="$$2"; expected="$$3"; root="$$case_dir/$$name"; \
+		mkdir -p "$$root/frontend" "$$root/backend"; \
+		printf '%s\n' '{"schema":"cgra.kernel_invocation.v1","trip_count":4,"scalar_inputs":{"x":'"$$input"'},"scratchpad_preload":[]}' > "$$root/invocation.json"; \
+		"$(LLVM_FRONTEND_BUILD_DIR)/bin/cgra-llvm-loop-lower" compiler/tests/Frontend/LLVM/fixtures/induction_data_use_v0.ll --function kernel --artifact-dir "$$root/frontend" --invocation "$$root/invocation.json" -o "$$root/frontend/generic_dfg.json"; \
+		"$(LLVM_FRONTEND_BUILD_DIR)/bin/cgrac-compile-kernel" "$$root/frontend/generic_dfg.json" --target target/cgra_v3.json --invocation "$$root/invocation.json" --max-ii 8 --max-node-candidates 10000 --max-backtracks 10000 --max-route-calls 20000 --max-route-states 5000 --artifact-dir "$$root/backend" -o "$$root/program_manifest.json"; \
+		$(MAKE) --no-print-directory program BUILD_DIR="$$root" PROGRAM_MANIFEST="$$root/program_manifest.json"; \
+		printf '%s\n' '{"schema":"cgra.kernel_abi.expectation.v1","outputs":{"y":{"final_value":'"$$expected"',"store_count":4}}}' > "$$root/expected.json"; \
+		python3 tools/check_kernel_abi_e2e.py --signature "$$root/backend/01_kernel_signature.json" --layout "$$root/backend/04_kernel_abi_layout.json" --expectation "$$root/expected.json" --golden "$$root/program/program_manifest/golden_trace.csv" --rtl "$$root/program/program_manifest/rtl_trace.csv"; \
+	}; \
+	compile_induction_case induction_x7 7 10; \
+	compile_induction_case induction_x20 20 23; \
+	test "$$(sha256sum "$$case_dir/induction_x7/frontend/generic_dfg.json" | cut -d' ' -f1)" = "$$(sha256sum "$$case_dir/induction_x20/frontend/generic_dfg.json" | cut -d' ' -f1)"; \
+	test "$$(sha256sum "$$case_dir/induction_x7/backend/03_abi_bound.generic_dfg.json" | cut -d' ' -f1)" != "$$(sha256sum "$$case_dir/induction_x20/backend/03_abi_bound.generic_dfg.json" | cut -d' ' -f1)"; \
+	test "$$(sha256sum "$$case_dir/induction_x7/program_manifest.json" | cut -d' ' -f1)" != "$$(sha256sum "$$case_dir/induction_x20/program_manifest.json" | cut -d' ' -f1)"; \
+	true
 
 kernel-abi-scalar-e2e:
 	cmake -S compiler -B "$(COMPILER_BUILD_DIR)" -DCGRA_BUILD_TESTS=OFF -DCGRA_WARNINGS_AS_ERRORS=ON
