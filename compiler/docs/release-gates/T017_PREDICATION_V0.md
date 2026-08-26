@@ -86,14 +86,24 @@ and unsupported conditional recurrence forms.
 
 ## Hosted Evidence
 
-The older candidate runs remain historical evidence only. Exact evidence for
-the closure head produced from `2ec558243e94dea615fbc046e5198690febcc77a`
-will be recorded after the feature push:
+The first exact closure candidate was `3eba4307d94c77f9dbcbd6b81592cca83f73035b`.
+Its feature-head gates passed:
 
-- exact feature-head compiler-fast: PENDING
-- exact feature-head hardware-regression: PENDING
-- PR #5 merge-ref compiler-fast: PENDING
-- PR #5 merge-ref hardware-regression: PENDING
+- exact feature-head compiler-fast: [run 32986749691](https://github.com/shiyunyao/predicated-mesh-cgra/actions/runs/32986749691) — PASS.
+- exact feature-head hardware-regression: [run 32986749710](https://github.com/shiyunyao/predicated-mesh-cgra/actions/runs/32986749710) — PASS, including T013/T014/T015/T016 and T017 predicated-Store E2E.
+
+PR [#5](https://github.com/shiyunyao/predicated-mesh-cgra/pull/5) merge-ref
+for the same source head also passed:
+
+- PR merge-ref compiler-fast: [run 32986742094](https://github.com/shiyunyao/predicated-mesh-cgra/actions/runs/32986742094) — PASS.
+- PR merge-ref hardware-regression: [run 32986742093](https://github.com/shiyunyao/predicated-mesh-cgra/actions/runs/32986742093) — PASS, including the full backend and T017 predicated-Store E2E.
+
+This documentation update will be pushed as a new feature head and its
+exact-head gates will be recorded here as well. The final merge and main runs
+remain pending:
+
+- final feature-head compiler-fast: PENDING
+- final feature-head hardware-regression: PENDING
 - merged-main compiler-fast: PENDING
 - merged-main hardware-regression: PENDING
 
@@ -103,7 +113,8 @@ predicated-Store E2E targets.
 
 ## Release Decision
 
-**STOP pending hosted release gates.** Functional T017 closure is complete, but
-T018 must not begin until exact feature-head and merge-ref gates pass, PR #5 is
+**STOP pending final documentation-head and post-merge gates.** Functional T017
+closure and the first exact-head/merge-ref gates are green. T018 must not begin
+until this documentation update's exact feature-head gates pass, PR #5 is
 merged, post-merge `main` gates pass, and this record is sealed with those
 immutable SHAs and run URLs.
