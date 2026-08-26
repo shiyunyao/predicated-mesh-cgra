@@ -191,6 +191,14 @@ target_link_libraries(cgra_llvm_frontend PUBLIC cgra_ir ${CGRA_LLVM_LIBS})
 cgra_enable_warnings(cgra_llvm_frontend)
 cgra_enable_sanitizers(cgra_llvm_frontend)
 
+add_library(cgra_frontend_composition
+  lib/Frontend/LLVM/FrontendInvocationValidation.cpp
+)
+target_include_directories(cgra_frontend_composition PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(cgra_frontend_composition PUBLIC cgra_llvm_frontend cgra_abi)
+cgra_enable_warnings(cgra_frontend_composition)
+cgra_enable_sanitizers(cgra_frontend_composition)
+
 add_executable(cgra-target-dump tools/target-dump/main.cpp)
 target_link_libraries(cgra-target-dump PRIVATE cgra_target)
 cgra_enable_warnings(cgra-target-dump)
@@ -298,7 +306,7 @@ set_target_properties(cgrac-compile-dfg PROPERTIES
 add_executable(cgra-llvm-loop-lower tools/llvm-loop-lower/main.cpp)
 target_include_directories(cgra-llvm-loop-lower SYSTEM PRIVATE ${LLVM_INCLUDE_DIRS})
 target_compile_definitions(cgra-llvm-loop-lower PRIVATE ${LLVM_DEFINITIONS_LIST})
-target_link_libraries(cgra-llvm-loop-lower PRIVATE cgra_llvm_frontend ${CGRA_LLVM_LIBS})
+target_link_libraries(cgra-llvm-loop-lower PRIVATE cgra_frontend_composition ${CGRA_LLVM_LIBS})
 cgra_enable_warnings(cgra-llvm-loop-lower)
 cgra_enable_sanitizers(cgra-llvm-loop-lower)
 set_target_properties(cgra-llvm-loop-lower PROPERTIES
@@ -453,7 +461,15 @@ if(CGRA_BUILD_TESTS)
     NAME cgra-llvm-frontend-tests
     TYPE semantic
     SOURCES tests/Frontend/LLVM/LLVMFrontendTest.cpp
-    LIBRARIES cgra_llvm_frontend ${CGRA_LLVM_LIBS}
+    LIBRARIES cgra_frontend_composition ${CGRA_LLVM_LIBS}
+    DEFINITIONS CGRA_REPOSITORY_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/.."
+  )
+
+  cgra_add_test(
+    NAME cgra-llvm-recurrence-backend-test
+    TYPE semantic
+    SOURCES tests/Frontend/LLVM/LLVMRecurrenceBackendTest.cpp
+    LIBRARIES cgra_frontend_composition cgra_mapping cgra_analysis ${CGRA_LLVM_LIBS}
     DEFINITIONS CGRA_REPOSITORY_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/.."
   )
 

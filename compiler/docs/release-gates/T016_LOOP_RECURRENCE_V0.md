@@ -62,3 +62,24 @@ and T016 recurrence E2E on the actual merged `main` commit.
 Release decision: **T-COMP-016: CLOSED**
 
 Next task: **GO T-COMP-017**
+
+## Evidence hardening candidate
+
+The follow-up `compiler/frontend-evidence-hardening` branch adds:
+
+- explicit `staticTripCount` versus `KernelInvocation.tripCount` validation;
+- separate loop-selection, recurrence, loop-control, provenance, and result
+  artifact schemas;
+- named negative tests for unsupported recurrence shapes and verifier
+  corruption;
+- an independent LLVM recurrence → TargetLegalizer → MII → ModuloMapper
+  preservation regression.
+
+The required scalar-induction Golden/RTL gate is intentionally not marked
+green yet. On the current target contract, the canonical `%iv.next = add
+%iv, 1` fixture produces a self distance-one recurrence whose storage segment
+has `write=0`, `read=II`, while `same_cycle_read_write_same_address` is
+`illegal`. The production RF allocator therefore rejects it with
+`RFA_FIXED_REGISTER_SELF_OVERLAP`; this is a target capability limitation,
+not a mapper budget result. No evidence-hardening merge or T018 release is
+authorized until this scope decision is resolved explicitly.

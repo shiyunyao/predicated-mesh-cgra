@@ -15,7 +15,9 @@ void usage(const char* name) {
   std::cerr << "usage: " << name
             << " input.generic_dfg.json --target target.json --invocation invocation.json"
                " --artifact-dir dir -o manifest.json [--abi-layout-out path]"
-               " [--max-ii N] [--min-ii N] [--no-virtual-hold]\n";
+               " [--max-ii N] [--min-ii N] [--max-node-candidates N]"
+               " [--max-backtracks N] [--max-route-calls N] [--max-route-states N]"
+               " [--no-virtual-hold]\n";
 }
 } // namespace
 
@@ -56,6 +58,14 @@ int main(int argc, char** argv) {
         options.backend.mapper.maxII = std::stoul(next());
       else if (arg == "--min-ii")
         options.backend.mapper.minII = std::stoul(next());
+      else if (arg == "--max-node-candidates")
+        options.backend.mapper.budget.maxNodeCandidateAttempts = std::stoull(next());
+      else if (arg == "--max-backtracks")
+        options.backend.mapper.budget.maxBacktracks = std::stoull(next());
+      else if (arg == "--max-route-calls")
+        options.backend.mapper.budget.maxRouteSearchCalls = std::stoull(next());
+      else if (arg == "--max-route-states")
+        options.backend.mapper.budget.perRouteBudget.maxStateExpansions = std::stoull(next());
       else if (arg == "--no-virtual-hold")
         options.backend.mapper.routeOptions.allowVirtualHold = false;
       else {
@@ -82,11 +92,16 @@ int main(int argc, char** argv) {
     options.backend.programName = kernelName.empty() ? dfg.name() : kernelName;
     if (options.backend.mapper.maxII == 0)
       options.backend.mapper.maxII = 8;
-    options.backend.mapper.budget.maxNodeCandidateAttempts = 100000;
-    options.backend.mapper.budget.maxBacktracks = 50000;
-    options.backend.mapper.budget.maxRouteSearchCalls = 100000;
-    options.backend.mapper.budget.perRouteBudget.maxStateExpansions = 10000;
-    options.backend.mapper.budget.perRouteBudget.maxQueuePushes = 20000;
+    if (options.backend.mapper.budget.maxNodeCandidateAttempts == 0)
+      options.backend.mapper.budget.maxNodeCandidateAttempts = 100000;
+    if (options.backend.mapper.budget.maxBacktracks == 0)
+      options.backend.mapper.budget.maxBacktracks = 50000;
+    if (options.backend.mapper.budget.maxRouteSearchCalls == 0)
+      options.backend.mapper.budget.maxRouteSearchCalls = 100000;
+    if (options.backend.mapper.budget.perRouteBudget.maxStateExpansions == 0)
+      options.backend.mapper.budget.perRouteBudget.maxStateExpansions = 10000;
+    if (options.backend.mapper.budget.perRouteBudget.maxQueuePushes == 0)
+      options.backend.mapper.budget.perRouteBudget.maxQueuePushes = 20000;
     options.backend.rfAllocation.budget.maxColoringDecisions = 100000;
     options.backend.rfAllocation.budget.maxColoringBacktracks = 100000;
     options.backend.materializationBudget.maxExplicitBoundaryCycles = 1000000;
