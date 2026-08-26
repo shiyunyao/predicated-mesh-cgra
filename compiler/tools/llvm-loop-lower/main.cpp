@@ -197,6 +197,14 @@ int main(int argc, char** argv) {
                             {"if_conversions", resultJson["provenance"]["if_conversions"]}}
                  .dump(2) +
              "\n"));
+      if (resultJson["provenance"].contains("memory_accesses"))
+        writeArtifact(
+            artifactDirectory / "02_memory_analysis.json",
+            (nlohmann::json{{"schema", "cgra.llvm_memory_analysis.v1"},
+                            {"accesses", resultJson["provenance"]["memory_accesses"]},
+                            {"dependences", resultJson["provenance"]["memory_dependences"]}}
+                 .dump(2) +
+             "\n"));
       writeArtifact(artifactDirectory / "04_generic_dfg.json", cgra::ir::toJson(*result.dfg));
       writeArtifact(artifactDirectory / "05_generic_dfg_verification.json",
                     cgra::ir::DFGVerifier::verify(*result.dfg).toJson());

@@ -11,6 +11,7 @@ on:
       - compiler/loop-recurrence-v0
       - compiler/frontend-evidence-hardening
       - compiler/predication-v0
+      - compiler/memory-dependence-v0
   workflow_dispatch:
 
 permissions:

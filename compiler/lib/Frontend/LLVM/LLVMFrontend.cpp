@@ -553,11 +553,13 @@ bool validateControlDataUses(LoweringState& state, LLVMFrontendResult& error) {
 void promoteRecurrenceProducerClosure(LoweringState& state) {
   std::vector<const llvm::Instruction*> work(state.recurrenceBackedges.begin(),
                                              state.recurrenceBackedges.end());
+  std::unordered_set<const llvm::Instruction*> visited;
   while (!work.empty()) {
     const auto* instruction = work.back();
     work.pop_back();
-    if (!state.controlSlice.erase(instruction))
+    if (!visited.insert(instruction).second)
       continue;
+    state.controlSlice.erase(instruction);
     for (const auto& operand : instruction->operands()) {
       const auto* dependency = llvm::dyn_cast<llvm::Instruction>(operand.get());
       if (!dependency || !state.selection.loop->contains(dependency) ||
@@ -666,12 +668,25 @@ ir::ExternalValueId getExternal(LoweringState& state, ir::DFGBuilder& builder,
 }
 
 struct IfLoweringState {
+  struct GEPAddressNodes {
+    ir::NodeId address = 0;
+    std::optional<ir::NodeId> scaledIndex;
+    std::optional<ir::NodeId> offsetIndex;
+  };
+
+  struct SyntheticAddressNode {
+    ir::NodeId node = 0;
+    const llvm::GetElementPtrInst* gep = nullptr;
+    std::string role;
+  };
+
   explicit IfLoweringState(LoopSelection& selected) : selection(selected) {}
   LoopSelection& selection;
   BranchRegion region;
   std::unordered_map<const llvm::Value*, ir::NodeId> nodes;
   std::unordered_map<const llvm::Value*, ir::ExternalValueId> externals;
   std::unordered_map<const llvm::Value*, ir::ConstantId> constants;
+  std::unordered_map<std::uint32_t, ir::ConstantId> addressConstants;
   std::set<std::string> externalNames;
   std::set<std::string> liveOutNames;
   std::uint32_t nextExternalOrdinal = 0;
@@ -681,6 +696,8 @@ struct IfLoweringState {
   std::vector<const llvm::PHINode*> selectOrder;
   std::unordered_map<const llvm::PHINode*, std::size_t> recurrences;
   std::unordered_set<const llvm::Instruction*> recurrenceBackedges;
+  std::unordered_map<const llvm::GetElementPtrInst*, GEPAddressNodes> gepAddressNodes;
+  std::vector<SyntheticAddressNode> syntheticAddressNodes;
   LLVMFrontendProvenance provenance;
 };
 
@@ -735,6 +752,26 @@ bool discoverIfRecurrences(IfLoweringState& state) {
     state.provenance.recurrences.push_back(std::move(descriptor));
   }
   return true;
+}
+
+void promoteIfRecurrenceProducerClosure(IfLoweringState& state) {
+  std::vector<const llvm::Instruction*> work(state.recurrenceBackedges.begin(),
+                                             state.recurrenceBackedges.end());
+  std::unordered_set<const llvm::Instruction*> visited;
+  while (!work.empty()) {
+    const auto* instruction = work.back();
+    work.pop_back();
+    if (!visited.insert(instruction).second)
+      continue;
+    state.terminationSlice.erase(instruction);
+    for (const auto& operand : instruction->operands()) {
+      const auto* dependency = llvm::dyn_cast<llvm::Instruction>(operand.get());
+      if (!dependency || !state.selection.loop->contains(dependency) ||
+          llvm::isa<llvm::PHINode>(dependency) || !opcode(*dependency))
+        continue;
+      work.push_back(dependency);
+    }
+  }
 }
 
 std::string blockName(const llvm::Function& function, const llvm::BasicBlock* block) {
@@ -864,6 +901,17 @@ ir::ConstantId getIfConstant(IfLoweringState& state, ir::DFGBuilder& builder,
   return id;
 }
 
+ir::ConstantId getAddressConstant(IfLoweringState& state, ir::DFGBuilder& builder,
+                                  std::int64_t value) {
+  const auto bits = static_cast<std::uint32_t>(static_cast<std::int32_t>(value));
+  if (const auto iterator = state.addressConstants.find(bits);
+      iterator != state.addressConstants.end())
+    return iterator->second;
+  const auto id = builder.addConstant(ir::ValueType::i32(), bits);
+  state.addressConstants.emplace(bits, id);
+  return id;
+}
+
 bool valueIsInBranch(const llvm::Value& value, const BranchRegion& region, const llvm::Loop& loop) {
   const auto* instruction = llvm::dyn_cast<llvm::Instruction>(&value);
   if (!instruction || !loop.contains(instruction))
@@ -923,24 +971,68 @@ LLVMFrontendResult lowerIfConvertedLoop(llvm::Module& module, const LLVMFrontend
     }
   }
   discoverIfRecurrences(state);
+  promoteIfRecurrenceProducerClosure(state);
+
+  const auto memoryAnalysis =
+      analyzeMemoryDependences(*selection.loop, *selection.dominatorTree, *selection.loopInfo);
+  if (!memoryAnalysis.ok()) {
+    LLVMFrontendStatus status = LLVMFrontendStatus::UnsupportedMemoryOperation;
+    LLVMFrontendDiagnosticCode code = LLVMFrontendDiagnosticCode::LLVM_FRONTEND_UNSUPPORTED_MEMORY;
+    switch (memoryAnalysis.status) {
+    case LLVMMemoryAnalysisStatus::UnsupportedAccessType:
+      status = LLVMFrontendStatus::UnsupportedMemoryType;
+      code = LLVMFrontendDiagnosticCode::LLVM_FRONTEND_UNSUPPORTED_MEMORY_TYPE;
+      break;
+    case LLVMMemoryAnalysisStatus::UnsupportedAddressSpace:
+      status = LLVMFrontendStatus::UnsupportedMemoryAddressSpace;
+      code = LLVMFrontendDiagnosticCode::LLVM_FRONTEND_UNSUPPORTED_MEMORY_ADDRESS_SPACE;
+      break;
+    case LLVMMemoryAnalysisStatus::UnsupportedAlignment:
+      status = LLVMFrontendStatus::UnsupportedMemoryAlignment;
+      code = LLVMFrontendDiagnosticCode::LLVM_FRONTEND_UNSUPPORTED_MEMORY_ALIGNMENT;
+      break;
+    case LLVMMemoryAnalysisStatus::UnsupportedPointerBase:
+      status = LLVMFrontendStatus::UnsupportedPointerBase;
+      code = LLVMFrontendDiagnosticCode::LLVM_FRONTEND_UNSUPPORTED_POINTER_BASE;
+      break;
+    case LLVMMemoryAnalysisStatus::UnsupportedNonAffineAddress:
+      status = LLVMFrontendStatus::UnsupportedNonAffineAddress;
+      code = LLVMFrontendDiagnosticCode::LLVM_FRONTEND_UNSUPPORTED_NON_AFFINE_ADDRESS;
+      break;
+    case LLVMMemoryAnalysisStatus::UnsupportedPathSensitiveOrder:
+      status = LLVMFrontendStatus::UnsupportedPathSensitiveMemoryOrder;
+      code = LLVMFrontendDiagnosticCode::LLVM_FRONTEND_UNSUPPORTED_PATH_SENSITIVE_MEMORY_ORDER;
+      break;
+    case LLVMMemoryAnalysisStatus::Success:
+    case LLVMMemoryAnalysisStatus::UnsupportedVolatileOrAtomic:
+    case LLVMMemoryAnalysisStatus::InternalError:
+      break;
+    }
+    return failure(status, code, memoryAnalysis.message, &selection);
+  }
+  std::unordered_map<const llvm::Instruction*, const LLVMMemoryAccessDescriptor*> memoryAccesses;
+  for (const auto& access : memoryAnalysis.accesses)
+    memoryAccesses.emplace(access.instruction, &access);
 
   std::vector<const llvm::StoreInst*> stores;
   for (auto* block : selection.loop->getBlocks())
     for (const auto& instruction : *block)
       if (const auto* store = llvm::dyn_cast<llvm::StoreInst>(&instruction))
         stores.push_back(store);
-  if (stores.size() > 1)
-    return failure(LLVMFrontendStatus::MultipleStoresRequireT018,
-                   LLVMFrontendDiagnosticCode::LLVM_FRONTEND_MULTIPLE_STORES_REQUIRE_T018,
-                   "multiple source Stores require T018 memory dependence analysis", &selection,
-                   stores.front());
-  if (!stores.empty() && !discoveredRegion)
-    return failure(LLVMFrontendStatus::UnsupportedIfSideEffect,
-                   LLVMFrontendDiagnosticCode::LLVM_FRONTEND_UNSUPPORTED_IF_SIDE_EFFECT,
-                   "a Store must be guarded by a supported internal branch", &selection,
-                   stores.front());
-  const bool storePredicateComplemented =
-      !stores.empty() && stores.front()->getParent() == state.region.falseBlock;
+  bool hasTrueStore = false;
+  bool hasFalseStore = false;
+  if (discoveredRegion) {
+    hasTrueStore = std::ranges::any_of(
+        stores, [&](const auto* store) { return store->getParent() == state.region.trueBlock; });
+    hasFalseStore = std::ranges::any_of(
+        stores, [&](const auto* store) { return store->getParent() == state.region.falseBlock; });
+    if (hasTrueStore && hasFalseStore)
+      return failure(LLVMFrontendStatus::UnsupportedIfSideEffect,
+                     LLVMFrontendDiagnosticCode::LLVM_FRONTEND_UNSUPPORTED_IF_SIDE_EFFECT,
+                     "Stores in both branch arms require two predicate polarities", &selection,
+                     stores.front());
+  }
+  const bool storePredicateComplemented = discoveredRegion && hasFalseStore && !hasTrueStore;
   if (storePredicateComplemented) {
     const auto predicate = icmpPredicate(*state.region.condition);
     if (!predicate || !complementPredicate(*predicate))
@@ -1022,16 +1114,46 @@ LLVMFrontendResult lowerIfConvertedLoop(llvm::Module& module, const LLVMFrontend
         continue;
       if (llvm::isa<llvm::StoreInst>(instruction))
         continue;
+      if (const auto* gep = llvm::dyn_cast<llvm::GetElementPtrInst>(&instruction)) {
+        const auto access = std::ranges::find_if(
+            memoryAnalysis.accesses, [&](const auto& item) { return item.address == gep; });
+        if (access == memoryAnalysis.accesses.end())
+          return failure(LLVMFrontendStatus::UnsupportedNonAffineAddress,
+                         LLVMFrontendDiagnosticCode::LLVM_FRONTEND_UNSUPPORTED_NON_AFFINE_ADDRESS,
+                         "GEP is not the address of a supported memory operation", &selection, gep);
+        IfLoweringState::GEPAddressNodes addressNodes;
+        addressNodes.address = builder.addNode(
+            ir::Opcode::Add, {ir::ValueType::i32(), ir::ValueType::i32()}, ir::ValueType::i32());
+        state.nodes.emplace(gep, addressNodes.address);
+        if (access->dynamicIndex && access->dynamicScaleWords != 1) {
+          addressNodes.scaledIndex = builder.addNode(
+              ir::Opcode::Mul, {ir::ValueType::i32(), ir::ValueType::i32()}, ir::ValueType::i32());
+          state.syntheticAddressNodes.push_back({*addressNodes.scaledIndex, gep, "GEP_SCALE"});
+        }
+        if (access->dynamicIndex && access->gepConstantOffsetWords != 0) {
+          addressNodes.offsetIndex = builder.addNode(
+              ir::Opcode::Add, {ir::ValueType::i32(), ir::ValueType::i32()}, ir::ValueType::i32());
+          state.syntheticAddressNodes.push_back({*addressNodes.offsetIndex, gep, "GEP_OFFSET"});
+        }
+        state.gepAddressNodes.emplace(gep, addressNodes);
+        continue;
+      }
+      if (const auto* load = llvm::dyn_cast<llvm::LoadInst>(&instruction)) {
+        if (discoveredRegion && valueIsInBranch(*load, state.region, *selection.loop))
+          return failure(LLVMFrontendStatus::PredicatedLoadUnsupported,
+                         LLVMFrontendDiagnosticCode::LLVM_FRONTEND_PREDICATED_LOAD_UNSUPPORTED,
+                         "branch-local conditional Load has no V0 suppression mechanism",
+                         &selection, load);
+        state.nodes.emplace(load, builder.addNode(ir::Opcode::Load, {ir::ValueType::i32()},
+                                                  ir::ValueType::i32(), std::nullopt,
+                                                  ir::MemoryOpInfo{32, false}));
+        continue;
+      }
       if (isMemoryInstruction(instruction)) {
-        const auto status = llvm::isa<llvm::GetElementPtrInst>(instruction)
-                                ? LLVMFrontendStatus::MemoryPatternRequiresT018
-                                : LLVMFrontendStatus::PredicatedLoadUnsupported;
-        const auto code =
-            llvm::isa<llvm::GetElementPtrInst>(instruction)
-                ? LLVMFrontendDiagnosticCode::LLVM_FRONTEND_MEMORY_PATTERN_REQUIRES_T018
-                : LLVMFrontendDiagnosticCode::LLVM_FRONTEND_PREDICATED_LOAD_UNSUPPORTED;
-        return failure(status, code, "memory operations in speculative arms are outside T017 V0",
-                       &selection, &instruction);
+        return failure(LLVMFrontendStatus::UnsupportedMemoryOperation,
+                       LLVMFrontendDiagnosticCode::LLVM_FRONTEND_UNSUPPORTED_MEMORY,
+                       "memory instruction is outside the T018 V0 subset", &selection,
+                       &instruction);
       }
       if (llvm::isa<llvm::CallBase>(&instruction))
         return failure(LLVMFrontendStatus::UnsupportedIfSideEffect,
@@ -1039,7 +1161,7 @@ LLVMFrontendResult lowerIfConvertedLoop(llvm::Module& module, const LLVMFrontend
                        "calls and side-effecting intrinsics are outside T017 V0", &selection,
                        &instruction);
       if (!isPureInstruction(instruction) ||
-          (!state.predicateSlice.contains(&instruction) &&
+          (discoveredRegion && !state.predicateSlice.contains(&instruction) &&
            valueIsInBranch(instruction, state.region, *selection.loop) &&
            !llvm::isSafeToSpeculativelyExecute(&instruction))) {
         return failure(LLVMFrontendStatus::UnsafeSpeculation,
@@ -1149,8 +1271,14 @@ LLVMFrontendResult lowerIfConvertedLoop(llvm::Module& module, const LLVMFrontend
       builder.bindConstant(destination, operand, getIfConstant(state, builder, *constant, *type));
       return std::nullopt;
     }
-    if (value.getType()->isPointerTy())
+    if (value.getType()->isPointerTy()) {
+      const auto* base = llvm::getUnderlyingObject(&value);
+      if (!base || !base->getType()->isPointerTy())
+        return std::nullopt;
+      builder.bindExternal(destination, operand,
+                           getIfExternal(state, builder, *base, ir::ValueType::i32()));
       return std::nullopt;
+    }
     const auto type = valueType(value);
     if (!type)
       return std::nullopt;
@@ -1191,6 +1319,47 @@ LLVMFrontendResult lowerIfConvertedLoop(llvm::Module& module, const LLVMFrontend
         continue;
       if (llvm::isa<llvm::StoreInst>(instruction))
         continue;
+      if (const auto* gep = llvm::dyn_cast<llvm::GetElementPtrInst>(&instruction)) {
+        const auto access = std::ranges::find_if(
+            memoryAnalysis.accesses, [&](const auto& item) { return item.address == gep; });
+        if (access == memoryAnalysis.accesses.end())
+          return failure(LLVMFrontendStatus::UnsupportedNonAffineAddress,
+                         LLVMFrontendDiagnosticCode::LLVM_FRONTEND_UNSUPPORTED_NON_AFFINE_ADDRESS,
+                         "GEP address descriptor is missing", &selection, gep);
+        const auto addressNodes = state.gepAddressNodes.at(gep);
+        provider(*access->base, addressNodes.address, 0, false);
+        if (!access->dynamicIndex) {
+          builder.bindConstant(addressNodes.address, 1,
+                               getAddressConstant(state, builder, access->gepConstantOffsetWords));
+          continue;
+        }
+
+        ir::NodeId dynamicProvider = addressNodes.address;
+        if (addressNodes.scaledIndex) {
+          provider(*access->dynamicIndex, *addressNodes.scaledIndex, 0, false);
+          builder.bindConstant(*addressNodes.scaledIndex, 1,
+                               getAddressConstant(state, builder, access->dynamicScaleWords));
+          dynamicProvider = *addressNodes.scaledIndex;
+        }
+        if (addressNodes.offsetIndex) {
+          if (addressNodes.scaledIndex)
+            builder.addDataEdge(*addressNodes.scaledIndex, *addressNodes.offsetIndex, 0);
+          else
+            provider(*access->dynamicIndex, *addressNodes.offsetIndex, 0, false);
+          builder.bindConstant(*addressNodes.offsetIndex, 1,
+                               getAddressConstant(state, builder, access->gepConstantOffsetWords));
+          dynamicProvider = *addressNodes.offsetIndex;
+        }
+        if (!addressNodes.scaledIndex && !addressNodes.offsetIndex)
+          provider(*access->dynamicIndex, addressNodes.address, 1, false);
+        else
+          builder.addDataEdge(dynamicProvider, addressNodes.address, 1);
+        continue;
+      }
+      if (const auto* load = llvm::dyn_cast<llvm::LoadInst>(&instruction)) {
+        provider(*load->getPointerOperand(), destination->second, 0, false);
+        continue;
+      }
       std::uint32_t operand = 0;
       for (const auto& value : instruction.operands()) {
         bool predicateOperand = false;
@@ -1239,16 +1408,8 @@ LLVMFrontendResult lowerIfConvertedLoop(llvm::Module& module, const LLVMFrontend
     }
   }
 
-  if (stores.size() == 1) {
-    const auto* store = stores.front();
-    if (!isConditionalStore(*store, state.region))
-      return failure(LLVMFrontendStatus::UnsupportedIfSideEffect,
-                     LLVMFrontendDiagnosticCode::LLVM_FRONTEND_UNSUPPORTED_IF_SIDE_EFFECT,
-                     "Store must be located in one arm of the internal branch", &selection, store);
-    if (store->isVolatile() || store->isAtomic())
-      return failure(LLVMFrontendStatus::UnsupportedIfSideEffect,
-                     LLVMFrontendDiagnosticCode::LLVM_FRONTEND_UNSUPPORTED_IF_SIDE_EFFECT,
-                     "volatile and atomic Stores are outside T017 V0", &selection, store);
+  for (const auto* store : stores) {
+    const bool conditional = discoveredRegion && isConditionalStore(*store, state.region);
     const auto addressType = addressTypeForStore(*store->getPointerOperand());
     const auto dataType = valueType(*store->getValueOperand());
     if (!addressType || !dataType)
@@ -1256,41 +1417,59 @@ LLVMFrontendResult lowerIfConvertedLoop(llvm::Module& module, const LLVMFrontend
                      LLVMFrontendDiagnosticCode::LLVM_FRONTEND_DIRECT_STORE_ADDRESS_REQUIRED,
                      "predicated Store requires direct scalar address and data", &selection, store);
     if (!store->getPointerOperand()->getType()->isPointerTy())
-      return failure(LLVMFrontendStatus::DirectStoreAddressRequired,
-                     LLVMFrontendDiagnosticCode::LLVM_FRONTEND_DIRECT_STORE_ADDRESS_REQUIRED,
-                     "predicated Store address must be a direct pointer value", &selection, store);
+      return failure(LLVMFrontendStatus::UnsupportedPointerBase,
+                     LLVMFrontendDiagnosticCode::LLVM_FRONTEND_UNSUPPORTED_POINTER_BASE,
+                     "Store address must be a supported LLVM pointer", &selection, store);
+    std::vector<ir::ValueType> storeOperands{*addressType, *dataType};
+    if (conditional)
+      storeOperands.push_back(ir::ValueType::predicate());
     const auto storeNode = builder.addNode(
-        ir::Opcode::Store, {*addressType, *dataType, ir::ValueType::predicate()},
-        ir::ValueType::voidTy(), std::nullopt,
+        ir::Opcode::Store, std::move(storeOperands), ir::ValueType::voidTy(), std::nullopt,
         ir::MemoryOpInfo{static_cast<std::uint32_t>(
                              store->getValueOperand()->getType()->getPrimitiveSizeInBits()),
                          false});
     state.nodes.emplace(store, storeNode);
-    const auto address = store->getPointerOperand();
-    if (const auto* argument = llvm::dyn_cast<llvm::Argument>(address)) {
-      const auto addressExternal = getIfExternal(state, builder, *argument, ir::ValueType::i32());
-      builder.bindExternal(storeNode, 0, addressExternal);
-    } else {
-      return failure(LLVMFrontendStatus::DirectStoreAddressRequired,
-                     LLVMFrontendDiagnosticCode::LLVM_FRONTEND_DIRECT_STORE_ADDRESS_REQUIRED,
-                     "only loop-external direct pointer arguments are supported as Store addresses",
-                     &selection, store);
-    }
+    provider(*store->getPointerOperand(), storeNode, 0, false);
     const auto dataEdge = provider(*store->getValueOperand(), storeNode, 1, false);
     static_cast<void>(dataEdge);
-    auto predicate = state.nodes.find(state.region.condition);
-    if (predicate == state.nodes.end())
-      return failure(LLVMFrontendStatus::UnsupportedBranchCondition,
-                     LLVMFrontendDiagnosticCode::LLVM_FRONTEND_UNSUPPORTED_BRANCH_CONDITION,
-                     "Store branch predicate was not lowered", &selection, store);
-    const ir::NodeId predicateNode = predicate->second;
-    const auto predicateEdge = builder.addPredicateEdge(predicateNode, storeNode, 2);
-    builder.addMemoryEdge(storeNode, storeNode, ir::MemoryDepKind::WAW, 1);
-    for (auto& region : state.provenance.ifConversions) {
-      region.predicateNode = predicateNode;
-      region.predicatedStores.push_back(storeNode);
-      region.predicateEdges.push_back(predicateEdge);
+    if (conditional) {
+      auto predicate = state.nodes.find(state.region.condition);
+      if (predicate == state.nodes.end())
+        return failure(LLVMFrontendStatus::UnsupportedBranchCondition,
+                       LLVMFrontendDiagnosticCode::LLVM_FRONTEND_UNSUPPORTED_BRANCH_CONDITION,
+                       "Store branch predicate was not lowered", &selection, store);
+      const ir::NodeId predicateNode = predicate->second;
+      const auto predicateEdge = builder.addPredicateEdge(predicateNode, storeNode, 2);
+      for (auto& region : state.provenance.ifConversions) {
+        if (!region.branch)
+          continue;
+        region.predicateNode = predicateNode;
+        region.predicatedStores.push_back(storeNode);
+        region.predicateEdges.push_back(predicateEdge);
+      }
     }
+  }
+
+  for (const auto& access : memoryAnalysis.accesses) {
+    const auto memoryNode = state.nodes.at(access.instruction);
+    const auto addressNode = state.nodes.find(access.address);
+    state.provenance.memoryAccesses.push_back(
+        {access.id, std::string(toString(access.kind)), valueSummary(*access.base),
+         access.constantOffsetWords, access.iterationStrideWords, access.accessWidthBits,
+         memoryNode, addressNode == state.nodes.end() ? memoryNode : addressNode->second,
+         access.instruction, access.base});
+  }
+  for (const auto& dependence : memoryAnalysis.dependences) {
+    const auto source =
+        state.nodes.at(memoryAnalysis.accesses.at(dependence.sourceAccess).instruction);
+    const auto destination =
+        state.nodes.at(memoryAnalysis.accesses.at(dependence.destinationAccess).instruction);
+    const auto edge =
+        builder.addMemoryEdge(source, destination, dependence.kind, dependence.distance);
+    state.provenance.memoryDependences.push_back(
+        {dependence.sourceAccess, dependence.destinationAccess,
+         std::string(ir::toString(dependence.kind)), dependence.distance,
+         std::string(toString(dependence.mode)), dependence.reason, edge});
   }
 
   auto addLiveOut = [&](const llvm::Value& value, ir::NodeId source) {
@@ -1317,6 +1496,15 @@ LLVMFrontendResult lowerIfConvertedLoop(llvm::Module& module, const LLVMFrontend
             [](const auto& lhs, const auto& rhs) { return lhs.second < rhs.second; });
   for (const auto& [value, node] : liveOutCandidates)
     addLiveOut(*value, node);
+
+  if (!state.provenance.liveOuts.empty() &&
+      std::ranges::any_of(memoryAnalysis.accesses,
+                          [](const auto& access) { return access.iterationStrideWords != 0; }))
+    return failure(
+        LLVMFrontendStatus::MemoryWithABIScalarLiveOutUnsupportedV0,
+        LLVMFrontendDiagnosticCode::LLVM_FRONTEND_MEMORY_WITH_ABI_SCALAR_LIVEOUT_UNSUPPORTED_V0,
+        "dynamic user memory with an ABI scalar LiveOut is outside the V0 reserved-region proof",
+        &selection);
 
   auto dfg = builder.finish();
   const auto verification = ir::DFGVerifier::verify(dfg);
@@ -1351,6 +1539,11 @@ LLVMFrontendResult lowerIfConvertedLoop(llvm::Module& module, const LLVMFrontend
                                       ordinals.at(instruction), instruction->getOpcodeName(),
                                       instruction});
   }
+  for (const auto& synthetic : state.syntheticAddressNodes) {
+    state.provenance.nodes.push_back({synthetic.node, selection.function->getName().str(),
+                                      blockName(*selection.function, synthetic.gep->getParent()),
+                                      ordinals.at(synthetic.gep), synthetic.role, synthetic.gep});
+  }
   for (const auto* value : state.selectOrder) {
     const auto node = state.selects.at(value);
     state.provenance.nodes.push_back({node, selection.function->getName().str(),
@@ -1377,15 +1570,19 @@ LLVMFrontendResult lowerSelectedLoop(llvm::Module& module, const LLVMFrontendOpt
     return error;
   bool hasInternalBranch = false;
   bool hasDirectSelect = false;
+  bool hasMemory = false;
   for (auto* block : selected->loop->getBlocks()) {
     if (const auto* branch = llvm::dyn_cast<llvm::BranchInst>(block->getTerminator()))
       if (branch->isConditional() && selected->loop->contains(branch->getSuccessor(0)) &&
           selected->loop->contains(branch->getSuccessor(1)))
         hasInternalBranch = true;
     for (const auto& instruction : *block)
-      hasDirectSelect |= llvm::isa<llvm::SelectInst>(instruction);
+      if (llvm::isa<llvm::SelectInst>(instruction))
+        hasDirectSelect = true;
+      else if (isMemoryInstruction(instruction))
+        hasMemory = true;
   }
-  if (hasInternalBranch || hasDirectSelect || selected->loop->getBlocks().size() > 1) {
+  if (hasInternalBranch || hasDirectSelect || hasMemory || selected->loop->getBlocks().size() > 1) {
     auto region = discoverBranchRegion(*selected, error);
     if (hasInternalBranch && !region)
       return error;
@@ -1699,6 +1896,20 @@ std::string_view toString(LLVMFrontendStatus status) noexcept {
     return "predicated_load_unsupported";
   case LLVMFrontendStatus::MemoryPatternRequiresT018:
     return "memory_pattern_requires_t018";
+  case LLVMFrontendStatus::UnsupportedMemoryType:
+    return "unsupported_memory_type";
+  case LLVMFrontendStatus::UnsupportedMemoryAlignment:
+    return "unsupported_memory_alignment";
+  case LLVMFrontendStatus::UnsupportedMemoryAddressSpace:
+    return "unsupported_memory_address_space";
+  case LLVMFrontendStatus::UnsupportedPointerBase:
+    return "unsupported_pointer_base";
+  case LLVMFrontendStatus::UnsupportedNonAffineAddress:
+    return "unsupported_non_affine_address";
+  case LLVMFrontendStatus::UnsupportedPathSensitiveMemoryOrder:
+    return "unsupported_path_sensitive_memory_order";
+  case LLVMFrontendStatus::MemoryWithABIScalarLiveOutUnsupportedV0:
+    return "memory_with_abi_scalar_liveout_unsupported_v0";
   case LLVMFrontendStatus::DirectStoreAddressRequired:
     return "direct_store_address_required";
   case LLVMFrontendStatus::MultipleStoresRequireT018:
@@ -1777,6 +1988,20 @@ std::string_view toString(LLVMFrontendDiagnosticCode code) noexcept {
     return "LLVM_FRONTEND_PREDICATED_LOAD_UNSUPPORTED";
   case LLVMFrontendDiagnosticCode::LLVM_FRONTEND_MEMORY_PATTERN_REQUIRES_T018:
     return "LLVM_FRONTEND_MEMORY_PATTERN_REQUIRES_T018";
+  case LLVMFrontendDiagnosticCode::LLVM_FRONTEND_UNSUPPORTED_MEMORY_TYPE:
+    return "LLVM_FRONTEND_UNSUPPORTED_MEMORY_TYPE";
+  case LLVMFrontendDiagnosticCode::LLVM_FRONTEND_UNSUPPORTED_MEMORY_ALIGNMENT:
+    return "LLVM_FRONTEND_UNSUPPORTED_MEMORY_ALIGNMENT";
+  case LLVMFrontendDiagnosticCode::LLVM_FRONTEND_UNSUPPORTED_MEMORY_ADDRESS_SPACE:
+    return "LLVM_FRONTEND_UNSUPPORTED_MEMORY_ADDRESS_SPACE";
+  case LLVMFrontendDiagnosticCode::LLVM_FRONTEND_UNSUPPORTED_POINTER_BASE:
+    return "LLVM_FRONTEND_UNSUPPORTED_POINTER_BASE";
+  case LLVMFrontendDiagnosticCode::LLVM_FRONTEND_UNSUPPORTED_NON_AFFINE_ADDRESS:
+    return "LLVM_FRONTEND_UNSUPPORTED_NON_AFFINE_ADDRESS";
+  case LLVMFrontendDiagnosticCode::LLVM_FRONTEND_UNSUPPORTED_PATH_SENSITIVE_MEMORY_ORDER:
+    return "LLVM_FRONTEND_UNSUPPORTED_PATH_SENSITIVE_MEMORY_ORDER";
+  case LLVMFrontendDiagnosticCode::LLVM_FRONTEND_MEMORY_WITH_ABI_SCALAR_LIVEOUT_UNSUPPORTED_V0:
+    return "LLVM_FRONTEND_MEMORY_WITH_ABI_SCALAR_LIVEOUT_UNSUPPORTED_V0";
   case LLVMFrontendDiagnosticCode::LLVM_FRONTEND_DIRECT_STORE_ADDRESS_REQUIRED:
     return "LLVM_FRONTEND_DIRECT_STORE_ADDRESS_REQUIRED";
   case LLVMFrontendDiagnosticCode::LLVM_FRONTEND_MULTIPLE_STORES_REQUIRE_T018:
@@ -1826,7 +2051,9 @@ std::string LLVMFrontendResult::toJson() const {
                             {"externals", Json::array()},
                             {"live_outs", Json::array()},
                             {"recurrences", Json::array()},
-                            {"if_conversions", Json::array()}};
+                            {"if_conversions", Json::array()},
+                            {"memory_accesses", Json::array()},
+                            {"memory_dependences", Json::array()}};
   for (const auto& node : provenance.nodes)
     root["provenance"]["nodes"].push_back({{"node", node.node},
                                            {"function", node.function},
@@ -1877,6 +2104,24 @@ std::string LLVMFrontendResult::toJson() const {
                                  {"false_value", select.falseValue}});
     root["provenance"]["if_conversions"].push_back(std::move(item));
   }
+  for (const auto& access : provenance.memoryAccesses)
+    root["provenance"]["memory_accesses"].push_back({{"id", access.id},
+                                                     {"kind", access.kind},
+                                                     {"base", access.base},
+                                                     {"offset_words", access.offsetWords},
+                                                     {"stride_words", access.strideWords},
+                                                     {"access_width_bits", access.accessWidthBits},
+                                                     {"memory_node", access.memoryNode},
+                                                     {"address_provider", access.addressProvider}});
+  for (const auto& dependence : provenance.memoryDependences)
+    root["provenance"]["memory_dependences"].push_back(
+        {{"source_access", dependence.sourceAccess},
+         {"destination_access", dependence.destinationAccess},
+         {"kind", dependence.kind},
+         {"distance", dependence.distance},
+         {"mode", dependence.mode},
+         {"reason", dependence.reason},
+         {"edge", dependence.edge}});
   for (const auto& diagnostic : diagnostics)
     root["diagnostics"].push_back({{"code", toString(diagnostic.code)},
                                    {"message", diagnostic.message},

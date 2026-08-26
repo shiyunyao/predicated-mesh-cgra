@@ -100,7 +100,7 @@ LLVM_FRONTEND_CLANG ?= clang-14
 LLVM_FRONTEND_OPT ?= opt-14
 LLVM_CMAKE_ARG := $(if $(LLVM_DIR),-DLLVM_DIR=$(LLVM_DIR),)
 
-.PHONY: help check-test lint build test regression shared-scratchpad-tests shared-scratchpad-negative-tests program program-prepare program-build program-run program-check compiler-e2e kernel-abi-e2e kernel-abi-scalar-e2e kernel-abi-base-load-e2e kernel-abi-recurrence-e2e kernel-abi-tripcount-e2e llvm-frontend-e2e llvm-frontend-c-smoke llvm-recurrence-e2e llvm-predication-e2e modulo-loop modulo-loop-prepare modulo-loop-check modulo-loop-tripcount-tests modulo-loop-zero-boundary-test modulo-loop-reuse-test modulo-loop-assert-tests synth-fetch-asap7 synth-memory-shape synth-area synth-timing synth-power synth-power-feasibility synth-fn-cacti clean
+.PHONY: help check-test lint build test regression shared-scratchpad-tests shared-scratchpad-negative-tests program program-prepare program-build program-run program-check compiler-e2e kernel-abi-e2e kernel-abi-scalar-e2e kernel-abi-base-load-e2e kernel-abi-recurrence-e2e kernel-abi-tripcount-e2e llvm-frontend-e2e llvm-frontend-c-smoke llvm-recurrence-e2e llvm-predication-e2e llvm-memory-e2e modulo-loop modulo-loop-prepare modulo-loop-check modulo-loop-tripcount-tests modulo-loop-zero-boundary-test modulo-loop-reuse-test modulo-loop-assert-tests synth-fetch-asap7 synth-memory-shape synth-area synth-timing synth-power synth-power-feasibility synth-fn-cacti clean
 
 help:
 	@echo "make test TEST=<name>  Build and run one testbench"
@@ -111,6 +111,7 @@ help:
 	@echo "make llvm-frontend-e2e  Lower clang LLVM loops through Generic DFG, Kernel ABI, and RTL"
 	@echo "make llvm-recurrence-e2e  Lower LLVM PHI recurrences through Generic DFG, Kernel ABI, and RTL"
 	@echo "make llvm-predication-e2e  Lower LLVM if-conversion predicates through Generic DFG and verifier"
+	@echo "make llvm-memory-e2e  Lower affine LLVM memory through Generic DFG, Kernel ABI, and RTL"
 	@echo "make modulo-loop        Replay the external modulo-loop manifest and run loop coverage"
 	@echo "make synth-area         Map 2x2/4x4 logic and report ASAP7 cell area"
 	@echo "make synth-timing       Estimate 2x2/4x4 logic timing at 100 MHz"
@@ -323,6 +324,42 @@ llvm-predication-e2e:
 	compile_store_case store_limit0 compiler/tests/Frontend/LLVM/fixtures/predicated_store_limit0.json compiler/tests/Frontend/LLVM/fixtures/predicated_store_limit0_expected.json; \
 	test "$$(sha256sum "$$case_dir/store_limit2/frontend/generic_dfg.json" | cut -d' ' -f1)" = "$$(sha256sum "$$case_dir/store_limit0/frontend/generic_dfg.json" | cut -d' ' -f1)"; \
 	test "$$(sha256sum "$$case_dir/store_limit2/program_manifest.json" | cut -d' ' -f1)" != "$$(sha256sum "$$case_dir/store_limit0/program_manifest.json" | cut -d' ' -f1)"
+
+llvm-memory-e2e:
+	@set -eu; \
+	case_dir="$(LLVM_FRONTEND_E2E_DIR)/memory"; mkdir -p "$$case_dir"; \
+	command -v "$(LLVM_FRONTEND_CLANG)" >/dev/null || { echo "missing $(LLVM_FRONTEND_CLANG)"; exit 2; }; \
+	command -v "$(LLVM_FRONTEND_OPT)" >/dev/null || { echo "missing $(LLVM_FRONTEND_OPT)"; exit 2; }; \
+	cmake -S compiler -B "$(LLVM_FRONTEND_BUILD_DIR)" -DCGRA_BUILD_TESTS=OFF -DCGRA_WARNINGS_AS_ERRORS=ON $(LLVM_CMAKE_ARG); \
+	cmake --build "$(LLVM_FRONTEND_BUILD_DIR)" --target cgra-llvm-loop-lower cgrac-compile-kernel --parallel; \
+	mkdir -p "$$case_dir/c-smoke/source" "$$case_dir/c-smoke/frontend"; \
+	"$(LLVM_FRONTEND_CLANG)" -m32 -O0 -Xclang -disable-O0-optnone -fno-discard-value-names -S -emit-llvm compiler/tests/Frontend/LLVM/fixtures/kernel_memory_vector_add.c -o "$$case_dir/c-smoke/source/kernel.raw.ll"; \
+	"$(LLVM_FRONTEND_OPT)" -S -passes='mem2reg,loop-simplify,lcssa,simplifycfg' "$$case_dir/c-smoke/source/kernel.raw.ll" -o "$$case_dir/c-smoke/source/kernel.ll"; \
+	"$(LLVM_FRONTEND_BUILD_DIR)/bin/cgra-llvm-loop-lower" "$$case_dir/c-smoke/source/kernel.ll" --function memory_vector_add --artifact-dir "$$case_dir/c-smoke/frontend" -o "$$case_dir/c-smoke/frontend/generic_dfg.json"; \
+	compile_case() { \
+		name="$$1"; llvm="$$2"; function="$$3"; invocation="$$4"; expectation="$$5"; root="$$case_dir/$$name"; \
+		mkdir -p "$$root/frontend" "$$root/backend"; \
+		"$(LLVM_FRONTEND_BUILD_DIR)/bin/cgra-llvm-loop-lower" "$$llvm" --function "$$function" --artifact-dir "$$root/frontend" --invocation "$$invocation" -o "$$root/frontend/generic_dfg.json"; \
+		"$(LLVM_FRONTEND_BUILD_DIR)/bin/cgrac-compile-kernel" "$$root/frontend/generic_dfg.json" --target target/cgra_v3.json --invocation "$$invocation" --artifact-dir "$$root/backend" --max-ii 12 --max-node-candidates 30000 --max-backtracks 30000 --max-route-calls 60000 --max-route-states 10000 -o "$$root/program_manifest.json"; \
+		$(MAKE) --no-print-directory program BUILD_DIR="$$root" PROGRAM_MANIFEST="$$root/program_manifest.json"; \
+		python3 tools/check_llvm_memory_e2e.py --layout "$$root/backend/04_kernel_abi_layout.json" --expectation "$$expectation" --golden "$$root/program/program_manifest/golden_trace.csv" --rtl "$$root/program/program_manifest/rtl_trace.csv"; \
+	}; \
+	vector_llvm=compiler/tests/Frontend/LLVM/fixtures/memory_vector_add.ll; \
+	raw_llvm=compiler/tests/Frontend/LLVM/fixtures/memory_raw_recurrence.ll; \
+	compile_case vector_trip4 "$$vector_llvm" vector_add compiler/tests/Frontend/LLVM/fixtures/memory_vector_add_trip4.json compiler/tests/Frontend/LLVM/fixtures/memory_vector_add_trip4_expected.json; \
+	compile_case vector_base_poison "$$vector_llvm" vector_add compiler/tests/Frontend/LLVM/fixtures/memory_vector_add_base_poison.json compiler/tests/Frontend/LLVM/fixtures/memory_vector_add_base_poison_expected.json; \
+	compile_case vector_data_poison "$$vector_llvm" vector_add compiler/tests/Frontend/LLVM/fixtures/memory_vector_add_data_poison.json compiler/tests/Frontend/LLVM/fixtures/memory_vector_add_data_poison_expected.json; \
+	compile_case raw_trip1 "$$raw_llvm" memory_recurrence compiler/tests/Frontend/LLVM/fixtures/memory_raw_trip1.json compiler/tests/Frontend/LLVM/fixtures/memory_raw_trip1_expected.json; \
+	compile_case raw_trip4 "$$raw_llvm" memory_recurrence compiler/tests/Frontend/LLVM/fixtures/memory_raw_trip4.json compiler/tests/Frontend/LLVM/fixtures/memory_raw_trip4_expected.json; \
+	compile_case raw_trip7 "$$raw_llvm" memory_recurrence compiler/tests/Frontend/LLVM/fixtures/memory_raw_trip7.json compiler/tests/Frontend/LLVM/fixtures/memory_raw_trip7_expected.json; \
+	test "$$(sha256sum "$$case_dir/vector_trip4/frontend/generic_dfg.json" | cut -d' ' -f1)" = "$$(sha256sum "$$case_dir/vector_base_poison/frontend/generic_dfg.json" | cut -d' ' -f1)"; \
+	test "$$(sha256sum "$$case_dir/vector_trip4/frontend/generic_dfg.json" | cut -d' ' -f1)" = "$$(sha256sum "$$case_dir/vector_data_poison/frontend/generic_dfg.json" | cut -d' ' -f1)"; \
+	test "$$(sha256sum "$$case_dir/vector_trip4/program_manifest.json" | cut -d' ' -f1)" != "$$(sha256sum "$$case_dir/vector_base_poison/program_manifest.json" | cut -d' ' -f1)"; \
+	test "$$(sha256sum "$$case_dir/vector_trip4/program_manifest.json" | cut -d' ' -f1)" != "$$(sha256sum "$$case_dir/vector_data_poison/program_manifest.json" | cut -d' ' -f1)"; \
+	test "$$(sha256sum "$$case_dir/raw_trip1/frontend/generic_dfg.json" | cut -d' ' -f1)" = "$$(sha256sum "$$case_dir/raw_trip7/frontend/generic_dfg.json" | cut -d' ' -f1)"; \
+	test "$$(sha256sum "$$case_dir/raw_trip1/program_manifest.json" | cut -d' ' -f1)" != "$$(sha256sum "$$case_dir/raw_trip7/program_manifest.json" | cut -d' ' -f1)"; \
+	jq -e '.dependences | length == 0' "$$case_dir/vector_trip4/frontend/02_memory_analysis.json" >/dev/null; \
+	jq -e 'any(.dependences[]; .kind == "RAW" and .distance == 1)' "$$case_dir/raw_trip4/frontend/02_memory_analysis.json" >/dev/null
 
 kernel-abi-scalar-e2e:
 	cmake -S compiler -B "$(COMPILER_BUILD_DIR)" -DCGRA_BUILD_TESTS=OFF -DCGRA_WARNINGS_AS_ERRORS=ON

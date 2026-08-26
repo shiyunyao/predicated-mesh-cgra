@@ -3,7 +3,17 @@
 
 #include "cgra/IR/DFGVerifier.h"
 
+#include <llvm/ADT/MapVector.h>
+#include <llvm/Analysis/AliasAnalysis.h>
+#include <llvm/Analysis/AssumptionCache.h>
+#include <llvm/Analysis/BasicAliasAnalysis.h>
 #include <llvm/Analysis/LoopInfo.h>
+#include <llvm/Analysis/MemoryLocation.h>
+#include <llvm/Analysis/ScalarEvolution.h>
+#include <llvm/Analysis/ScalarEvolutionExpressions.h>
+#include <llvm/Analysis/TargetLibraryInfo.h>
+#include <llvm/Analysis/ValueTracking.h>
+#include <llvm/IR/DataLayout.h>
 #include <llvm/IR/Dominators.h>
 #include <llvm/IR/Function.h>
 #include <llvm/IR/Instructions.h>
@@ -14,8 +24,11 @@
 
 #include <algorithm>
 #include <functional>
+#include <limits>
 #include <memory>
+#include <set>
 #include <sstream>
+#include <tuple>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -252,11 +265,13 @@ void removeRecurrenceProducerClosure(const Selection& selection,
     }
   }
 
+  std::unordered_set<const llvm::Instruction*> visited;
   while (!work.empty()) {
     const auto* instruction = work.back();
     work.pop_back();
-    if (!slice.erase(instruction))
+    if (const auto [_, inserted] = visited.insert(instruction); !inserted)
       continue;
+    slice.erase(instruction);
     for (const auto& operand : instruction->operands()) {
       const auto* dependency = llvm::dyn_cast<llvm::Instruction>(operand.get());
       if (!dependency || !selection.loop->contains(dependency) ||
@@ -495,6 +510,9 @@ void verifyIfDataflow(const Selection& selection, const LLVMFrontendResult& resu
   std::unordered_set<const llvm::Instruction*> mappedInstructions;
   std::unordered_set<ir::NodeId> plannedSelects;
   std::unordered_set<ir::NodeId> plannedStores;
+  std::unordered_set<ir::NodeId> plannedMemoryNodes;
+  for (const auto& access : result.provenance.memoryAccesses)
+    plannedMemoryNodes.insert(access.memoryNode);
   for (const auto& region : result.provenance.ifConversions) {
     for (const auto& select : region.selects)
       if (!plannedSelects.insert(select.node).second)
@@ -566,9 +584,22 @@ void verifyIfDataflow(const Selection& selection, const LLVMFrontendResult& resu
         report.add("LLVM_FRONTEND_SELECT_SEMANTICS_MISMATCH",
                    "Generic Select is not covered by exactly one LLVM merge/select plan");
     } else if (llvm::isa<llvm::StoreInst>(instruction)) {
-      if (node.opcode != ir::Opcode::Store || !plannedStores.contains(node.id))
+      if (node.opcode != ir::Opcode::Store || !plannedMemoryNodes.contains(node.id) ||
+          (node.operandTypes.size() == 3 && !plannedStores.contains(node.id)))
         report.add("LLVM_FRONTEND_STORE_SEMANTICS_MISMATCH",
-                   "Generic Store is not covered by exactly one predicated Store plan");
+                   "Generic Store is not covered by memory/predication provenance");
+    } else if (llvm::isa<llvm::LoadInst>(instruction)) {
+      if (node.opcode != ir::Opcode::Load || node.resultType != ir::ValueType::i32() ||
+          !node.memoryInfo || node.memoryInfo->accessWidthBits != 32 ||
+          !plannedMemoryNodes.contains(node.id))
+        report.add("LLVM_FRONTEND_MEMORY_NODE_SEMANTICS_MISMATCH",
+                   "Generic Load does not match its LLVM memory access");
+    } else if (llvm::isa<llvm::GetElementPtrInst>(instruction)) {
+      const auto expectedOpcode =
+          provenance->opcode == "GEP_SCALE" ? ir::Opcode::Mul : ir::Opcode::Add;
+      if (node.opcode != expectedOpcode || node.resultType != ir::ValueType::i32())
+        report.add("LLVM_FRONTEND_ADDRESS_SEMANTICS_MISMATCH",
+                   "LLVM GEP must lower to Generic word-address arithmetic");
     } else if (!llvm::isa<llvm::ICmpInst>(instruction)) {
       report.add("LLVM_FRONTEND_NODE_SEMANTICS_MISMATCH",
                  "Generic node provenance names an unsupported LLVM instruction");
@@ -594,6 +625,8 @@ void verifyIfDataflow(const Selection& selection, const LLVMFrontendResult& resu
       continue;
     }
     const auto info = std::get<ir::DataEdgeInfo>(edge.info);
+    if (llvm::isa<llvm::GetElementPtrInst>(destination->instruction))
+      continue;
     const auto llvmOperand =
         correspondingLLVMOperand(result, *destination->instruction, info.dstOperand);
     if (edge.distance == 0) {
@@ -638,11 +671,17 @@ void verifyIfDataflow(const Selection& selection, const LLVMFrontendResult& resu
           info && destination && destination->instruction
               ? correspondingLLVMOperand(result, *destination->instruction, info->dstOperand)
               : 0;
+      const bool gepUsesPhi =
+          destination && llvm::isa<llvm::GetElementPtrInst>(destination->instruction) &&
+          std::ranges::any_of(destination->instruction->operands(), [&](const auto& operand) {
+            return operand.get() == recurrence.phiValue;
+          });
       if (edge.kind() != ir::Edge::Kind::Data || edge.distance != 1 ||
           edge.dst != use.destination || !source || !destination || !destination->instruction ||
           source->instruction != recurrence.backedge || !info || info->dstOperand != use.operand ||
-          llvmOperand >= destination->instruction->getNumOperands() ||
-          destination->instruction->getOperand(llvmOperand) != recurrence.phiValue ||
+          (!gepUsesPhi &&
+           (llvmOperand >= destination->instruction->getNumOperands() ||
+            destination->instruction->getOperand(llvmOperand) != recurrence.phiValue)) ||
           !info->boundary || !boundaryMatches(result, *result.dfg, recurrence, *info->boundary))
         report.add("LLVM_FRONTEND_RECURRENCE_EDGE_VERIFY_FAILED",
                    "recurrence descriptor edge identity is inconsistent");
@@ -653,6 +692,27 @@ void verifyIfDataflow(const Selection& selection, const LLVMFrontendResult& resu
       if (!instruction || !selection.loop->contains(instruction) || slice.contains(instruction) ||
           instruction->isTerminator() || ignored(*instruction))
         continue;
+      if (llvm::isa<llvm::GetElementPtrInst>(instruction)) {
+        bool matched = false;
+        for (const auto& destination : result.provenance.nodes) {
+          if (destination.instruction != instruction || !result.dfg->containsNode(destination.node))
+            continue;
+          for (std::uint32_t operand = 0;
+               operand < result.dfg->node(destination.node).operandTypes.size(); ++operand) {
+            const auto* edge =
+                findProviderEdge(*result.dfg, destination.node, operand, ir::Edge::Kind::Data);
+            const auto* info = edge ? std::get_if<ir::DataEdgeInfo>(&edge->info) : nullptr;
+            const auto* source = edge ? nodeProvenance(result, edge->src) : nullptr;
+            matched |= edge && edge->distance == 1 && source &&
+                       source->instruction == recurrence.backedge && info && info->boundary &&
+                       boundaryMatches(result, *result.dfg, recurrence, *info->boundary);
+          }
+        }
+        if (!matched)
+          report.add("LLVM_FRONTEND_RECURRENCE_EDGE_VERIFY_FAILED",
+                     "recurrence PHI GEP use is missing its Generic address edge");
+        continue;
+      }
       const auto destination = std::ranges::find_if(result.provenance.nodes, [&](const auto& item) {
         return item.instruction == instruction;
       });
@@ -746,6 +806,437 @@ void verifyIfDataflow(const Selection& selection, const LLVMFrontendResult& resu
     }
 }
 
+enum class VerifiedMemoryAccessKind { Load, Store };
+enum class VerifiedMemoryDependenceMode { ExactAffine, Conservative };
+
+struct VerifiedMemoryAccess {
+  std::uint32_t id = 0;
+  VerifiedMemoryAccessKind kind = VerifiedMemoryAccessKind::Load;
+  const llvm::Instruction* instruction = nullptr;
+  const llvm::Value* address = nullptr;
+  const llvm::Value* base = nullptr;
+  const llvm::Value* dynamicIndex = nullptr;
+  std::int64_t dynamicScaleWords = 0;
+  std::int64_t gepConstantOffsetWords = 0;
+  std::int64_t constantOffsetWords = 0;
+  std::int64_t iterationStrideWords = 0;
+  std::uint32_t accessWidthBits = 0;
+};
+
+struct VerifiedMemoryDependence {
+  std::uint32_t sourceAccess = 0;
+  std::uint32_t destinationAccess = 0;
+  ir::MemoryDepKind kind = ir::MemoryDepKind::RAW;
+  std::uint32_t distance = 0;
+  VerifiedMemoryDependenceMode mode = VerifiedMemoryDependenceMode::ExactAffine;
+};
+
+struct VerifiedMemoryExpectations {
+  std::string error;
+  std::vector<VerifiedMemoryAccess> accesses;
+  std::vector<VerifiedMemoryDependence> dependences;
+
+  bool ok() const noexcept { return error.empty(); }
+};
+
+struct VerifiedAffineValue {
+  std::int64_t offset = 0;
+  std::int64_t stride = 0;
+};
+
+bool verifiedFitsAddressWord(std::int64_t value) {
+  return value >= std::numeric_limits<std::int32_t>::min() &&
+         value <= std::numeric_limits<std::int32_t>::max();
+}
+
+const llvm::Value* verifiedPointerOperand(const llvm::Instruction& instruction) {
+  if (const auto* load = llvm::dyn_cast<llvm::LoadInst>(&instruction))
+    return load->getPointerOperand();
+  if (const auto* store = llvm::dyn_cast<llvm::StoreInst>(&instruction))
+    return store->getPointerOperand();
+  return nullptr;
+}
+
+std::optional<std::int64_t> verifiedSignedConstant(const llvm::SCEV* expression) {
+  const auto* constant = llvm::dyn_cast<llvm::SCEVConstant>(expression);
+  if (!constant || constant->getAPInt().getMinSignedBits() > 64)
+    return std::nullopt;
+  return constant->getAPInt().getSExtValue();
+}
+
+std::optional<VerifiedAffineValue> verifiedAffineValue(const llvm::Value& value,
+                                                       const llvm::Loop& loop,
+                                                       llvm::ScalarEvolution& scalarEvolution) {
+  const auto* expression = scalarEvolution.getSCEV(const_cast<llvm::Value*>(&value));
+  if (const auto constant = verifiedSignedConstant(expression))
+    return VerifiedAffineValue{*constant, 0};
+  const auto* recurrence = llvm::dyn_cast<llvm::SCEVAddRecExpr>(expression);
+  if (!recurrence || recurrence->getLoop() != &loop || !recurrence->isAffine())
+    return std::nullopt;
+  const auto start = verifiedSignedConstant(recurrence->getStart());
+  const auto step = verifiedSignedConstant(recurrence->getStepRecurrence(scalarEvolution));
+  if (!start || !step)
+    return std::nullopt;
+  return VerifiedAffineValue{*start, *step};
+}
+
+bool verifiedInstructionBefore(const llvm::Instruction& lhs, const llvm::Instruction& rhs,
+                               const llvm::DominatorTree& dominatorTree) {
+  if (lhs.getParent() == rhs.getParent())
+    return lhs.comesBefore(&rhs);
+  return dominatorTree.dominates(lhs.getParent(), rhs.getParent());
+}
+
+bool verifiedIsStore(const VerifiedMemoryAccess& access) {
+  return access.kind == VerifiedMemoryAccessKind::Store;
+}
+
+ir::MemoryDepKind verifiedDependenceKind(const VerifiedMemoryAccess& source,
+                                         const VerifiedMemoryAccess& destination) {
+  if (verifiedIsStore(source) && verifiedIsStore(destination))
+    return ir::MemoryDepKind::WAW;
+  return verifiedIsStore(source) ? ir::MemoryDepKind::RAW : ir::MemoryDepKind::WAR;
+}
+
+std::optional<std::uint32_t> verifiedPositiveDistance(std::int64_t numerator, std::int64_t stride) {
+  if (stride == 0 || numerator % stride != 0)
+    return std::nullopt;
+  const auto distance = numerator / stride;
+  if (distance <= 0 ||
+      static_cast<std::uint64_t>(distance) > std::numeric_limits<std::uint32_t>::max())
+    return std::nullopt;
+  return static_cast<std::uint32_t>(distance);
+}
+
+void addVerifiedDependence(
+    VerifiedMemoryExpectations& result,
+    std::set<std::tuple<std::uint32_t, std::uint32_t, ir::MemoryDepKind, std::uint32_t>>& seen,
+    std::uint32_t source, std::uint32_t destination, ir::MemoryDepKind kind, std::uint32_t distance,
+    VerifiedMemoryDependenceMode mode) {
+  if (!seen.emplace(source, destination, kind, distance).second)
+    return;
+  result.dependences.push_back({source, destination, kind, distance, mode});
+}
+
+VerifiedMemoryExpectations recomputeMemoryExpectations(const Selection& selection) {
+  VerifiedMemoryExpectations result;
+  auto* function = selection.loop->getHeader()->getParent();
+  const auto& dataLayout = function->getParent()->getDataLayout();
+  llvm::TargetLibraryInfoImpl libraryInfoImpl;
+  llvm::TargetLibraryInfo libraryInfo(libraryInfoImpl);
+  llvm::AssumptionCache assumptions(*function);
+  llvm::ScalarEvolution scalarEvolution(*function, libraryInfo, assumptions,
+                                        *selection.dominatorTree, *selection.loopInfo);
+  llvm::BasicAAResult basicAA(dataLayout, *function, libraryInfo, assumptions,
+                              selection.dominatorTree.get());
+  llvm::AAResults aliasAnalysis(libraryInfo);
+  aliasAnalysis.addAAResult(basicAA);
+
+  for (auto& block : *function) {
+    if (!selection.loop->contains(&block))
+      continue;
+    for (const auto& instruction : block) {
+      const auto* load = llvm::dyn_cast<llvm::LoadInst>(&instruction);
+      const auto* store = llvm::dyn_cast<llvm::StoreInst>(&instruction);
+      if (!load && !store)
+        continue;
+
+      const auto* accessedType = load ? load->getType() : store->getValueOperand()->getType();
+      const auto alignment = load ? load->getAlign().value() : store->getAlign().value();
+      if (!accessedType->isIntegerTy(32) || alignment < 4 ||
+          (load && (load->isVolatile() || load->isAtomic())) ||
+          (store && (store->isVolatile() || store->isAtomic()))) {
+        result.error = "LLVM memory access is outside the verified i32 V0 subset";
+        return result;
+      }
+
+      const auto* address = verifiedPointerOperand(instruction);
+      const auto* pointerType = llvm::dyn_cast<llvm::PointerType>(address->getType());
+      const auto* base = llvm::getUnderlyingObject(address);
+      if (!pointerType || pointerType->getAddressSpace() != 0 || !base ||
+          !base->getType()->isPointerTy() ||
+          (llvm::isa<llvm::Instruction>(base) &&
+           selection.loop->contains(llvm::cast<llvm::Instruction>(base))) ||
+          llvm::isa<llvm::PHINode>(base) || llvm::isa<llvm::SelectInst>(base) ||
+          llvm::isa<llvm::LoadInst>(base)) {
+        result.error = "LLVM memory access has no verified loop-invariant pointer root";
+        return result;
+      }
+
+      VerifiedMemoryAccess access;
+      access.id = static_cast<std::uint32_t>(result.accesses.size());
+      access.kind = load ? VerifiedMemoryAccessKind::Load : VerifiedMemoryAccessKind::Store;
+      access.instruction = &instruction;
+      access.address = address;
+      access.base = base;
+      access.accessWidthBits = 32;
+
+      if (const auto* gep = llvm::dyn_cast<llvm::GetElementPtrInst>(address)) {
+        const auto bitWidth = dataLayout.getIndexTypeSizeInBits(gep->getType());
+        llvm::MapVector<llvm::Value*, llvm::APInt> variableOffsets;
+        llvm::APInt constantOffset(bitWidth, 0, true);
+        if (!gep->collectOffset(dataLayout, bitWidth, variableOffsets, constantOffset) ||
+            constantOffset.getMinSignedBits() > 64 || constantOffset.getSExtValue() % 4 != 0 ||
+            variableOffsets.size() > 1) {
+          result.error = "LLVM GEP is not a verified affine word address";
+          return result;
+        }
+        access.gepConstantOffsetWords = constantOffset.getSExtValue() / 4;
+        if (!verifiedFitsAddressWord(access.gepConstantOffsetWords)) {
+          result.error = "LLVM GEP constant word offset exceeds the verified i32 address domain";
+          return result;
+        }
+        access.constantOffsetWords = access.gepConstantOffsetWords;
+        if (!variableOffsets.empty()) {
+          const auto& [index, scaleBytes] = variableOffsets.front();
+          if (scaleBytes.getMinSignedBits() > 64 || scaleBytes.getSExtValue() % 4 != 0 ||
+              !verifiedFitsAddressWord(scaleBytes.getSExtValue() / 4)) {
+            result.error = "dynamic GEP scale exceeds the verified i32 word-address domain";
+            return result;
+          }
+          const auto scaleWords = scaleBytes.getSExtValue() / 4;
+          const auto affine = verifiedAffineValue(*index, *selection.loop, scalarEvolution);
+          if (!affine || !verifiedFitsAddressWord(affine->offset) ||
+              !verifiedFitsAddressWord(affine->stride)) {
+            result.error = "dynamic GEP index is not a verified affine recurrence";
+            return result;
+          }
+          const auto derivedOffset = access.gepConstantOffsetWords + affine->offset * scaleWords;
+          const auto derivedStride = affine->stride * scaleWords;
+          if (!verifiedFitsAddressWord(derivedOffset) || !verifiedFitsAddressWord(derivedStride)) {
+            result.error = "affine GEP exceeds the verified i32 word-address domain";
+            return result;
+          }
+          access.dynamicIndex = index;
+          access.dynamicScaleWords = scaleWords;
+          access.constantOffsetWords = derivedOffset;
+          access.iterationStrideWords = derivedStride;
+        }
+      }
+      result.accesses.push_back(access);
+    }
+  }
+
+  std::set<std::tuple<std::uint32_t, std::uint32_t, ir::MemoryDepKind, std::uint32_t>> seen;
+  for (const auto& access : result.accesses)
+    if (verifiedIsStore(access) && access.iterationStrideWords == 0)
+      addVerifiedDependence(result, seen, access.id, access.id, ir::MemoryDepKind::WAW, 1,
+                            VerifiedMemoryDependenceMode::ExactAffine);
+
+  for (std::size_t lhsIndex = 0; lhsIndex < result.accesses.size(); ++lhsIndex) {
+    for (std::size_t rhsIndex = lhsIndex + 1; rhsIndex < result.accesses.size(); ++rhsIndex) {
+      auto* lhs = &result.accesses[lhsIndex];
+      auto* rhs = &result.accesses[rhsIndex];
+      if (!verifiedIsStore(*lhs) && !verifiedIsStore(*rhs))
+        continue;
+
+      const bool exact = lhs->base == rhs->base && lhs->accessWidthBits == rhs->accessWidthBits &&
+                         lhs->iterationStrideWords == rhs->iterationStrideWords;
+      if (!exact && aliasAnalysis.alias(llvm::MemoryLocation::get(lhs->instruction),
+                                        llvm::MemoryLocation::get(rhs->instruction)) ==
+                        llvm::AliasResult::NoAlias)
+        continue;
+      if (!verifiedInstructionBefore(*lhs->instruction, *rhs->instruction,
+                                     *selection.dominatorTree)) {
+        if (verifiedInstructionBefore(*rhs->instruction, *lhs->instruction,
+                                      *selection.dominatorTree))
+          std::swap(lhs, rhs);
+        else {
+          result.error = "MayAlias accesses have no verified path-independent order";
+          return result;
+        }
+      }
+
+      if (exact) {
+        const auto stride = lhs->iterationStrideWords;
+        if (lhs->constantOffsetWords == rhs->constantOffsetWords)
+          addVerifiedDependence(result, seen, lhs->id, rhs->id, verifiedDependenceKind(*lhs, *rhs),
+                                0, VerifiedMemoryDependenceMode::ExactAffine);
+        if (stride == 0) {
+          if (lhs->constantOffsetWords == rhs->constantOffsetWords)
+            addVerifiedDependence(result, seen, rhs->id, lhs->id,
+                                  verifiedDependenceKind(*rhs, *lhs), 1,
+                                  VerifiedMemoryDependenceMode::ExactAffine);
+          continue;
+        }
+        if (const auto distance = verifiedPositiveDistance(
+                lhs->constantOffsetWords - rhs->constantOffsetWords, stride))
+          addVerifiedDependence(result, seen, lhs->id, rhs->id, verifiedDependenceKind(*lhs, *rhs),
+                                *distance, VerifiedMemoryDependenceMode::ExactAffine);
+        if (const auto distance = verifiedPositiveDistance(
+                rhs->constantOffsetWords - lhs->constantOffsetWords, stride))
+          addVerifiedDependence(result, seen, rhs->id, lhs->id, verifiedDependenceKind(*rhs, *lhs),
+                                *distance, VerifiedMemoryDependenceMode::ExactAffine);
+        continue;
+      }
+
+      addVerifiedDependence(result, seen, lhs->id, rhs->id, verifiedDependenceKind(*lhs, *rhs), 0,
+                            VerifiedMemoryDependenceMode::Conservative);
+      addVerifiedDependence(result, seen, rhs->id, lhs->id, verifiedDependenceKind(*rhs, *lhs), 1,
+                            VerifiedMemoryDependenceMode::Conservative);
+    }
+  }
+  return result;
+}
+
+std::string_view verifiedModeName(VerifiedMemoryDependenceMode mode) {
+  return mode == VerifiedMemoryDependenceMode::ExactAffine ? "exact_affine" : "conservative";
+}
+
+const LLVMMemoryAccessProvenance* memoryAccessProvenance(const LLVMFrontendResult& result,
+                                                         const llvm::Instruction* instruction) {
+  const auto item = std::ranges::find_if(result.provenance.memoryAccesses, [&](const auto& access) {
+    return access.instruction == instruction;
+  });
+  return item == result.provenance.memoryAccesses.end() ? nullptr : &*item;
+}
+
+bool constantBindingMatches(const ir::DFG& dfg, ir::NodeId node, std::uint32_t operand,
+                            std::int64_t expected) {
+  if (!verifiedFitsAddressWord(expected))
+    return false;
+  const auto expectedBits = static_cast<std::uint32_t>(static_cast<std::int32_t>(expected));
+  for (const auto& binding : dfg.externalBindings()) {
+    if (binding.node != node || binding.operand != operand)
+      continue;
+    const auto* reference = std::get_if<ir::ConstantRef>(&binding.source);
+    if (!reference || !dfg.containsConstant(reference->value))
+      return false;
+    return dfg.constant(reference->value).type == ir::ValueType::i32() &&
+           dfg.constant(reference->value).bits == expectedBits;
+  }
+  return false;
+}
+
+bool gepAddressGraphMatches(const LLVMFrontendResult& result,
+                            const VerifiedMemoryAccess& descriptor, ir::NodeId addressNode) {
+  if (!result.dfg->containsNode(addressNode) ||
+      result.dfg->node(addressNode).opcode != ir::Opcode::Add ||
+      !providerMatches(result, descriptor.base, addressNode, 0))
+    return false;
+  if (!descriptor.dynamicIndex)
+    return constantBindingMatches(*result.dfg, addressNode, 1, descriptor.gepConstantOffsetWords);
+
+  ir::NodeId dynamicConsumer = addressNode;
+  std::uint32_t dynamicOperand = 1;
+  if (descriptor.gepConstantOffsetWords != 0) {
+    const auto* offsetEdge = findProviderEdge(*result.dfg, addressNode, 1, ir::Edge::Kind::Data);
+    if (!offsetEdge || offsetEdge->distance != 0 ||
+        result.dfg->node(offsetEdge->src).opcode != ir::Opcode::Add ||
+        !constantBindingMatches(*result.dfg, offsetEdge->src, 1, descriptor.gepConstantOffsetWords))
+      return false;
+    dynamicConsumer = offsetEdge->src;
+    dynamicOperand = 0;
+  }
+  if (descriptor.dynamicScaleWords == 1)
+    return providerMatches(result, descriptor.dynamicIndex, dynamicConsumer, dynamicOperand);
+
+  const auto* scaleEdge =
+      findProviderEdge(*result.dfg, dynamicConsumer, dynamicOperand, ir::Edge::Kind::Data);
+  if (!scaleEdge || scaleEdge->distance != 0 ||
+      result.dfg->node(scaleEdge->src).opcode != ir::Opcode::Mul)
+    return false;
+  return providerMatches(result, descriptor.dynamicIndex, scaleEdge->src, 0) &&
+         constantBindingMatches(*result.dfg, scaleEdge->src, 1, descriptor.dynamicScaleWords);
+}
+
+void verifyMemoryDataflow(const Selection& selection, const LLVMFrontendResult& result,
+                          LLVMFrontendVerificationReport& report) {
+  const auto expected = recomputeMemoryExpectations(selection);
+  if (!expected.ok()) {
+    report.add("LLVM_FRONTEND_MEMORY_ANALYSIS_VERIFY_FAILED", expected.error);
+    return;
+  }
+  if (expected.accesses.size() != result.provenance.memoryAccesses.size())
+    report.add("LLVM_FRONTEND_MEMORY_ACCESS_VERIFY_FAILED",
+               "memory access provenance does not cover every LLVM Load/Store");
+
+  std::unordered_map<std::uint32_t, const LLVMMemoryAccessProvenance*> accesses;
+  for (const auto& descriptor : expected.accesses) {
+    const auto* actual = memoryAccessProvenance(result, descriptor.instruction);
+    if (!actual) {
+      report.add("LLVM_FRONTEND_MEMORY_ACCESS_VERIFY_FAILED",
+                 "LLVM memory instruction has no Generic access provenance");
+      continue;
+    }
+    accesses.emplace(descriptor.id, actual);
+    if (actual->id != descriptor.id || actual->baseValue != descriptor.base ||
+        actual->offsetWords != descriptor.constantOffsetWords ||
+        actual->strideWords != descriptor.iterationStrideWords ||
+        actual->accessWidthBits != descriptor.accessWidthBits ||
+        !result.dfg->containsNode(actual->memoryNode)) {
+      report.add("LLVM_FRONTEND_MEMORY_ACCESS_VERIFY_FAILED",
+                 "memory descriptor does not match independent LLVM affine analysis");
+      continue;
+    }
+    const auto& memoryNode = result.dfg->node(actual->memoryNode);
+    const auto expectedOpcode =
+        descriptor.kind == VerifiedMemoryAccessKind::Load ? ir::Opcode::Load : ir::Opcode::Store;
+    if (memoryNode.opcode != expectedOpcode || !memoryNode.memoryInfo ||
+        memoryNode.memoryInfo->accessWidthBits != descriptor.accessWidthBits)
+      report.add("LLVM_FRONTEND_MEMORY_NODE_SEMANTICS_MISMATCH",
+                 "Generic memory node opcode/width does not match LLVM");
+
+    if (const auto* gep = llvm::dyn_cast<llvm::GetElementPtrInst>(descriptor.address)) {
+      if (!gepAddressGraphMatches(result, descriptor, actual->addressProvider) ||
+          !providerMatches(result, gep, actual->memoryNode, 0))
+        report.add("LLVM_FRONTEND_ADDRESS_SEMANTICS_MISMATCH",
+                   "Generic address graph does not implement the LLVM GEP word offset");
+    } else if (!providerMatches(result, descriptor.base, actual->memoryNode, 0)) {
+      report.add("LLVM_FRONTEND_ADDRESS_SEMANTICS_MISMATCH",
+                 "direct memory address does not use the canonical pointer base");
+    }
+    if (const auto* store = llvm::dyn_cast<llvm::StoreInst>(descriptor.instruction))
+      if (!providerMatches(result, store->getValueOperand(), actual->memoryNode, 1))
+        report.add("LLVM_FRONTEND_MEMORY_ACCESS_VERIFY_FAILED",
+                   "Store data provider does not match LLVM");
+  }
+
+  std::unordered_set<ir::EdgeId> expectedEdges;
+  for (const auto& dependence : expected.dependences) {
+    if (!accesses.contains(dependence.sourceAccess) ||
+        !accesses.contains(dependence.destinationAccess))
+      continue;
+    const auto source = accesses.at(dependence.sourceAccess)->memoryNode;
+    const auto destination = accesses.at(dependence.destinationAccess)->memoryNode;
+    const ir::Edge* matching = nullptr;
+    for (const auto& edge : result.dfg->edges()) {
+      const auto* memory = std::get_if<ir::MemoryEdgeInfo>(&edge.info);
+      if (memory && edge.src == source && edge.dst == destination &&
+          memory->dependence == dependence.kind && edge.distance == dependence.distance) {
+        if (matching)
+          report.add("LLVM_FRONTEND_MEMORY_DEPENDENCE_VERIFY_FAILED",
+                     "duplicate Generic MemoryEdge for one LLVM dependence");
+        matching = &edge;
+      }
+    }
+    if (!matching) {
+      report.add("LLVM_FRONTEND_MEMORY_DEPENDENCE_VERIFY_FAILED",
+                 "required RAW/WAR/WAW dependence is missing or corrupted");
+      continue;
+    }
+    expectedEdges.insert(matching->id);
+    const auto provenance =
+        std::ranges::find_if(result.provenance.memoryDependences, [&](const auto& item) {
+          return item.edge == matching->id && item.sourceAccess == dependence.sourceAccess &&
+                 item.destinationAccess == dependence.destinationAccess &&
+                 item.kind == ir::toString(dependence.kind) &&
+                 item.distance == dependence.distance &&
+                 item.mode == verifiedModeName(dependence.mode);
+        });
+    if (provenance == result.provenance.memoryDependences.end())
+      report.add("LLVM_FRONTEND_MEMORY_DEPENDENCE_VERIFY_FAILED",
+                 "MemoryEdge provenance does not match independent dependence analysis");
+  }
+  for (const auto& edge : result.dfg->edges())
+    if (edge.kind() == ir::Edge::Kind::Memory && !expectedEdges.contains(edge.id))
+      report.add("LLVM_FRONTEND_MEMORY_DEPENDENCE_VERIFY_FAILED",
+                 "spurious Generic MemoryEdge has no LLVM dependence");
+  if (expected.dependences.size() != result.provenance.memoryDependences.size())
+    report.add("LLVM_FRONTEND_MEMORY_DEPENDENCE_VERIFY_FAILED",
+               "memory dependence provenance count is inconsistent");
+}
+
 LLVMFrontendVerificationReport verifyIfConvertedResult(const llvm::Module& module,
                                                        const LLVMFrontendOptions& options,
                                                        const LLVMFrontendResult& result) {
@@ -758,6 +1249,7 @@ LLVMFrontendVerificationReport verifyIfConvertedResult(const llvm::Module& modul
     report.add("LLVM_FRONTEND_DFG_VERIFY_FAILED", dfgReport.format());
   verifyIfRegionStructure(*selection, result, report);
   verifyIfDataflow(*selection, result, report);
+  verifyMemoryDataflow(*selection, result, report);
 
   for (const auto& node : result.dfg->nodes()) {
     const auto* provenance = nodeProvenance(result, node.id);
@@ -861,6 +1353,12 @@ LLVMFrontendVerificationReport verifyIfConvertedResult(const llvm::Module& modul
       const auto* llvmStore = llvm::dyn_cast<llvm::StoreInst>(
           nodeProvenance(result, storeNode) ? nodeProvenance(result, storeNode)->instruction
                                             : nullptr);
+      const auto* normalizedTrueBlock =
+          region.branch ? region.branch->getSuccessor(region.predicateComplemented ? 1 : 0)
+                        : nullptr;
+      if (!llvmStore || llvmStore->getParent() != normalizedTrueBlock)
+        report.add("LLVM_FRONTEND_IFCONV_VERIFY_FAILED",
+                   "predicated Store is not guarded by the normalized true branch arm");
       if (llvmStore && (!providerMatches(result, llvmStore->getPointerOperand(), storeNode, 0) ||
                         !providerMatches(result, llvmStore->getValueOperand(), storeNode, 1)))
         report.add("LLVM_FRONTEND_IFCONV_VERIFY_FAILED",
@@ -872,9 +1370,10 @@ LLVMFrontendVerificationReport verifyIfConvertedResult(const llvm::Module& modul
                   std::get<ir::MemoryEdgeInfo>(edge.info).dependence == ir::MemoryDepKind::WAW &&
                   edge.distance == 1;
       }
-      if (!sawWaw)
+      const auto* memory = llvmStore ? memoryAccessProvenance(result, llvmStore) : nullptr;
+      if (memory && (memory->strideWords == 0) != sawWaw)
         report.add("LLVM_FRONTEND_IFCONV_VERIFY_FAILED",
-                   "predicated Store is missing its distance-one self-WAW");
+                   "predicated Store self-WAW does not match invariant-address semantics");
     }
   }
   return report;
@@ -914,7 +1413,7 @@ LLVMFrontendVerificationReport verifyFrontendResult(const llvm::Module& module,
   const auto selection = select(module, options, report);
   if (!selection)
     return report;
-  if (!result.provenance.ifConversions.empty())
+  if (!result.provenance.ifConversions.empty() || !result.provenance.memoryAccesses.empty())
     return verifyIfConvertedResult(module, options, result);
   if (!selection->branch || selection->loop->getBlocks().size() != 1) {
     report.add("LLVM_FRONTEND_LOOP_SHAPE_MISMATCH", "selected loop shape changed after lowering");

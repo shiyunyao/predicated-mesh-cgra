@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 
+#include "cgra/Frontend/LLVM/LLVMMemoryAnalysis.h"
 #include "cgra/IR/DFG.h"
 
 #include <cstdint>
@@ -52,6 +53,13 @@ enum class LLVMFrontendStatus {
   UnsupportedIfSideEffect,
   PredicatedLoadUnsupported,
   MemoryPatternRequiresT018,
+  UnsupportedMemoryType,
+  UnsupportedMemoryAlignment,
+  UnsupportedMemoryAddressSpace,
+  UnsupportedPointerBase,
+  UnsupportedNonAffineAddress,
+  UnsupportedPathSensitiveMemoryOrder,
+  MemoryWithABIScalarLiveOutUnsupportedV0,
   DirectStoreAddressRequired,
   MultipleStoresRequireT018,
   ConditionalRecurrenceUnsupported,
@@ -93,6 +101,13 @@ enum class LLVMFrontendDiagnosticCode {
   LLVM_FRONTEND_UNSUPPORTED_IF_SIDE_EFFECT,
   LLVM_FRONTEND_PREDICATED_LOAD_UNSUPPORTED,
   LLVM_FRONTEND_MEMORY_PATTERN_REQUIRES_T018,
+  LLVM_FRONTEND_UNSUPPORTED_MEMORY_TYPE,
+  LLVM_FRONTEND_UNSUPPORTED_MEMORY_ALIGNMENT,
+  LLVM_FRONTEND_UNSUPPORTED_MEMORY_ADDRESS_SPACE,
+  LLVM_FRONTEND_UNSUPPORTED_POINTER_BASE,
+  LLVM_FRONTEND_UNSUPPORTED_NON_AFFINE_ADDRESS,
+  LLVM_FRONTEND_UNSUPPORTED_PATH_SENSITIVE_MEMORY_ORDER,
+  LLVM_FRONTEND_MEMORY_WITH_ABI_SCALAR_LIVEOUT_UNSUPPORTED_V0,
   LLVM_FRONTEND_DIRECT_STORE_ADDRESS_REQUIRED,
   LLVM_FRONTEND_MULTIPLE_STORES_REQUIRE_T018,
   LLVM_FRONTEND_CONDITIONAL_RECURRENCE_UNSUPPORTED,
@@ -202,12 +217,37 @@ struct LLVMIfConversionProvenance {
   const llvm::Value* conditionValue = nullptr;
 };
 
+struct LLVMMemoryAccessProvenance {
+  std::uint32_t id = 0;
+  std::string kind;
+  std::string base;
+  std::int64_t offsetWords = 0;
+  std::int64_t strideWords = 0;
+  std::uint32_t accessWidthBits = 0;
+  ir::NodeId memoryNode = 0;
+  ir::NodeId addressProvider = 0;
+  const llvm::Instruction* instruction = nullptr;
+  const llvm::Value* baseValue = nullptr;
+};
+
+struct LLVMMemoryDependenceProvenance {
+  std::uint32_t sourceAccess = 0;
+  std::uint32_t destinationAccess = 0;
+  std::string kind;
+  std::uint32_t distance = 0;
+  std::string mode;
+  std::string reason;
+  ir::EdgeId edge = 0;
+};
+
 struct LLVMFrontendProvenance {
   std::vector<LLVMFrontendNodeProvenance> nodes;
   std::vector<LLVMFrontendExternalProvenance> externals;
   std::vector<LLVMFrontendLiveOutProvenance> liveOuts;
   std::vector<LLVMRecurrenceProvenance> recurrences;
   std::vector<LLVMIfConversionProvenance> ifConversions;
+  std::vector<LLVMMemoryAccessProvenance> memoryAccesses;
+  std::vector<LLVMMemoryDependenceProvenance> memoryDependences;
   std::vector<std::string> controlSlice;
 };
 

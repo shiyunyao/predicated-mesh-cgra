@@ -562,6 +562,31 @@ exit:
 }
 )IR";
 
+const char* kTwoFalseArmStores = R"IR(
+define void @two_false_arm_stores(i32 %limit, i32 %value, i32* %a, i32* %b) {
+entry:
+  br label %loop
+loop:
+  %iv = phi i32 [ 0, %entry ], [ %inc, %merge ]
+  br label %cond
+cond:
+  %p = icmp ult i32 %iv, %limit
+  br i1 %p, label %then, label %else
+then:
+  br label %merge
+else:
+  store i32 %iv, i32* %a
+  store i32 %value, i32* %b
+  br label %merge
+merge:
+  %inc = add i32 %iv, 1
+  %done = icmp ult i32 %inc, 4
+  br i1 %done, label %loop, label %exit
+exit:
+  ret void
+}
+)IR";
+
 const char* kPredicatedLoad = R"IR(
 define i32 @predicated_load(i32 %x, i32* %ptr) {
 entry:
@@ -842,8 +867,16 @@ void expectStatus(const char* text, const char* function,
 }
 
 void testBoundaryRejections() {
-  expectStatus(kMemory, "memory",
-               cgra::frontend::llvm_frontend::LLVMFrontendStatus::UnsupportedMemoryOperation);
+  llvm::LLVMContext memoryContext;
+  auto memory = parse(kMemory, memoryContext);
+  cgra::frontend::llvm_frontend::LLVMFrontendOptions memoryOptions;
+  memoryOptions.functionName = "memory";
+  const auto memoryResult =
+      cgra::frontend::llvm_frontend::lowerInnermostLoop(*memory, memoryOptions);
+  expect(memoryResult.ok(), "T018 must lower an invariant direct Load");
+  expect(cgra::frontend::llvm_frontend::verifyFrontendResult(*memory, memoryOptions, memoryResult)
+             .ok(),
+         "T018 direct Load must pass frontend verification");
   expectStatus(kFloat, "float_loop",
                cgra::frontend::llvm_frontend::LLVMFrontendStatus::UnsupportedLLVMType);
   expectStatus(kUndefOperand, "undef_operand",
@@ -1081,6 +1114,20 @@ void testPredicationLowering() {
   expect(falseStoreResult.provenance.ifConversions.front().predicateComplemented,
          "false-arm Store must record normalized predicate polarity");
 
+  auto twoFalseStores = parse(kTwoFalseArmStores, context);
+  options.functionName = "two_false_arm_stores";
+  const auto twoFalseStoreResult =
+      cgra::frontend::llvm_frontend::lowerInnermostLoop(*twoFalseStores, options);
+  expect(twoFalseStoreResult.ok(),
+         "all false-arm Stores must share one complemented commit predicate");
+  expect(twoFalseStoreResult.provenance.ifConversions.front().predicateComplemented &&
+             twoFalseStoreResult.provenance.ifConversions.front().predicatedStores.size() == 2,
+         "two false-arm Stores must both use the normalized true predicate");
+  expect(cgra::frontend::llvm_frontend::verifyFrontendResult(*twoFalseStores, options,
+                                                             twoFalseStoreResult)
+             .ok(),
+         "two false-arm Store predicate semantics must verify independently");
+
   auto wrongPolarity = falseStoreResult;
   wrongPolarity.provenance.ifConversions.front().predicateComplemented = false;
   expect(!cgra::frontend::llvm_frontend::verifyFrontendResult(*falseStore, options, wrongPolarity)
@@ -1093,10 +1140,23 @@ void testPredicationLowering() {
                cgra::frontend::llvm_frontend::LLVMFrontendStatus::MultipleInternalBranches);
   expectStatus(kUnsafeSpeculation, "unsafe_speculation",
                cgra::frontend::llvm_frontend::LLVMFrontendStatus::UnsafeSpeculation);
-  expectStatus(kMultipleStores, "multiple_stores",
-               cgra::frontend::llvm_frontend::LLVMFrontendStatus::MultipleStoresRequireT018);
-  expectStatus(kGEPStore, "gep_store",
-               cgra::frontend::llvm_frontend::LLVMFrontendStatus::MemoryPatternRequiresT018);
+  auto multipleStores = parse(kMultipleStores, context);
+  options.functionName = "multiple_stores";
+  const auto multipleStoreResult =
+      cgra::frontend::llvm_frontend::lowerInnermostLoop(*multipleStores, options);
+  expect(multipleStoreResult.ok(), "T018 must order multiple same-path predicated Stores");
+  expect(cgra::frontend::llvm_frontend::verifyFrontendResult(*multipleStores, options,
+                                                             multipleStoreResult)
+             .ok(),
+         "multiple Store memory/predicate semantics must verify");
+
+  auto gepStore = parse(kGEPStore, context);
+  options.functionName = "gep_store";
+  const auto gepStoreResult = cgra::frontend::llvm_frontend::lowerInnermostLoop(*gepStore, options);
+  expect(gepStoreResult.ok(), "T018 must lower a constant-offset predicated Store GEP");
+  expect(
+      cgra::frontend::llvm_frontend::verifyFrontendResult(*gepStore, options, gepStoreResult).ok(),
+      "predicated GEP Store must pass memory/predicate verification");
   expectStatus(kConditionalRecurrence, "conditional_recurrence",
                cgra::frontend::llvm_frontend::LLVMFrontendStatus::ConditionalRecurrenceUnsupported);
 }

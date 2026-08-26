@@ -1,0 +1,10 @@
+{
+  "schema": "cgra.kernel_invocation.v1",
+  "trip_count": 4,
+  "scalar_inputs": {
+    "A": 256
+  },
+  "scratchpad_preload": [
+    {"address": 256, "value": 5}
+  ]
+}

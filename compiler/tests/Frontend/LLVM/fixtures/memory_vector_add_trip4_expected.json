@@ -1,0 +1,10 @@
+{
+  "schema": "cgra.llvm_memory.expectation.v1",
+  "issued_count": 4,
+  "committed_stores": [
+    {"word_address": 128, "value": 11},
+    {"word_address": 129, "value": 22},
+    {"word_address": 130, "value": 33},
+    {"word_address": 131, "value": 44}
+  ]
+}
