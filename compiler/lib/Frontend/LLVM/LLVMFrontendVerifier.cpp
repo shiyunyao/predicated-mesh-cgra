@@ -158,6 +158,49 @@ std::unordered_set<const llvm::Instruction*> controlSlice(const Selection& selec
   return result;
 }
 
+void removeRecurrenceProducerClosure(const Selection& selection,
+                                     std::unordered_set<const llvm::Instruction*>& slice) {
+  std::vector<const llvm::Instruction*> work;
+  const auto* preheader = selection.loop->getLoopPreheader();
+  const auto* latch = selection.loop->getLoopLatch();
+  if (preheader && latch) {
+    for (const auto& instruction : *selection.block) {
+      const auto* phi = llvm::dyn_cast<llvm::PHINode>(&instruction);
+      if (!phi || phi->getNumIncomingValues() != 2 || phi->getBasicBlockIndex(preheader) < 0)
+        continue;
+      const int latchIndex = phi->getBasicBlockIndex(latch);
+      if (latchIndex < 0)
+        continue;
+      const auto* backedge = llvm::dyn_cast<llvm::Instruction>(
+          phi->getIncomingValue(static_cast<unsigned>(latchIndex)));
+      if (!backedge || !selection.loop->contains(backedge) || llvm::isa<llvm::PHINode>(backedge) ||
+          !opcode(*backedge))
+        continue;
+      const bool hasDataUse = std::ranges::any_of(phi->users(), [&](const llvm::User* user) {
+        const auto* use = llvm::dyn_cast<llvm::Instruction>(user);
+        return use && selection.loop->contains(use) && !slice.contains(use) &&
+               !use->isTerminator() && !ignored(*use);
+      });
+      if (hasDataUse)
+        work.push_back(backedge);
+    }
+  }
+
+  while (!work.empty()) {
+    const auto* instruction = work.back();
+    work.pop_back();
+    if (!slice.erase(instruction))
+      continue;
+    for (const auto& operand : instruction->operands()) {
+      const auto* dependency = llvm::dyn_cast<llvm::Instruction>(operand.get());
+      if (!dependency || !selection.loop->contains(dependency) ||
+          llvm::isa<llvm::PHINode>(dependency) || !opcode(*dependency))
+        continue;
+      work.push_back(dependency);
+    }
+  }
+}
+
 bool trivialLCSSA(const llvm::PHINode& phi, const llvm::Value& source, const Selection& selection) {
   if (phi.getParent() != selection.exit)
     return false;
@@ -274,9 +317,7 @@ LLVMFrontendVerificationReport verifyFrontendResult(const llvm::Module& module,
     return report;
   }
   auto slice = controlSlice(*selection);
-  for (const auto& recurrence : result.provenance.recurrences)
-    if (const auto* backedge = llvm::dyn_cast_or_null<llvm::Instruction>(recurrence.backedge))
-      slice.erase(backedge);
+  removeRecurrenceProducerClosure(*selection, slice);
   const auto dfgReport = ir::DFGVerifier::verify(*result.dfg);
   if (!dfgReport.ok())
     report.add("LLVM_FRONTEND_DFG_VERIFY_FAILED", dfgReport.format());

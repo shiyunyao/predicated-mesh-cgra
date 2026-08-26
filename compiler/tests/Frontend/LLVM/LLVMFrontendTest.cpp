@@ -9,6 +9,7 @@
 #include <llvm/IR/Module.h>
 #include <llvm/Support/SourceMgr.h>
 
+#include <cstddef>
 #include <cstdlib>
 #include <iostream>
 #include <iterator>
@@ -24,6 +25,9 @@ public:
   }
   static void setEdgeOperand(DFG& dfg, EdgeId edge, std::uint32_t operand) {
     std::get<DataEdgeInfo>(dfg.edges_[edge].info).dstOperand = operand;
+  }
+  static void setEdgeDestination(DFG& dfg, EdgeId edge, NodeId destination) {
+    dfg.edges_[edge].dst = destination;
   }
   static void clearBoundary(DFG& dfg, EdgeId edge) {
     std::get<DataEdgeInfo>(dfg.edges_[edge].info).boundary.reset();
@@ -42,6 +46,21 @@ public:
     auto duplicate = dfg.edges_[edgeId];
     duplicate.id = static_cast<EdgeId>(dfg.edges_.size());
     dfg.appendEdge(std::move(duplicate));
+  }
+  static void eraseEdge(DFG& dfg, EdgeId edgeId) {
+    const auto position = dfg.edgeIndices_.at(edgeId);
+    dfg.edges_.erase(dfg.edges_.begin() + static_cast<std::ptrdiff_t>(position));
+    dfg.edgeIndices_.clear();
+    for (auto& incoming : dfg.incoming_)
+      incoming.clear();
+    for (auto& outgoing : dfg.outgoing_)
+      outgoing.clear();
+    for (std::size_t index = 0; index < dfg.edges_.size(); ++index) {
+      const auto& edge = dfg.edges_[index];
+      dfg.edgeIndices_.emplace(edge.id, index);
+      dfg.incoming_.at(dfg.nodeIndices_.at(edge.dst)).push_back(edge.id);
+      dfg.outgoing_.at(dfg.nodeIndices_.at(edge.src)).push_back(edge.id);
+    }
   }
 };
 } // namespace cgra::ir
@@ -657,6 +676,21 @@ void testRecurrenceLowering() {
       !cgra::frontend::llvm_frontend::verifyFrontendResult(*reduction, reductionOptions, extraEdge)
            .ok(),
       "verifier must reject a spurious duplicate recurrence edge");
+
+  auto wrongDestination = inductionResult;
+  cgra::ir::DFGTestAccess::setEdgeDestination(*wrongDestination.dfg, 0, 1);
+  expect(!cgra::frontend::llvm_frontend::verifyFrontendResult(*induction, options, wrongDestination)
+              .ok(),
+         "verifier must reject a recurrence edge with the wrong destination");
+
+  auto missingRepeatedUse = repeatedResult;
+  cgra::ir::DFGTestAccess::eraseEdge(*missingRepeatedUse.dfg, 1);
+  cgra::frontend::llvm_frontend::LLVMFrontendOptions repeatedOptions;
+  repeatedOptions.functionName = "repeated_phi";
+  expect(!cgra::frontend::llvm_frontend::verifyFrontendResult(*repeated, repeatedOptions,
+                                                              missingRepeatedUse)
+              .ok(),
+         "verifier must reject a missing recurrence edge for a repeated PHI use");
 
   auto descriptorEdgeCorrupt = reductionResult;
   descriptorEdgeCorrupt.provenance.recurrences.front().uses.front().edge = 999;

@@ -187,6 +187,25 @@ void testCompletionBacktracking(const cgra::TargetModel& target) {
          "completion abort must stop before II escalation");
 }
 
+void testBudgetPreservesHigherIIAttempt(const cgra::TargetModel& target) {
+  const auto dfg = legalize(cgra::ir::fixtures::simpleAdd(), target);
+  auto retry = options(2);
+  retry.budget.maxNodeCandidateAttempts = 10;
+  retry.budget.maxBacktracks = 10;
+  retry.completeMappingChecker = [](const cgra::target::TargetDFG&, const cgra::TargetModel&,
+                                    const ModuloMapping& mapping) {
+    if (mapping.ii() == 1)
+      return CompleteMappingCheckResult{CompleteMappingDecision::Reject, "rf_infeasible",
+                                        "directed lower-II rejection"};
+    return CompleteMappingCheckResult{CompleteMappingDecision::Accept, {}, {}};
+  };
+  const auto result = ModuloMapper::map(dfg, target, retry);
+  expect(result.ok() && result.mapping->ii() == 2,
+         "bounded search must preserve a deterministic share for a higher II");
+  expect(result.stats.iiAttempts == 2 && result.stats.postMappingRejected > 0,
+         "higher-II retry follows real lower-II post-mapping rejection");
+}
+
 void testTinyExactOracle(const cgra::TargetModel& target) {
   (void)target;
   const auto tiny = loadTinyTarget();
@@ -392,6 +411,7 @@ int main() {
     testCyclicAndDeterministic(target);
     testBudgetAndMaxII(target);
     testCompletionBacktracking(target);
+    testBudgetPreservesHigherIIAttempt(target);
     testTinyExactOracle(target);
     testSeededOracleCorpus(target);
     std::cout << "modulo mapper tests passed\n";
