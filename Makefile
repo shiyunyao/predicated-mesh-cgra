@@ -100,7 +100,7 @@ LLVM_FRONTEND_CLANG ?= clang-14
 LLVM_FRONTEND_OPT ?= opt-14
 LLVM_CMAKE_ARG := $(if $(LLVM_DIR),-DLLVM_DIR=$(LLVM_DIR),)
 
-.PHONY: help check-test lint build test regression shared-scratchpad-tests shared-scratchpad-negative-tests program program-prepare program-build program-run program-check compiler-e2e kernel-abi-e2e kernel-abi-scalar-e2e kernel-abi-base-load-e2e kernel-abi-recurrence-e2e kernel-abi-tripcount-e2e llvm-frontend-e2e llvm-frontend-c-smoke llvm-recurrence-e2e modulo-loop modulo-loop-prepare modulo-loop-check modulo-loop-tripcount-tests modulo-loop-zero-boundary-test modulo-loop-reuse-test modulo-loop-assert-tests synth-fetch-asap7 synth-memory-shape synth-area synth-timing synth-power synth-power-feasibility synth-fn-cacti clean
+.PHONY: help check-test lint build test regression shared-scratchpad-tests shared-scratchpad-negative-tests program program-prepare program-build program-run program-check compiler-e2e kernel-abi-e2e kernel-abi-scalar-e2e kernel-abi-base-load-e2e kernel-abi-recurrence-e2e kernel-abi-tripcount-e2e llvm-frontend-e2e llvm-frontend-c-smoke llvm-recurrence-e2e llvm-predication-e2e modulo-loop modulo-loop-prepare modulo-loop-check modulo-loop-tripcount-tests modulo-loop-zero-boundary-test modulo-loop-reuse-test modulo-loop-assert-tests synth-fetch-asap7 synth-memory-shape synth-area synth-timing synth-power synth-power-feasibility synth-fn-cacti clean
 
 help:
 	@echo "make test TEST=<name>  Build and run one testbench"
@@ -110,6 +110,7 @@ help:
 	@echo "make kernel-abi-e2e  Compile scalar, base-address, recurrence, and trip-count ABI kernels through RTL"
 	@echo "make llvm-frontend-e2e  Lower clang LLVM loops through Generic DFG, Kernel ABI, and RTL"
 	@echo "make llvm-recurrence-e2e  Lower LLVM PHI recurrences through Generic DFG, Kernel ABI, and RTL"
+	@echo "make llvm-predication-e2e  Lower LLVM if-conversion predicates through Generic DFG and verifier"
 	@echo "make modulo-loop        Replay the external modulo-loop manifest and run loop coverage"
 	@echo "make synth-area         Map 2x2/4x4 logic and report ASAP7 cell area"
 	@echo "make synth-timing       Estimate 2x2/4x4 logic timing at 100 MHz"
@@ -274,6 +275,26 @@ llvm-recurrence-e2e:
 	compile_case seed20_trip4 20 4 24; \
 	test "$$(sha256sum "$$case_dir/seed5_trip4/frontend/generic_dfg.json" | cut -d' ' -f1)" = "$$(sha256sum "$$case_dir/seed20_trip4/frontend/generic_dfg.json" | cut -d' ' -f1)"; \
 	test "$$(sha256sum "$$case_dir/seed5_trip4/backend/03_abi_bound.generic_dfg.json" | cut -d' ' -f1)" != "$$(sha256sum "$$case_dir/seed20_trip4/backend/03_abi_bound.generic_dfg.json" | cut -d' ' -f1)"
+
+llvm-predication-e2e:
+	@set -eu; \
+	case_dir="$(LLVM_FRONTEND_E2E_DIR)/predication"; mkdir -p "$$case_dir"; \
+	cmake -S compiler -B "$(LLVM_FRONTEND_BUILD_DIR)" -DCGRA_BUILD_TESTS=ON -DCGRA_WARNINGS_AS_ERRORS=ON $(LLVM_CMAKE_ARG); \
+	cmake --build "$(LLVM_FRONTEND_BUILD_DIR)" --target cgra-llvm-frontend-tests cgra-llvm-loop-lower cgrac-compile-kernel --parallel; \
+	"$(LLVM_FRONTEND_BUILD_DIR)/cgra-llvm-frontend-tests"; \
+	compile_case() { \
+		name="$$1"; input="$$2"; expected="$$3"; root="$$case_dir/$$name"; \
+		mkdir -p "$$root/frontend" "$$root/backend"; \
+		"$(LLVM_FRONTEND_BUILD_DIR)/bin/cgra-llvm-loop-lower" compiler/tests/Frontend/LLVM/fixtures/predication_one_input.ll --function one_input --artifact-dir "$$root/frontend" -o "$$root/frontend/generic_dfg.json"; \
+		printf '%s\n' '{"schema":"cgra.kernel_invocation.v1","trip_count":1,"scalar_inputs":{"x":'"$$input"'},"scratchpad_preload":[]}' > "$$root/invocation.json"; \
+		"$(LLVM_FRONTEND_BUILD_DIR)/bin/cgrac-compile-kernel" "$$root/frontend/generic_dfg.json" --target target/cgra_v3.json --invocation "$$root/invocation.json" --artifact-dir "$$root/backend" -o "$$root/program_manifest.json"; \
+		$(MAKE) --no-print-directory program BUILD_DIR="$$root" PROGRAM_MANIFEST="$$root/program_manifest.json"; \
+		printf '%s\n' '{"schema":"cgra.kernel_abi.expectation.v1","outputs":{"v":{"final_value":'"$$expected"',"store_count":1}}}' > "$$root/expected.json"; \
+		python3 tools/check_kernel_abi_e2e.py --signature "$$root/backend/01_kernel_signature.json" --layout "$$root/backend/04_kernel_abi_layout.json" --expectation "$$root/expected.json" --golden "$$root/program/program_manifest/golden_trace.csv" --rtl "$$root/program/program_manifest/rtl_trace.csv"; \
+		test -s "$$root/frontend/02_if_conversion.json"; \
+	}; \
+	compile_case value_branch_zero 0 0; \
+	compile_case value_branch_nonzero 7 14
 
 kernel-abi-scalar-e2e:
 	cmake -S compiler -B "$(COMPILER_BUILD_DIR)" -DCGRA_BUILD_TESTS=OFF -DCGRA_WARNINGS_AS_ERRORS=ON

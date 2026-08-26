@@ -162,6 +162,7 @@ int main(int argc, char** argv) {
       writeArtifact(artifactDirectory / "01_loop_selection.json",
                     result.metadata ? result.toJson() : "{}\n");
       writeArtifact(artifactDirectory / "02_recurrence_analysis.json", result.toJson());
+      writeArtifact(artifactDirectory / "02_if_conversion.json", result.toJson());
       writeArtifact(artifactDirectory / "02_loop_control_slice.json", result.toJson());
       writeArtifact(artifactDirectory / "03_frontend_provenance.json", result.toJson());
       writeArtifact(artifactDirectory / "04_generic_dfg.json", cgra::ir::toJson(*result.dfg));

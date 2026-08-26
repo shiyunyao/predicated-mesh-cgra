@@ -8,6 +8,7 @@
 #include <llvm/IR/Module.h>
 #include <llvm/Support/SourceMgr.h>
 
+#include <algorithm>
 #include <cstdlib>
 #include <iostream>
 #include <iterator>
@@ -24,6 +25,7 @@ public:
   static void setEdgeOperand(DFG& dfg, EdgeId edge, std::uint32_t operand) {
     std::get<DataEdgeInfo>(dfg.edges_[edge].info).dstOperand = operand;
   }
+  static void setEdgeSource(DFG& dfg, EdgeId edge, NodeId source) { dfg.edges_[edge].src = source; }
   static void clearBoundary(DFG& dfg, EdgeId edge) {
     std::get<DataEdgeInfo>(dfg.edges_[edge].info).boundary.reset();
   }
@@ -259,6 +261,177 @@ exit:
 }
 )IR";
 
+const char* kDirectSelect = R"IR(
+define i32 @direct_select(i32 %x, i32 %y) {
+entry:
+  br label %loop
+loop:
+  %iv = phi i32 [ 0, %entry ], [ %inc, %loop ]
+  %inc = add i32 %iv, 1
+  %p = icmp ult i32 %x, %y
+  %v = select i1 %p, i32 %x, i32 %y
+  %done = icmp ult i32 %inc, 2
+  br i1 %done, label %loop, label %exit
+exit:
+  %out = phi i32 [ %v, %loop ]
+  ret i32 %out
+}
+)IR";
+
+const char* kDiamond = R"IR(
+define i32 @diamond(i32 %x, i32 %y) {
+entry:
+  br label %loop
+loop:
+  %iv = phi i32 [ 0, %entry ], [ %inc, %merge ]
+  br label %cond
+cond:
+  %p = icmp ult i32 %x, %y
+  br i1 %p, label %then, label %else
+then:
+  %a = add i32 %x, %x
+  br label %merge
+else:
+  %b = add i32 %y, %y
+  br label %merge
+merge:
+  %v = phi i32 [ %a, %then ], [ %b, %else ]
+  %inc = add i32 %iv, 1
+  %done = icmp ult i32 %inc, 2
+  br i1 %done, label %loop, label %exit
+exit:
+  %out = phi i32 [ %v, %merge ]
+  ret i32 %out
+}
+)IR";
+
+const char* kTriangle = R"IR(
+define i32 @triangle(i32 %x, i32 %y) {
+entry:
+  br label %loop
+loop:
+  %iv = phi i32 [ 0, %entry ], [ %inc, %merge ]
+  br label %cond
+cond:
+  %p = icmp ult i32 %x, %y
+  br i1 %p, label %then, label %merge
+then:
+  %a = add i32 %x, %x
+  br label %merge
+merge:
+  %v = phi i32 [ %a, %then ], [ %x, %cond ]
+  %inc = add i32 %iv, 1
+  %done = icmp ult i32 %inc, 2
+  br i1 %done, label %loop, label %exit
+exit:
+  %out = phi i32 [ %v, %merge ]
+  ret i32 %out
+}
+)IR";
+
+const char* kPredicatedStore = R"IR(
+define void @predicated_store(i32 %limit, i32* %out) {
+entry:
+  br label %loop
+loop:
+  %iv = phi i32 [ 0, %entry ], [ %inc, %merge ]
+  br label %cond
+cond:
+  %p = icmp ult i32 %iv, %limit
+  br i1 %p, label %then, label %else
+then:
+  %v = add i32 %iv, 1
+  store i32 %v, i32* %out
+  br label %merge
+else:
+  br label %merge
+merge:
+  %inc = add i32 %iv, 1
+  %done = icmp ult i32 %inc, 4
+  br i1 %done, label %loop, label %exit
+exit:
+  ret void
+}
+)IR";
+
+const char* kFalseArmStore = R"IR(
+define void @false_arm_store(i32 %limit, i32* %out) {
+entry:
+  br label %loop
+loop:
+  %iv = phi i32 [ 0, %entry ], [ %inc, %merge ]
+  br label %cond
+cond:
+  %p = icmp ult i32 %iv, %limit
+  br i1 %p, label %then, label %else
+then:
+  br label %merge
+else:
+  store i32 %iv, i32* %out
+  br label %merge
+merge:
+  %inc = add i32 %iv, 1
+  %done = icmp ult i32 %inc, 4
+  br i1 %done, label %loop, label %exit
+exit:
+  ret void
+}
+)IR";
+
+const char* kPredicatedLoad = R"IR(
+define i32 @predicated_load(i32 %x, i32* %ptr) {
+entry:
+  br label %loop
+loop:
+  %iv = phi i32 [ 0, %entry ], [ %inc, %merge ]
+  br label %cond
+cond:
+  %p = icmp ult i32 %x, 5
+  br i1 %p, label %then, label %else
+then:
+  %loaded = load i32, i32* %ptr
+  br label %merge
+else:
+  %v0 = add i32 %x, 0
+  br label %merge
+merge:
+  %v = phi i32 [ %loaded, %then ], [ %v0, %else ]
+  %inc = add i32 %iv, 1
+  %done = icmp ult i32 %inc, 2
+  br i1 %done, label %loop, label %exit
+exit:
+  ret i32 %v
+}
+)IR";
+
+const char* kMultipleBranches = R"IR(
+define i32 @multiple_branches(i32 %x) {
+entry:
+  br label %loop
+loop:
+  %iv = phi i32 [ 0, %entry ], [ %inc, %merge2 ]
+  %p = icmp ult i32 %x, 3
+  br i1 %p, label %then, label %else
+then:
+  %q = icmp ult i32 %x, 2
+  br i1 %q, label %a, label %b
+a:
+  br label %merge1
+b:
+  br label %merge1
+merge1:
+  br label %merge2
+else:
+  br label %merge2
+merge2:
+  %inc = add i32 %iv, 1
+  %done = icmp ult i32 %inc, 2
+  br i1 %done, label %loop, label %exit
+exit:
+  ret i32 %x
+}
+)IR";
+
 void expect(bool condition, const char* message) {
   if (!condition)
     throw std::runtime_error(message);
@@ -389,6 +562,110 @@ void testBoundaryRejections() {
   }
 }
 
+void testPredicationLowering() {
+  llvm::LLVMContext context;
+  cgra::frontend::llvm_frontend::LLVMFrontendOptions options;
+
+  auto direct = parse(kDirectSelect, context);
+  options.functionName = "direct_select";
+  const auto directResult = cgra::frontend::llvm_frontend::lowerInnermostLoop(*direct, options);
+  expect(directResult.ok(), "direct LLVM Select must lower");
+  expect(directResult.dfg->nodes().size() == 2, "direct Select emits ICmp and Select");
+  expect(directResult.dfg->edges().size() == 1 &&
+             directResult.dfg->edge(0).kind() == cgra::ir::Edge::Kind::Predicate,
+         "direct Select uses a PredicateEdge");
+  expect(cgra::frontend::llvm_frontend::verifyFrontendResult(*direct, options, directResult).ok(),
+         "direct Select verifier");
+  auto wrongPredicate = directResult;
+  cgra::ir::DFGTestAccess::setEdgeSource(*wrongPredicate.dfg, 0, 1);
+  expect(
+      !cgra::frontend::llvm_frontend::verifyFrontendResult(*direct, options, wrongPredicate).ok(),
+      "Select verifier must reject a corrupted predicate source");
+
+  auto diamond = parse(kDiamond, context);
+  options.functionName = "diamond";
+  const auto diamondResult = cgra::frontend::llvm_frontend::lowerInnermostLoop(*diamond, options);
+  expect(diamondResult.ok(), "diamond branch must lower");
+  expect(diamondResult.dfg->nodes().size() == 4, "diamond emits ICmp, two arm adds, and Select");
+  expect(diamondResult.dfg->liveOuts().size() == 1, "diamond Select becomes LiveOut");
+  expect(diamondResult.provenance.ifConversions.size() == 1, "diamond emits one IfConversion plan");
+  expect(cgra::frontend::llvm_frontend::verifyFrontendResult(*diamond, options, diamondResult).ok(),
+         "diamond verifier");
+  auto swappedArms = diamondResult;
+  cgra::ir::EdgeId firstArm = 0;
+  cgra::ir::EdgeId secondArm = 0;
+  for (const auto& edge : swappedArms.dfg->edges()) {
+    if (edge.kind() != cgra::ir::Edge::Kind::Data)
+      continue;
+    const auto info = std::get<cgra::ir::DataEdgeInfo>(edge.info);
+    if (info.dstOperand == 1)
+      firstArm = edge.id;
+    if (info.dstOperand == 2)
+      secondArm = edge.id;
+  }
+  const auto firstSource = swappedArms.dfg->edge(firstArm).src;
+  const auto secondSource = swappedArms.dfg->edge(secondArm).src;
+  cgra::ir::DFGTestAccess::setEdgeSource(*swappedArms.dfg, firstArm, secondSource);
+  cgra::ir::DFGTestAccess::setEdgeSource(*swappedArms.dfg, secondArm, firstSource);
+  expect(!cgra::frontend::llvm_frontend::verifyFrontendResult(*diamond, options, swappedArms).ok(),
+         "Select verifier must reject swapped arm providers");
+
+  auto triangle = parse(kTriangle, context);
+  options.functionName = "triangle";
+  const auto triangleResult = cgra::frontend::llvm_frontend::lowerInnermostLoop(*triangle, options);
+  expect(triangleResult.ok(), "triangle branch must lower");
+  expect(triangleResult.dfg->nodes().size() == 3,
+         "triangle emits ICmp, one arm operation, and Select");
+  expect(
+      cgra::frontend::llvm_frontend::verifyFrontendResult(*triangle, options, triangleResult).ok(),
+      "triangle verifier");
+
+  auto store = parse(kPredicatedStore, context);
+  options.functionName = "predicated_store";
+  const auto storeResult = cgra::frontend::llvm_frontend::lowerInnermostLoop(*store, options);
+  expect(storeResult.ok(), "predicated Store must lower");
+  const auto storeNode = storeResult.dfg->nodes().back().id;
+  expect(storeResult.dfg->node(storeNode).opcode == cgra::ir::Opcode::Store,
+         "predicated Store node exists");
+  expect(std::any_of(storeResult.dfg->edges().begin(), storeResult.dfg->edges().end(),
+                     [&](const auto& edge) {
+                       return edge.kind() == cgra::ir::Edge::Kind::Predicate &&
+                              std::get<cgra::ir::PredicateEdgeInfo>(edge.info).dstOperand == 2;
+                     }),
+         "Store commit uses PredicateEdge");
+  expect(std::any_of(storeResult.dfg->edges().begin(), storeResult.dfg->edges().end(),
+                     [&](const auto& edge) {
+                       return edge.kind() == cgra::ir::Edge::Kind::Memory &&
+                              edge.src == storeNode && edge.dst == storeNode && edge.distance == 1;
+                     }),
+         "predicated Store has self WAW");
+  auto badWaw = storeResult;
+  for (const auto& edge : badWaw.dfg->edges()) {
+    if (edge.kind() == cgra::ir::Edge::Kind::Memory && edge.src == storeNode &&
+        edge.dst == storeNode) {
+      cgra::ir::DFGTestAccess::setEdgeDistance(*badWaw.dfg, edge.id, 0);
+      break;
+    }
+  }
+  expect(!cgra::frontend::llvm_frontend::verifyFrontendResult(*store, options, badWaw).ok(),
+         "Store verifier must reject a non-loop-carried self WAW");
+  auto falseStore = parse(kFalseArmStore, context);
+  options.functionName = "false_arm_store";
+  const auto falseStoreResult =
+      cgra::frontend::llvm_frontend::lowerInnermostLoop(*falseStore, options);
+  expect(falseStoreResult.ok(), "false-arm Store must lower through predicate complement");
+  expect(cgra::frontend::llvm_frontend::verifyFrontendResult(*falseStore, options, falseStoreResult)
+             .ok(),
+         "false-arm Store verifier");
+  expect(falseStoreResult.provenance.ifConversions.front().predicateComplemented,
+         "false-arm Store must record normalized predicate polarity");
+
+  expectStatus(kPredicatedLoad, "predicated_load",
+               cgra::frontend::llvm_frontend::LLVMFrontendStatus::PredicatedLoadUnsupported);
+  expectStatus(kMultipleBranches, "multiple_branches",
+               cgra::frontend::llvm_frontend::LLVMFrontendStatus::MultipleInternalBranches);
+}
+
 void testRecurrenceLowering() {
   llvm::LLVMContext context;
   cgra::frontend::llvm_frontend::LLVMFrontendOptions options;
@@ -508,6 +785,7 @@ int main() {
     testSupportedChainAndConstant();
     testBoundaryRejections();
     testRecurrenceLowering();
+    testPredicationLowering();
     std::cout << "CGRA_LLVM_FRONTEND_TEST_PASS\n";
     return EXIT_SUCCESS;
   } catch (const std::exception& error) {

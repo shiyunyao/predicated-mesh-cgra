@@ -89,6 +89,64 @@ std::optional<ir::ValueType> valueType(const llvm::Value& value) {
   return ir::ValueType::integer(static_cast<std::uint16_t>(integer->getBitWidth()));
 }
 
+std::optional<ir::ICmpPredicate> icmpPredicate(const llvm::ICmpInst& instruction) {
+  switch (instruction.getPredicate()) {
+  case llvm::CmpInst::ICMP_EQ:
+    return ir::ICmpPredicate::EQ;
+  case llvm::CmpInst::ICMP_NE:
+    return ir::ICmpPredicate::NE;
+  case llvm::CmpInst::ICMP_ULT:
+    return ir::ICmpPredicate::ULT;
+  case llvm::CmpInst::ICMP_ULE:
+    return ir::ICmpPredicate::ULE;
+  case llvm::CmpInst::ICMP_UGT:
+    return ir::ICmpPredicate::UGT;
+  case llvm::CmpInst::ICMP_UGE:
+    return ir::ICmpPredicate::UGE;
+  case llvm::CmpInst::ICMP_SLT:
+    return ir::ICmpPredicate::SLT;
+  case llvm::CmpInst::ICMP_SLE:
+    return ir::ICmpPredicate::SLE;
+  case llvm::CmpInst::ICMP_SGT:
+    return ir::ICmpPredicate::SGT;
+  case llvm::CmpInst::ICMP_SGE:
+    return ir::ICmpPredicate::SGE;
+  default:
+    return std::nullopt;
+  }
+}
+
+std::optional<ir::ICmpPredicate> complementPredicate(ir::ICmpPredicate predicate) {
+  switch (predicate) {
+  case ir::ICmpPredicate::EQ:
+    return ir::ICmpPredicate::NE;
+  case ir::ICmpPredicate::NE:
+    return ir::ICmpPredicate::EQ;
+  case ir::ICmpPredicate::ULT:
+    return ir::ICmpPredicate::ULE;
+  case ir::ICmpPredicate::ULE:
+    return ir::ICmpPredicate::ULT;
+  case ir::ICmpPredicate::UGT:
+    return ir::ICmpPredicate::ULE;
+  case ir::ICmpPredicate::UGE:
+    return ir::ICmpPredicate::ULT;
+  case ir::ICmpPredicate::SLT:
+    return ir::ICmpPredicate::SLE;
+  case ir::ICmpPredicate::SLE:
+    return ir::ICmpPredicate::SLT;
+  case ir::ICmpPredicate::SGT:
+    return ir::ICmpPredicate::SLE;
+  case ir::ICmpPredicate::SGE:
+    return ir::ICmpPredicate::SLT;
+  }
+  return std::nullopt;
+}
+
+bool complementSwapsOperands(ir::ICmpPredicate predicate) {
+  return predicate == ir::ICmpPredicate::ULT || predicate == ir::ICmpPredicate::ULE ||
+         predicate == ir::ICmpPredicate::SLT || predicate == ir::ICmpPredicate::SLE;
+}
+
 std::vector<llvm::Loop*> innermost(llvm::LoopInfo& info) {
   std::vector<llvm::Loop*> result;
   std::function<void(llvm::Loop*)> visit = [&](llvm::Loop* loop) {
@@ -235,6 +293,197 @@ bool boundaryMatches(const LLVMFrontendResult& result, const ir::DFG& dfg,
   return false;
 }
 
+const ir::Edge* findProviderEdge(const ir::DFG& dfg, ir::NodeId destination, std::uint32_t operand,
+                                 ir::Edge::Kind kind) {
+  for (const auto edgeId : dfg.incoming(destination)) {
+    const auto& edge = dfg.edge(edgeId);
+    if (edge.kind() != kind)
+      continue;
+    const auto edgeOperand = kind == ir::Edge::Kind::Predicate
+                                 ? std::get<ir::PredicateEdgeInfo>(edge.info).dstOperand
+                                 : std::get<ir::DataEdgeInfo>(edge.info).dstOperand;
+    if (edgeOperand == operand)
+      return &edge;
+  }
+  return nullptr;
+}
+
+bool providerMatches(const LLVMFrontendResult& result, const llvm::Value* value,
+                     ir::NodeId destination, std::uint32_t operand) {
+  if (!value)
+    return false;
+  if (const auto* phi = llvm::dyn_cast<llvm::PHINode>(value)) {
+    for (const auto& recurrence : result.provenance.recurrences) {
+      if (recurrence.phiValue != phi)
+        continue;
+      const auto* edge = findProviderEdge(*result.dfg, destination, operand, ir::Edge::Kind::Data);
+      if (!edge || edge->distance != 1)
+        return false;
+      const auto* source = nodeProvenance(result, edge->src);
+      if (!source || source->instruction != recurrence.backedge)
+        return false;
+      const auto* data = std::get_if<ir::DataEdgeInfo>(&edge->info);
+      return data && data->boundary &&
+             boundaryMatches(result, *result.dfg, recurrence, *data->boundary);
+    }
+    return false;
+  }
+  if (const auto* edge =
+          findProviderEdge(*result.dfg, destination, operand, ir::Edge::Kind::Data)) {
+    const auto* source = nodeProvenance(result, edge->src);
+    if (source && source->instruction == value)
+      return true;
+  }
+  for (const auto& binding : result.dfg->externalBindings()) {
+    if (binding.node != destination || binding.operand != operand)
+      continue;
+    if (const auto* external = std::get_if<ir::ExternalValueRef>(&binding.source)) {
+      for (const auto& provenance : result.provenance.externals)
+        if (provenance.external == external->value && provenance.value == value)
+          return true;
+    } else if (const auto* constant = llvm::dyn_cast<llvm::ConstantInt>(value)) {
+      const auto id = std::get<ir::ConstantRef>(binding.source).value;
+      if (result.dfg->containsConstant(id) &&
+          result.dfg->constant(id).bits == constant->getValue().getZExtValue() &&
+          valueType(*constant) && result.dfg->constant(id).type == *valueType(*constant))
+        return true;
+    }
+  }
+  return false;
+}
+
+LLVMFrontendVerificationReport verifyIfConvertedResult(const llvm::Module& module,
+                                                       const LLVMFrontendOptions& options,
+                                                       const LLVMFrontendResult& result) {
+  LLVMFrontendVerificationReport report;
+  const auto selection = select(module, options, report);
+  if (!selection)
+    return report;
+  const auto dfgReport = ir::DFGVerifier::verify(*result.dfg);
+  if (!dfgReport.ok())
+    report.add("LLVM_FRONTEND_DFG_VERIFY_FAILED", dfgReport.format());
+
+  for (const auto& node : result.dfg->nodes()) {
+    const auto* provenance = nodeProvenance(result, node.id);
+    if (!provenance || !provenance->instruction) {
+      report.add("LLVM_FRONTEND_NODE_PROVENANCE_MISSING",
+                 "Generic predication node has no LLVM provenance");
+      continue;
+    }
+    const auto* instruction = provenance->instruction;
+    if (!selection->loop->contains(instruction) && !llvm::isa<llvm::PHINode>(instruction))
+      report.add("LLVM_FRONTEND_NODE_PROVENANCE_INVALID",
+                 "predication node provenance is outside the selected loop");
+    if (llvm::isa<llvm::ICmpInst>(instruction)) {
+      const auto* compare = llvm::cast<llvm::ICmpInst>(instruction);
+      const auto predicate = icmpPredicate(*compare);
+      bool complemented = false;
+      for (const auto& region : result.provenance.ifConversions)
+        complemented |= region.conditionValue == compare && region.predicateComplemented;
+      const auto normalized =
+          predicate && complemented ? complementPredicate(*predicate) : predicate;
+      if (node.opcode != ir::Opcode::ICmp || !normalized || node.icmpPredicate != normalized ||
+          node.resultType != ir::ValueType::predicate())
+        report.add("LLVM_FRONTEND_ICMP_SEMANTICS_MISMATCH",
+                   "Generic ICmp does not match the LLVM predicate");
+    } else if (llvm::isa<llvm::SelectInst>(instruction) || llvm::isa<llvm::PHINode>(instruction)) {
+      if (node.opcode != ir::Opcode::Select)
+        report.add("LLVM_FRONTEND_SELECT_SEMANTICS_MISMATCH",
+                   "control merge must lower to Generic Select");
+    } else if (llvm::isa<llvm::StoreInst>(instruction)) {
+      if (node.opcode != ir::Opcode::Store)
+        report.add("LLVM_FRONTEND_STORE_SEMANTICS_MISMATCH",
+                   "predicated Store provenance does not identify a Store node");
+    }
+  }
+
+  for (const auto& region : result.provenance.ifConversions) {
+    if (!region.conditionValue) {
+      report.add("LLVM_FRONTEND_IFCONV_VERIFY_FAILED", "if-conversion region has no condition");
+      continue;
+    }
+    const auto* predicateProvenance = nodeProvenance(result, region.predicateNode);
+    if (!predicateProvenance || predicateProvenance->instruction != region.conditionValue) {
+      report.add("LLVM_FRONTEND_IFCONV_VERIFY_FAILED",
+                 "predicate node does not correspond to the branch condition");
+    } else if (const auto* compare = llvm::dyn_cast<llvm::ICmpInst>(region.conditionValue)) {
+      const auto expected = icmpPredicate(*compare);
+      const auto normalized =
+          expected && region.predicateComplemented ? complementPredicate(*expected) : expected;
+      if (!normalized || result.dfg->node(region.predicateNode).icmpPredicate != normalized)
+        report.add("LLVM_FRONTEND_IFCONV_VERIFY_FAILED",
+                   "predicate polarity does not match the normalized branch condition");
+      if (expected) {
+        const bool swap = region.predicateComplemented && complementSwapsOperands(*expected);
+        const auto* first = compare->getOperand(swap ? 1 : 0);
+        const auto* second = compare->getOperand(swap ? 0 : 1);
+        if (!providerMatches(result, first, region.predicateNode, 0) ||
+            !providerMatches(result, second, region.predicateNode, 1))
+          report.add("LLVM_FRONTEND_IFCONV_VERIFY_FAILED",
+                     "predicate operands do not match normalized branch condition");
+      }
+    }
+    for (const auto& select : region.selects) {
+      if (!result.dfg->containsNode(select.node)) {
+        report.add("LLVM_FRONTEND_IFCONV_VERIFY_FAILED", "if-conversion references missing Select");
+        continue;
+      }
+      const auto& node = result.dfg->node(select.node);
+      if (node.opcode != ir::Opcode::Select) {
+        report.add("LLVM_FRONTEND_IFCONV_VERIFY_FAILED", "if-conversion node is not Select");
+        continue;
+      }
+      const auto* predicateEdge =
+          findProviderEdge(*result.dfg, select.node, 0, ir::Edge::Kind::Predicate);
+      if (!predicateEdge || predicateEdge->src != region.predicateNode)
+        report.add("LLVM_FRONTEND_IFCONV_VERIFY_FAILED",
+                   "Select predicate provider does not match branch condition");
+      for (std::uint32_t operand = 1; operand < 3; ++operand)
+        if (!findProviderEdge(*result.dfg, select.node, operand, ir::Edge::Kind::Data)) {
+          bool bound = false;
+          for (const auto& binding : result.dfg->externalBindings())
+            bound |= binding.node == select.node && binding.operand == operand;
+          if (!bound)
+            report.add("LLVM_FRONTEND_IFCONV_VERIFY_FAILED", "Select arm has no value provider");
+        }
+      if (!providerMatches(result, select.trueProvider, select.node, 1) ||
+          !providerMatches(result, select.falseProvider, select.node, 2))
+        report.add("LLVM_FRONTEND_IFCONV_VERIFY_FAILED",
+                   "Select arm providers do not match LLVM predecessor values");
+    }
+    for (const auto storeNode : region.predicatedStores) {
+      if (!result.dfg->containsNode(storeNode) ||
+          result.dfg->node(storeNode).opcode != ir::Opcode::Store) {
+        report.add("LLVM_FRONTEND_IFCONV_VERIFY_FAILED", "predicated Store provenance is invalid");
+        continue;
+      }
+      const auto* predicateEdge =
+          findProviderEdge(*result.dfg, storeNode, 2, ir::Edge::Kind::Predicate);
+      if (!predicateEdge || predicateEdge->src != region.predicateNode)
+        report.add("LLVM_FRONTEND_IFCONV_VERIFY_FAILED",
+                   "predicated Store commit predicate does not match branch condition");
+      const auto* llvmStore = llvm::dyn_cast<llvm::StoreInst>(
+          nodeProvenance(result, storeNode) ? nodeProvenance(result, storeNode)->instruction
+                                            : nullptr);
+      if (llvmStore && (!providerMatches(result, llvmStore->getPointerOperand(), storeNode, 0) ||
+                        !providerMatches(result, llvmStore->getValueOperand(), storeNode, 1)))
+        report.add("LLVM_FRONTEND_IFCONV_VERIFY_FAILED",
+                   "predicated Store address or data provider does not match LLVM Store");
+      bool sawWaw = false;
+      for (const auto edgeId : result.dfg->outgoing(storeNode)) {
+        const auto& edge = result.dfg->edge(edgeId);
+        sawWaw |= edge.kind() == ir::Edge::Kind::Memory && edge.dst == storeNode &&
+                  std::get<ir::MemoryEdgeInfo>(edge.info).dependence == ir::MemoryDepKind::WAW &&
+                  edge.distance == 1;
+      }
+      if (!sawWaw)
+        report.add("LLVM_FRONTEND_IFCONV_VERIFY_FAILED",
+                   "predicated Store is missing its distance-one self-WAW");
+    }
+  }
+  return report;
+}
+
 } // namespace
 
 void LLVMFrontendVerificationReport::add(std::string code, std::string message) {
@@ -269,6 +518,8 @@ LLVMFrontendVerificationReport verifyFrontendResult(const llvm::Module& module,
   const auto selection = select(module, options, report);
   if (!selection)
     return report;
+  if (!result.provenance.ifConversions.empty())
+    return verifyIfConvertedResult(module, options, result);
   if (!selection->branch || selection->loop->getBlocks().size() != 1) {
     report.add("LLVM_FRONTEND_LOOP_SHAPE_MISMATCH", "selected loop shape changed after lowering");
     return report;
