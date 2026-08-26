@@ -1,0 +1,8 @@
+{
+  "schema": "cgra.predicated_store.expectation.v1",
+  "user_store": {
+    "word_address": 17,
+    "issued_count": 4,
+    "committed_data": [0, 1]
+  }
+}

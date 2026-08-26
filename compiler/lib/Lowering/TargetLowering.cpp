@@ -566,12 +566,15 @@ struct Lowerer {
     for (const auto& event : bundle.events) {
       if (event.kind == MaterializedEventKind::LiveOutBoundaryUse)
         continue;
-      auto tile = event.tile;
-      if (!tile && event.kind == MaterializedEventKind::NodeIssue && event.node)
-        tile = mapping.staged().modulo().placement(*event.node).tile;
+      auto resolvedEvent = event;
+      auto tile = resolvedEvent.tile;
+      if (!tile && resolvedEvent.kind == MaterializedEventKind::NodeIssue && resolvedEvent.node) {
+        tile = mapping.staged().modulo().placement(*resolvedEvent.node).tile;
+        resolvedEvent.tile = tile;
+      }
       if (!tile)
         throw LoweringError(TargetLoweringStatus::InvalidMaterializedSchedule, "event has no tile");
-      eventForTile(event, builders.at(tileIndex(*tile, target)), cycle);
+      eventForTile(resolvedEvent, builders.at(tileIndex(*tile, target)), cycle);
     }
     for (std::size_t i = 0; i < result.tiles.size(); ++i)
       result.tiles[i] = builders[i].control;

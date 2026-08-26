@@ -84,6 +84,8 @@ jobs:
         run: make llvm-frontend-e2e
       - name: LLVM recurrence V0 E2E
         run: make llvm-recurrence-e2e
+      - name: LLVM predication V0 E2E
+        run: make llvm-predication-e2e
       - name: Upload backend diagnostics
         if: failure()
         uses: actions/upload-artifact@v4

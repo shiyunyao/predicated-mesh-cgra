@@ -65,8 +65,11 @@ Next task: **GO T-COMP-017**
 
 ## Post-release evidence hardening
 
-Source evidence commit:
-`7e1e8dd33d91e1753e36f08ce5e4bf05996bf59b`.
+Final evidence branch HEAD:
+`b0abf0d31c6899704eeec61d28229a76560aef59`.
+
+Merged `main` SHA:
+`4679644c5ef79a16920eea15ac4c73e7f628f304`.
 
 The follow-up `compiler/frontend-evidence-hardening` branch adds:
 
@@ -106,12 +109,12 @@ Local closure evidence:
 
 Hosted follow-up evidence:
 
-- exact feature-head compiler-fast: PENDING;
-- exact feature-head hardware-regression: PENDING;
-- PR merge-ref compiler-fast: PENDING;
-- PR merge-ref hardware-regression: PENDING;
-- post-merge main compiler-fast: PENDING;
-- post-merge main hardware-regression: PENDING.
+- exact feature-head compiler-fast: [run 32977340011](https://github.com/shiyunyao/predicated-mesh-cgra/actions/runs/32977340011) — PASS;
+- exact feature-head hardware-regression: [run 32977340029](https://github.com/shiyunyao/predicated-mesh-cgra/actions/runs/32977340029) — PASS;
+- PR #6 merge-ref compiler-fast: [run 32977345256](https://github.com/shiyunyao/predicated-mesh-cgra/actions/runs/32977345256) — PASS;
+- PR #6 merge-ref hardware-regression: [run 32977345094](https://github.com/shiyunyao/predicated-mesh-cgra/actions/runs/32977345094) — PASS;
+- post-merge main compiler-fast: [run 32979292348](https://github.com/shiyunyao/predicated-mesh-cgra/actions/runs/32979292348) — PASS;
+- post-merge main hardware-regression: [run 32979292306](https://github.com/shiyunyao/predicated-mesh-cgra/actions/runs/32979292306) — PASS.
 
-The original T016 release decision remains **CLOSED**. The evidence hardening
-is not sealed until the pending hosted checks and merge are complete.
+The evidence hardening is sealed on `main`; the original T016 release decision
+remains **T-COMP-016: CLOSED**.

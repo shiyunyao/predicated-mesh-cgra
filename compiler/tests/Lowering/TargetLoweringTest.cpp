@@ -177,6 +177,7 @@ void testExternalProviderIsExplicitFailure(const cgra::TargetModel& model) {
   expect(result.status == cgra::lowering::TargetLoweringStatus::UnsupportedExternalProvider,
          "unsupported external provider is classified explicitly");
 }
+
 } // namespace
 
 int main() {

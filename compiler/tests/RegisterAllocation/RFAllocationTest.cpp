@@ -330,6 +330,12 @@ void testVirtualHoldAndRecurrence(const cgra::TargetModel& model) {
   const auto allocation = RFAllocator::allocate(dfg, model, staged);
   expect(allocation.status == RFAllocationStatus::FixedRegisterSelfOverlap,
          "canonical forbidden same-address policy rejects periodic recurrence storage");
+  expect(std::ranges::any_of(allocation.diagnostics,
+                             [](const auto& diagnostic) {
+                               return diagnostic.code ==
+                                      RFAllocationDiagnosticCode::RFA_FIXED_REGISTER_SELF_OVERLAP;
+                             }),
+         "fixed-RF periodic rejection reports the exact self-overlap diagnostic");
 
   std::ifstream input(Root / "target/cgra_v2.json");
   nlohmann::json json;

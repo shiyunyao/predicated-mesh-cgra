@@ -12,8 +12,11 @@
 
 namespace llvm {
 class Instruction;
+class BranchInst;
 class Module;
 class PHINode;
+class SelectInst;
+class StoreInst;
 class Value;
 } // namespace llvm
 
@@ -37,6 +40,21 @@ enum class LLVMFrontendStatus {
   UnsupportedRecurrenceProvider,
   UnsupportedPhiToPhiUse,
   UnsupportedPhiLiveOutSemantics,
+  UnsupportedBranchRegion,
+  MultipleInternalBranches,
+  NestedPredicationUnsupported,
+  BranchNoUniqueMerge,
+  UnsupportedBranchCondition,
+  UnsupportedPredicateComplement,
+  UnsafeSpeculation,
+  UnsupportedControlMerge,
+  UnsupportedPredicateMerge,
+  UnsupportedIfSideEffect,
+  PredicatedLoadUnsupported,
+  MemoryPatternRequiresT018,
+  DirectStoreAddressRequired,
+  MultipleStoresRequireT018,
+  ConditionalRecurrenceUnsupported,
   UnsupportedExitMerge,
   DataDependentLoopControl,
   InvalidGenericDFG,
@@ -63,6 +81,22 @@ enum class LLVMFrontendDiagnosticCode {
   LLVM_FRONTEND_UNSUPPORTED_RECURRENCE_PRODUCER,
   LLVM_FRONTEND_PHI_TO_PHI_USE,
   LLVM_FRONTEND_PHI_LIVEOUT_SEMANTICS,
+  LLVM_FRONTEND_UNSUPPORTED_BRANCH_REGION,
+  LLVM_FRONTEND_MULTIPLE_INTERNAL_BRANCHES,
+  LLVM_FRONTEND_NESTED_PREDICATION_UNSUPPORTED,
+  LLVM_FRONTEND_BRANCH_NO_UNIQUE_MERGE,
+  LLVM_FRONTEND_UNSUPPORTED_BRANCH_CONDITION,
+  LLVM_FRONTEND_UNSUPPORTED_PREDICATE_COMPLEMENT,
+  LLVM_FRONTEND_UNSAFE_SPECULATION,
+  LLVM_FRONTEND_UNSUPPORTED_CONTROL_MERGE,
+  LLVM_FRONTEND_UNSUPPORTED_PREDICATE_MERGE,
+  LLVM_FRONTEND_UNSUPPORTED_IF_SIDE_EFFECT,
+  LLVM_FRONTEND_PREDICATED_LOAD_UNSUPPORTED,
+  LLVM_FRONTEND_MEMORY_PATTERN_REQUIRES_T018,
+  LLVM_FRONTEND_DIRECT_STORE_ADDRESS_REQUIRED,
+  LLVM_FRONTEND_MULTIPLE_STORES_REQUIRE_T018,
+  LLVM_FRONTEND_CONDITIONAL_RECURRENCE_UNSUPPORTED,
+  LLVM_FRONTEND_IFCONV_VERIFY_FAILED,
   LLVM_FRONTEND_RECURRENCE_EDGE_VERIFY_FAILED,
   LLVM_FRONTEND_RECURRENCE_BOUNDARY_VERIFY_FAILED,
   LLVM_FRONTEND_EXIT_MERGE,
@@ -141,11 +175,39 @@ struct LLVMRecurrenceProvenance {
   const llvm::Value* backedge = nullptr;
 };
 
+struct LLVMIfConversionSelectProvenance {
+  std::string phi;
+  ir::NodeId node = 0;
+  std::string trueValue;
+  std::string falseValue;
+  const llvm::PHINode* phiValue = nullptr;
+  const llvm::SelectInst* selectValue = nullptr;
+  const llvm::Value* trueProvider = nullptr;
+  const llvm::Value* falseProvider = nullptr;
+};
+
+struct LLVMIfConversionProvenance {
+  std::uint32_t id = 0;
+  std::string conditionBlock;
+  std::string trueBlock;
+  std::string falseBlock;
+  std::string mergeBlock;
+  std::string condition;
+  bool predicateComplemented = false;
+  ir::NodeId predicateNode = 0;
+  std::vector<LLVMIfConversionSelectProvenance> selects;
+  std::vector<ir::NodeId> predicatedStores;
+  std::vector<ir::EdgeId> predicateEdges;
+  const llvm::BranchInst* branch = nullptr;
+  const llvm::Value* conditionValue = nullptr;
+};
+
 struct LLVMFrontendProvenance {
   std::vector<LLVMFrontendNodeProvenance> nodes;
   std::vector<LLVMFrontendExternalProvenance> externals;
   std::vector<LLVMFrontendLiveOutProvenance> liveOuts;
   std::vector<LLVMRecurrenceProvenance> recurrences;
+  std::vector<LLVMIfConversionProvenance> ifConversions;
   std::vector<std::string> controlSlice;
 };
 

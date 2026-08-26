@@ -32,7 +32,6 @@ void usage(const char* name) {
             << " input.ll|input.bc --function name [--loop-header block]"
                " --artifact-dir dir -o generic_dfg.json\n"
                "       [--invocation invocation.json]\n"
-               "       "
             << name << " input.ll|input.bc [--function name] --list-loops\n";
 }
 
@@ -167,15 +166,13 @@ int main(int argc, char** argv) {
     const auto verification =
         cgra::frontend::llvm_frontend::verifyFrontendResult(*module, options, result);
     if (!artifactDirectory.empty()) {
-      writeArtifact(
-          artifactDirectory / "01_loop_selection.json",
-          result.metadata
-              ? (nlohmann::json{{"schema", "cgra.llvm_loop_selection.v1"},
-                                {"metadata", nlohmann::json::parse(result.toJson())["metadata"]}}
-                     .dump(2) +
-                 "\n")
-              : "{}\n");
       const auto resultJson = nlohmann::json::parse(result.toJson());
+      writeArtifact(artifactDirectory / "01_loop_selection.json",
+                    result.metadata ? (nlohmann::json{{"schema", "cgra.llvm_loop_selection.v1"},
+                                                      {"metadata", resultJson["metadata"]}}
+                                           .dump(2) +
+                                       "\n")
+                                    : "{}\n");
       writeArtifact(artifactDirectory / "02_recurrence_analysis.json",
                     (nlohmann::json{{"schema", "cgra.llvm_recurrence_analysis.v1"},
                                     {"recurrences", resultJson["provenance"]["recurrences"]}}
@@ -195,7 +192,7 @@ int main(int argc, char** argv) {
                      "\n"));
       if (resultJson["provenance"].contains("if_conversions"))
         writeArtifact(
-            artifactDirectory / "if_conversion.json",
+            artifactDirectory / "02_if_conversion.json",
             (nlohmann::json{{"schema", "cgra.llvm_if_conversion.v1"},
                             {"if_conversions", resultJson["provenance"]["if_conversions"]}}
                  .dump(2) +

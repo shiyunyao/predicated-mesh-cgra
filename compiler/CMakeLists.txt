@@ -413,6 +413,14 @@ if(CGRA_BUILD_TESTS)
   )
 
   cgra_add_test(
+    NAME cgra-target-lowering-e2e-tests
+    TYPE e2e
+    SOURCES tests/Lowering/TargetLoweringE2ETest.cpp tests/support/TestArtifacts.cpp
+    LIBRARIES cgra_pipeline
+    DEFINITIONS CGRA_REPOSITORY_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/.."
+  )
+
+  cgra_add_test(
     NAME cgra-compiler-pipeline-e2e-smoke
     TYPE e2e
     SOURCES tests/e2e/CompilerPipelineE2ETest.cpp
