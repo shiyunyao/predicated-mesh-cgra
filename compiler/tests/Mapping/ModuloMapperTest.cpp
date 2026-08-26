@@ -204,6 +204,18 @@ void testBudgetPreservesHigherIIAttempt(const cgra::TargetModel& target) {
          "bounded search must preserve a deterministic share for a higher II");
   expect(result.stats.iiAttempts == 2 && result.stats.postMappingRejected > 0,
          "higher-II retry follows real lower-II post-mapping rejection");
+  expect(std::ranges::any_of(result.diagnostics,
+                             [](const auto& diagnostic) {
+                               return diagnostic.code ==
+                                      ModuloMapperDiagnosticCode::MAP_II_BUDGET_SHARE_EXHAUSTED;
+                             }),
+         "successful retry records the lower-II budget share without reporting a global failure");
+  expect(std::ranges::none_of(result.diagnostics,
+                              [](const auto& diagnostic) {
+                                return diagnostic.code ==
+                                       ModuloMapperDiagnosticCode::MAP_GLOBAL_BUDGET_EXCEEDED;
+                              }),
+         "successful retry must not report global budget exhaustion");
 }
 
 void testTinyExactOracle(const cgra::TargetModel& target) {
