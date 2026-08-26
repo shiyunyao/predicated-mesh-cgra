@@ -1,14 +1,14 @@
 # T018 Memory Dependence V0 Release Gate
 
-Status: functional closure complete locally; hosted feature-head, PR merge-ref,
-and post-merge `main` evidence remain to be recorded.
+Status: release sealed. Feature-head, PR merge-ref, and post-merge `main`
+compiler-fast and hardware-regression gates are green.
 
 Base `main` after T017:
 `ab06140f01e6966367fbef8bfd8a04b77fc5f20b`
 
 Feature branch: `compiler/memory-dependence-v0`
 
-Final feature SHA: `<PENDING_FEATURE_HEAD>`
+Final feature SHA: `00e8f787787c975c59d19a69e3604e8ce75c035e`
 
 ## Frozen Address Contract
 
@@ -130,22 +130,24 @@ is decoded as decimal.
 
 ## Hosted Evidence
 
-Feature-head evidence:
+The final feature source candidate was
+`00e8f787787c975c59d19a69e3604e8ce75c035e`. Its native push gates passed:
 
-- compiler-fast: `<PENDING>`
-- hardware-regression: `<PENDING>`
+- exact feature-head compiler-fast: [run 33011717345](https://github.com/shiyunyao/predicated-mesh-cgra/actions/runs/33011717345) - PASS.
+- exact feature-head hardware-regression: [run 33011717233](https://github.com/shiyunyao/predicated-mesh-cgra/actions/runs/33011717233) - PASS, including retained RTL/shared-scratchpad/modulo-loop regressions and T013-T018 E2E targets.
 
-PR merge-ref evidence:
+PR [#7](https://github.com/shiyunyao/predicated-mesh-cgra/pull/7) tested the
+synthetic merge ref for that source head:
 
-- merge-ref SHA: `<PENDING>`
-- compiler-fast: `<PENDING>`
-- hardware-regression: `<PENDING>`
+- PR merge-ref SHA: `f21739a9155d6e14f672e639ac4b4e977ded7ba1`.
+- PR merge-ref compiler-fast: [run 33011764053](https://github.com/shiyunyao/predicated-mesh-cgra/actions/runs/33011764053) - PASS.
+- PR merge-ref hardware-regression: [run 33011764074](https://github.com/shiyunyao/predicated-mesh-cgra/actions/runs/33011764074) - PASS, including the full backend and T018 vector-add/RAW-recurrence E2E corpus.
 
-Post-merge `main` evidence:
+PR #7 was merged after both merge-ref gates passed.
 
-- merged-main SHA: `<PENDING>`
-- compiler-fast: `<PENDING>`
-- hardware-regression: `<PENDING>`
+- merged-main SHA: `d3a0a58773c75d294259f0f62293a410fcc41709`.
+- merged-main compiler-fast: [run 33013769132](https://github.com/shiyunyao/predicated-mesh-cgra/actions/runs/33013769132) - PASS.
+- merged-main hardware-regression: [run 33013769123](https://github.com/shiyunyao/predicated-mesh-cgra/actions/runs/33013769123) - PASS, including retained RTL/shared-scratchpad/modulo-loop regressions and the complete T013-T018 E2E chain.
 
 The hardware workflow includes retained RTL, shared-scratchpad, modulo-loop,
 T013 compiler E2E, T014 Kernel ABI E2E, T015 frontend E2E, T016 recurrence E2E,
@@ -162,11 +164,11 @@ LiveOuts.
 
 ## Release Decision
 
-**STOP T-COMP-019 pending exact feature-head, merge-ref, and post-merge hosted
-gates.**
-
-After all immutable hosted SHAs and run IDs above are green, this section becomes:
-
 **T-COMP-018: CLOSED**
 
 **GO T-COMP-019**
+
+The release condition is satisfied for feature source candidate
+`00e8f787787c975c59d19a69e3604e8ce75c035e`. PR #7 merge-ref and merged-main
+checks are green for the immutable SHAs recorded above. This documentation seal
+is committed on `main` after both post-merge gates completed successfully.
