@@ -26,7 +26,11 @@ base + constant_offset_words + iteration_stride_words * iteration
 ```
 
 The equivalent arithmetic remains present in the Generic DFG. The memory
-analysis artifact does not replace executable address dataflow. Pointer PHIs,
+analysis artifact does not replace executable address dataflow. DataLayout-
+implied dynamic scales and separate constant field offsets are emitted as real
+Generic `Mul`/`Add` nodes. Offsets, scales, and derived affine coefficients that
+cannot be represented by the Generic `i32` address domain are rejected before
+narrowing. Pointer PHIs,
 pointer Selects, pointer chasing, non-affine indexing, subword/unaligned access,
 non-default address spaces, volatile operations, atomics, and conditional Loads
 remain structured failures.
@@ -96,9 +100,9 @@ placement of consumers and stage-wrapping slot choices produced many legal
 modulo mappings that failed stage/RF feasibility. Candidate selection now
 prefers ready distance-zero inputs, candidate ordering penalizes avoidable stage
 wraps, and positive-distance neighbors receive deterministic slot affinity. A
-non-LLVM production-pipeline regression verifies that RF-infeasible candidates
-are rejected before an RF-feasible mapping is found. No LLVM value, fixture
-name, PE, route, register, or target-specific placement is used by the fix.
+non-LLVM production-pipeline regression verifies that the production search and
+post-mapping checks reach an RF-feasible mapping. No LLVM value, fixture name,
+PE, route, register, or target-specific placement is used by the fix.
 
 ## Local Evidence
 

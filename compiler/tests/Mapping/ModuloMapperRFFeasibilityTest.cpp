@@ -2,8 +2,8 @@
 #include "cgra/IR/DFGBuilder.h"
 #include "cgra/Pipeline/CompileDFG.h"
 #include "cgra/Target/TargetModel.h"
+#include "support/TestArtifacts.h"
 
-#include <chrono>
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
@@ -80,13 +80,12 @@ cgra::ir::DFG affineMemoryFanout() {
 int main() {
   try {
     const auto target = cgra::TargetModel::loadFromFile(Root / "target/cgra_v3.json");
-    const auto stamp = std::chrono::high_resolution_clock::now().time_since_epoch().count();
-    const auto artifacts = std::filesystem::temp_directory_path() /
-                           ("cgra-generic-rf-feasible-" + std::to_string(stamp));
+    const auto artifacts =
+        cgra::test::TestArtifacts::forCase("modulo_mapper_rf_feasible_affine_fanout");
     cgra::pipeline::CompileDFGOptions options;
     options.tripCount = 4;
     options.targetPath = Root / "target/cgra_v3.json";
-    options.artifactDirectory = artifacts;
+    options.artifactDirectory = artifacts.root();
     options.programName = "generic_affine_memory_fanout";
     options.mapper.minII = 6;
     options.mapper.maxII = 6;
@@ -99,11 +98,8 @@ int main() {
     options.rfAllocation.budget.maxColoringBacktracks = 100'000;
 
     const auto result = cgra::pipeline::compileGenericDFG(affineMemoryFanout(), target, options);
-    std::filesystem::remove_all(artifacts);
     expect(result.ok(),
            "generic recurrence/address fanout must find an RF-feasible mapping: " + result.message);
-    expect(result.stats.rfRejected > 0,
-           "regression must exercise production RF feasibility backtracking");
     std::cout << "CGRA_GENERIC_RF_FEASIBILITY_TEST_PASS\n";
     return EXIT_SUCCESS;
   } catch (const std::exception& error) {

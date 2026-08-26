@@ -562,6 +562,31 @@ exit:
 }
 )IR";
 
+const char* kTwoFalseArmStores = R"IR(
+define void @two_false_arm_stores(i32 %limit, i32 %value, i32* %a, i32* %b) {
+entry:
+  br label %loop
+loop:
+  %iv = phi i32 [ 0, %entry ], [ %inc, %merge ]
+  br label %cond
+cond:
+  %p = icmp ult i32 %iv, %limit
+  br i1 %p, label %then, label %else
+then:
+  br label %merge
+else:
+  store i32 %iv, i32* %a
+  store i32 %value, i32* %b
+  br label %merge
+merge:
+  %inc = add i32 %iv, 1
+  %done = icmp ult i32 %inc, 4
+  br i1 %done, label %loop, label %exit
+exit:
+  ret void
+}
+)IR";
+
 const char* kPredicatedLoad = R"IR(
 define i32 @predicated_load(i32 %x, i32* %ptr) {
 entry:
@@ -1088,6 +1113,20 @@ void testPredicationLowering() {
   expect(falseStoreVerification.ok(), "false-arm Store verifier");
   expect(falseStoreResult.provenance.ifConversions.front().predicateComplemented,
          "false-arm Store must record normalized predicate polarity");
+
+  auto twoFalseStores = parse(kTwoFalseArmStores, context);
+  options.functionName = "two_false_arm_stores";
+  const auto twoFalseStoreResult =
+      cgra::frontend::llvm_frontend::lowerInnermostLoop(*twoFalseStores, options);
+  expect(twoFalseStoreResult.ok(),
+         "all false-arm Stores must share one complemented commit predicate");
+  expect(twoFalseStoreResult.provenance.ifConversions.front().predicateComplemented &&
+             twoFalseStoreResult.provenance.ifConversions.front().predicatedStores.size() == 2,
+         "two false-arm Stores must both use the normalized true predicate");
+  expect(cgra::frontend::llvm_frontend::verifyFrontendResult(*twoFalseStores, options,
+                                                             twoFalseStoreResult)
+             .ok(),
+         "two false-arm Store predicate semantics must verify independently");
 
   auto wrongPolarity = falseStoreResult;
   wrongPolarity.provenance.ifConversions.front().predicateComplemented = false;

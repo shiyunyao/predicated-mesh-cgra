@@ -387,6 +387,40 @@ exit:
 }
 )IR";
 
+const char* kImplicitGEPScaleOffset = R"IR(
+target datalayout = "e-p:64:64"
+define void @implicit_gep_scale_offset([2 x i32]* %A) {
+entry:
+  br label %loop
+loop:
+  %i = phi i32 [ 0, %entry ], [ %inc, %loop ]
+  %addr = getelementptr [2 x i32], [2 x i32]* %A, i32 %i, i32 1
+  %value = load i32, i32* %addr, align 4
+  %inc = add i32 %i, 1
+  %done = icmp ult i32 %inc, 4
+  br i1 %done, label %loop, label %exit
+exit:
+  ret void
+}
+)IR";
+
+const char* kOversizedGEPOffset = R"IR(
+target datalayout = "e-p:64:64"
+define void @oversized_gep_offset(i32* %A) {
+entry:
+  br label %loop
+loop:
+  %i = phi i32 [ 0, %entry ], [ %inc, %loop ]
+  %addr = getelementptr i32, i32* %A, i64 4294967296
+  %value = load i32, i32* %addr, align 4
+  %inc = add i32 %i, 1
+  %done = icmp ult i32 %inc, 4
+  br i1 %done, label %loop, label %exit
+exit:
+  ret void
+}
+)IR";
+
 const char* kMayAlias = R"IR(
 target datalayout = "e-p:64:64"
 define void @may_alias(i32* %A, i32* %B) {
@@ -662,6 +696,15 @@ void runSemanticCases() {
   expect(countOpcode(*affine.dfg, cgra::ir::Opcode::Mul) == 1 &&
              countOpcode(*affine.dfg, cgra::ir::Opcode::Add) >= 3,
          "A[2*i+3] must retain its Mul/Add address dataflow in the Generic DFG");
+
+  const auto implicit = lower(kImplicitGEPScaleOffset, "implicit_gep_scale_offset", context);
+  expect(implicit.ok(),
+         "DataLayout-implied scale plus field offset must lower: " + implicit.message);
+  expect(implicit.provenance.memoryAccesses.size() == 1 &&
+             implicit.provenance.memoryAccesses.front().offsetWords == 1 &&
+             implicit.provenance.memoryAccesses.front().strideWords == 2 &&
+             countOpcode(*implicit.dfg, cgra::ir::Opcode::Mul) == 1,
+         "implicit GEP scale two and offset one must be real Generic address dataflow");
 }
 
 void runNegativeCases() {
@@ -683,6 +726,12 @@ void runNegativeCases() {
              unaligned.status ==
                  cgra::frontend::llvm_frontend::LLVMFrontendStatus::UnsupportedMemoryAlignment,
          "unaligned i32 memory access must be rejected");
+
+  const auto oversized = lower(kOversizedGEPOffset, "oversized_gep_offset", context);
+  expect(!oversized.ok() &&
+             oversized.status ==
+                 cgra::frontend::llvm_frontend::LLVMFrontendStatus::UnsupportedNonAffineAddress,
+         "GEP word offsets wider than Generic i32 must be rejected before narrowing");
 
   const auto nonAffine = lower(kNonAffineLoad, "non_affine", context);
   expect(!nonAffine.ok() &&
@@ -832,6 +881,28 @@ void runVerifierCorruptionCases() {
         cgra::ir::DFGTestAccess::setConstantBindingBits(*result.dfg, *multiply, 1, 1);
       },
       "verifier must reject GEP stride two changed to one");
+
+  expectVerifierRejects(
+      kImplicitGEPScaleOffset, "implicit_gep_scale_offset",
+      [](auto& result) {
+        const auto scale = std::ranges::find_if(
+            result.provenance.nodes, [](const auto& node) { return node.opcode == "GEP_SCALE"; });
+        expect(scale != result.provenance.nodes.end(),
+               "implicit GEP scale node exists before corruption");
+        cgra::ir::DFGTestAccess::setConstantBindingBits(*result.dfg, scale->node, 1, 1);
+      },
+      "verifier must reject an implicit GEP word scale changed from two to one");
+
+  expectVerifierRejects(
+      kImplicitGEPScaleOffset, "implicit_gep_scale_offset",
+      [](auto& result) {
+        const auto offset = std::ranges::find_if(
+            result.provenance.nodes, [](const auto& node) { return node.opcode == "GEP_OFFSET"; });
+        expect(offset != result.provenance.nodes.end(),
+               "implicit GEP offset node exists before corruption");
+        cgra::ir::DFGTestAccess::setConstantBindingBits(*result.dfg, offset->node, 1, 0);
+      },
+      "verifier must reject an implicit GEP field offset changed from one to zero");
 
   expectVerifierRejects(
       kMayAlias, "may_alias",

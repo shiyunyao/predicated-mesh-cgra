@@ -668,12 +668,25 @@ ir::ExternalValueId getExternal(LoweringState& state, ir::DFGBuilder& builder,
 }
 
 struct IfLoweringState {
+  struct GEPAddressNodes {
+    ir::NodeId address = 0;
+    std::optional<ir::NodeId> scaledIndex;
+    std::optional<ir::NodeId> offsetIndex;
+  };
+
+  struct SyntheticAddressNode {
+    ir::NodeId node = 0;
+    const llvm::GetElementPtrInst* gep = nullptr;
+    std::string role;
+  };
+
   explicit IfLoweringState(LoopSelection& selected) : selection(selected) {}
   LoopSelection& selection;
   BranchRegion region;
   std::unordered_map<const llvm::Value*, ir::NodeId> nodes;
   std::unordered_map<const llvm::Value*, ir::ExternalValueId> externals;
   std::unordered_map<const llvm::Value*, ir::ConstantId> constants;
+  std::unordered_map<std::uint32_t, ir::ConstantId> addressConstants;
   std::set<std::string> externalNames;
   std::set<std::string> liveOutNames;
   std::uint32_t nextExternalOrdinal = 0;
@@ -683,6 +696,8 @@ struct IfLoweringState {
   std::vector<const llvm::PHINode*> selectOrder;
   std::unordered_map<const llvm::PHINode*, std::size_t> recurrences;
   std::unordered_set<const llvm::Instruction*> recurrenceBackedges;
+  std::unordered_map<const llvm::GetElementPtrInst*, GEPAddressNodes> gepAddressNodes;
+  std::vector<SyntheticAddressNode> syntheticAddressNodes;
   LLVMFrontendProvenance provenance;
 };
 
@@ -886,6 +901,17 @@ ir::ConstantId getIfConstant(IfLoweringState& state, ir::DFGBuilder& builder,
   return id;
 }
 
+ir::ConstantId getAddressConstant(IfLoweringState& state, ir::DFGBuilder& builder,
+                                  std::int64_t value) {
+  const auto bits = static_cast<std::uint32_t>(static_cast<std::int32_t>(value));
+  if (const auto iterator = state.addressConstants.find(bits);
+      iterator != state.addressConstants.end())
+    return iterator->second;
+  const auto id = builder.addConstant(ir::ValueType::i32(), bits);
+  state.addressConstants.emplace(bits, id);
+  return id;
+}
+
 bool valueIsInBranch(const llvm::Value& value, const BranchRegion& region, const llvm::Loop& loop) {
   const auto* instruction = llvm::dyn_cast<llvm::Instruction>(&value);
   if (!instruction || !loop.contains(instruction))
@@ -993,10 +1019,12 @@ LLVMFrontendResult lowerIfConvertedLoop(llvm::Module& module, const LLVMFrontend
     for (const auto& instruction : *block)
       if (const auto* store = llvm::dyn_cast<llvm::StoreInst>(&instruction))
         stores.push_back(store);
+  bool hasTrueStore = false;
+  bool hasFalseStore = false;
   if (discoveredRegion) {
-    const bool hasTrueStore = std::ranges::any_of(
+    hasTrueStore = std::ranges::any_of(
         stores, [&](const auto* store) { return store->getParent() == state.region.trueBlock; });
-    const bool hasFalseStore = std::ranges::any_of(
+    hasFalseStore = std::ranges::any_of(
         stores, [&](const auto* store) { return store->getParent() == state.region.falseBlock; });
     if (hasTrueStore && hasFalseStore)
       return failure(LLVMFrontendStatus::UnsupportedIfSideEffect,
@@ -1004,8 +1032,7 @@ LLVMFrontendResult lowerIfConvertedLoop(llvm::Module& module, const LLVMFrontend
                      "Stores in both branch arms require two predicate polarities", &selection,
                      stores.front());
   }
-  const bool storePredicateComplemented = discoveredRegion && stores.size() == 1 &&
-                                          stores.front()->getParent() == state.region.falseBlock;
+  const bool storePredicateComplemented = discoveredRegion && hasFalseStore && !hasTrueStore;
   if (storePredicateComplemented) {
     const auto predicate = icmpPredicate(*state.region.condition);
     if (!predicate || !complementPredicate(*predicate))
@@ -1094,9 +1121,21 @@ LLVMFrontendResult lowerIfConvertedLoop(llvm::Module& module, const LLVMFrontend
           return failure(LLVMFrontendStatus::UnsupportedNonAffineAddress,
                          LLVMFrontendDiagnosticCode::LLVM_FRONTEND_UNSUPPORTED_NON_AFFINE_ADDRESS,
                          "GEP is not the address of a supported memory operation", &selection, gep);
-        state.nodes.emplace(gep, builder.addNode(ir::Opcode::Add,
-                                                 {ir::ValueType::i32(), ir::ValueType::i32()},
-                                                 ir::ValueType::i32()));
+        IfLoweringState::GEPAddressNodes addressNodes;
+        addressNodes.address = builder.addNode(
+            ir::Opcode::Add, {ir::ValueType::i32(), ir::ValueType::i32()}, ir::ValueType::i32());
+        state.nodes.emplace(gep, addressNodes.address);
+        if (access->dynamicIndex && access->dynamicScaleWords != 1) {
+          addressNodes.scaledIndex = builder.addNode(
+              ir::Opcode::Mul, {ir::ValueType::i32(), ir::ValueType::i32()}, ir::ValueType::i32());
+          state.syntheticAddressNodes.push_back({*addressNodes.scaledIndex, gep, "GEP_SCALE"});
+        }
+        if (access->dynamicIndex && access->gepConstantOffsetWords != 0) {
+          addressNodes.offsetIndex = builder.addNode(
+              ir::Opcode::Add, {ir::ValueType::i32(), ir::ValueType::i32()}, ir::ValueType::i32());
+          state.syntheticAddressNodes.push_back({*addressNodes.offsetIndex, gep, "GEP_OFFSET"});
+        }
+        state.gepAddressNodes.emplace(gep, addressNodes);
         continue;
       }
       if (const auto* load = llvm::dyn_cast<llvm::LoadInst>(&instruction)) {
@@ -1287,14 +1326,34 @@ LLVMFrontendResult lowerIfConvertedLoop(llvm::Module& module, const LLVMFrontend
           return failure(LLVMFrontendStatus::UnsupportedNonAffineAddress,
                          LLVMFrontendDiagnosticCode::LLVM_FRONTEND_UNSUPPORTED_NON_AFFINE_ADDRESS,
                          "GEP address descriptor is missing", &selection, gep);
-        provider(*access->base, destination->second, 0, false);
-        if (access->dynamicIndex)
-          provider(*access->dynamicIndex, destination->second, 1, false);
-        else {
-          const auto offset = builder.addConstant(
-              ir::ValueType::i32(), static_cast<std::uint32_t>(access->gepConstantOffsetWords));
-          builder.bindConstant(destination->second, 1, offset);
+        const auto addressNodes = state.gepAddressNodes.at(gep);
+        provider(*access->base, addressNodes.address, 0, false);
+        if (!access->dynamicIndex) {
+          builder.bindConstant(addressNodes.address, 1,
+                               getAddressConstant(state, builder, access->gepConstantOffsetWords));
+          continue;
         }
+
+        ir::NodeId dynamicProvider = addressNodes.address;
+        if (addressNodes.scaledIndex) {
+          provider(*access->dynamicIndex, *addressNodes.scaledIndex, 0, false);
+          builder.bindConstant(*addressNodes.scaledIndex, 1,
+                               getAddressConstant(state, builder, access->dynamicScaleWords));
+          dynamicProvider = *addressNodes.scaledIndex;
+        }
+        if (addressNodes.offsetIndex) {
+          if (addressNodes.scaledIndex)
+            builder.addDataEdge(*addressNodes.scaledIndex, *addressNodes.offsetIndex, 0);
+          else
+            provider(*access->dynamicIndex, *addressNodes.offsetIndex, 0, false);
+          builder.bindConstant(*addressNodes.offsetIndex, 1,
+                               getAddressConstant(state, builder, access->gepConstantOffsetWords));
+          dynamicProvider = *addressNodes.offsetIndex;
+        }
+        if (!addressNodes.scaledIndex && !addressNodes.offsetIndex)
+          provider(*access->dynamicIndex, addressNodes.address, 1, false);
+        else
+          builder.addDataEdge(dynamicProvider, addressNodes.address, 1);
         continue;
       }
       if (const auto* load = llvm::dyn_cast<llvm::LoadInst>(&instruction)) {
@@ -1479,6 +1538,11 @@ LLVMFrontendResult lowerIfConvertedLoop(llvm::Module& module, const LLVMFrontend
                                       blockName(*selection.function, instruction->getParent()),
                                       ordinals.at(instruction), instruction->getOpcodeName(),
                                       instruction});
+  }
+  for (const auto& synthetic : state.syntheticAddressNodes) {
+    state.provenance.nodes.push_back({synthetic.node, selection.function->getName().str(),
+                                      blockName(*selection.function, synthetic.gep->getParent()),
+                                      ordinals.at(synthetic.gep), synthetic.role, synthetic.gep});
   }
   for (const auto* value : state.selectOrder) {
     const auto node = state.selects.at(value);

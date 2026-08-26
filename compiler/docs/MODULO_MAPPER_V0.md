@@ -9,10 +9,13 @@ accepts it.
 
 Each II attempt constructs a fresh `ModuloResourceModel`, reservation table,
 placement map, and dependence map. The recursive search selects an unmapped
-node by mapped incident degree, static degree, loop-carried degree, and stable
-node ID. Candidates are compatible tile and modulo-slot pairs ordered by
-locality, row, column, and slot. There are no absolute stages, iterations, RF
-indices, or machine encodings in this state.
+node by fewest unresolved distance-zero inputs, mapped incident degree, static
+degree, loop-carried degree, and stable node ID. Candidates are compatible tile
+and modulo-slot pairs ordered by the number of implied distance-zero stage
+wraps, locality, neighbor slot affinity, row, column, and slot. Positive-distance
+neighbors also contribute a deterministic slot preference before both endpoints
+are placed. These are generic search-order hints only; there are no absolute
+stages, iterations, RF indices, or machine encodings in this state.
 
 An edge becomes closed when both endpoints are placed. Data and Predicate
 edges are sent to T007 with the current read-only reservation snapshot; a

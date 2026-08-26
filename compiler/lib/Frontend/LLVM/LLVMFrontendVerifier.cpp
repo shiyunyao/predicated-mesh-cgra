@@ -595,7 +595,9 @@ void verifyIfDataflow(const Selection& selection, const LLVMFrontendResult& resu
         report.add("LLVM_FRONTEND_MEMORY_NODE_SEMANTICS_MISMATCH",
                    "Generic Load does not match its LLVM memory access");
     } else if (llvm::isa<llvm::GetElementPtrInst>(instruction)) {
-      if (node.opcode != ir::Opcode::Add || node.resultType != ir::ValueType::i32())
+      const auto expectedOpcode =
+          provenance->opcode == "GEP_SCALE" ? ir::Opcode::Mul : ir::Opcode::Add;
+      if (node.opcode != expectedOpcode || node.resultType != ir::ValueType::i32())
         report.add("LLVM_FRONTEND_ADDRESS_SEMANTICS_MISMATCH",
                    "LLVM GEP must lower to Generic word-address arithmetic");
     } else if (!llvm::isa<llvm::ICmpInst>(instruction)) {
@@ -623,6 +625,8 @@ void verifyIfDataflow(const Selection& selection, const LLVMFrontendResult& resu
       continue;
     }
     const auto info = std::get<ir::DataEdgeInfo>(edge.info);
+    if (llvm::isa<llvm::GetElementPtrInst>(destination->instruction))
+      continue;
     const auto llvmOperand =
         correspondingLLVMOperand(result, *destination->instruction, info.dstOperand);
     if (edge.distance == 0) {
@@ -667,11 +671,17 @@ void verifyIfDataflow(const Selection& selection, const LLVMFrontendResult& resu
           info && destination && destination->instruction
               ? correspondingLLVMOperand(result, *destination->instruction, info->dstOperand)
               : 0;
+      const bool gepUsesPhi =
+          destination && llvm::isa<llvm::GetElementPtrInst>(destination->instruction) &&
+          std::ranges::any_of(destination->instruction->operands(), [&](const auto& operand) {
+            return operand.get() == recurrence.phiValue;
+          });
       if (edge.kind() != ir::Edge::Kind::Data || edge.distance != 1 ||
           edge.dst != use.destination || !source || !destination || !destination->instruction ||
           source->instruction != recurrence.backedge || !info || info->dstOperand != use.operand ||
-          llvmOperand >= destination->instruction->getNumOperands() ||
-          destination->instruction->getOperand(llvmOperand) != recurrence.phiValue ||
+          (!gepUsesPhi &&
+           (llvmOperand >= destination->instruction->getNumOperands() ||
+            destination->instruction->getOperand(llvmOperand) != recurrence.phiValue)) ||
           !info->boundary || !boundaryMatches(result, *result.dfg, recurrence, *info->boundary))
         report.add("LLVM_FRONTEND_RECURRENCE_EDGE_VERIFY_FAILED",
                    "recurrence descriptor edge identity is inconsistent");
@@ -682,6 +692,27 @@ void verifyIfDataflow(const Selection& selection, const LLVMFrontendResult& resu
       if (!instruction || !selection.loop->contains(instruction) || slice.contains(instruction) ||
           instruction->isTerminator() || ignored(*instruction))
         continue;
+      if (llvm::isa<llvm::GetElementPtrInst>(instruction)) {
+        bool matched = false;
+        for (const auto& destination : result.provenance.nodes) {
+          if (destination.instruction != instruction || !result.dfg->containsNode(destination.node))
+            continue;
+          for (std::uint32_t operand = 0;
+               operand < result.dfg->node(destination.node).operandTypes.size(); ++operand) {
+            const auto* edge =
+                findProviderEdge(*result.dfg, destination.node, operand, ir::Edge::Kind::Data);
+            const auto* info = edge ? std::get_if<ir::DataEdgeInfo>(&edge->info) : nullptr;
+            const auto* source = edge ? nodeProvenance(result, edge->src) : nullptr;
+            matched |= edge && edge->distance == 1 && source &&
+                       source->instruction == recurrence.backedge && info && info->boundary &&
+                       boundaryMatches(result, *result.dfg, recurrence, *info->boundary);
+          }
+        }
+        if (!matched)
+          report.add("LLVM_FRONTEND_RECURRENCE_EDGE_VERIFY_FAILED",
+                     "recurrence PHI GEP use is missing its Generic address edge");
+        continue;
+      }
       const auto destination = std::ranges::find_if(result.provenance.nodes, [&](const auto& item) {
         return item.instruction == instruction;
       });
@@ -785,6 +816,7 @@ struct VerifiedMemoryAccess {
   const llvm::Value* address = nullptr;
   const llvm::Value* base = nullptr;
   const llvm::Value* dynamicIndex = nullptr;
+  std::int64_t dynamicScaleWords = 0;
   std::int64_t gepConstantOffsetWords = 0;
   std::int64_t constantOffsetWords = 0;
   std::int64_t iterationStrideWords = 0;
@@ -811,6 +843,11 @@ struct VerifiedAffineValue {
   std::int64_t offset = 0;
   std::int64_t stride = 0;
 };
+
+bool verifiedFitsAddressWord(std::int64_t value) {
+  return value >= std::numeric_limits<std::int32_t>::min() &&
+         value <= std::numeric_limits<std::int32_t>::max();
+}
 
 const llvm::Value* verifiedPointerOperand(const llvm::Instruction& instruction) {
   if (const auto* load = llvm::dyn_cast<llvm::LoadInst>(&instruction))
@@ -945,26 +982,35 @@ VerifiedMemoryExpectations recomputeMemoryExpectations(const Selection& selectio
           return result;
         }
         access.gepConstantOffsetWords = constantOffset.getSExtValue() / 4;
+        if (!verifiedFitsAddressWord(access.gepConstantOffsetWords)) {
+          result.error = "LLVM GEP constant word offset exceeds the verified i32 address domain";
+          return result;
+        }
         access.constantOffsetWords = access.gepConstantOffsetWords;
         if (!variableOffsets.empty()) {
-          if (access.gepConstantOffsetWords != 0) {
-            result.error = "dynamic GEP has an unsupported separate constant offset";
-            return result;
-          }
           const auto& [index, scaleBytes] = variableOffsets.front();
           if (scaleBytes.getMinSignedBits() > 64 || scaleBytes.getSExtValue() % 4 != 0 ||
-              scaleBytes.getSExtValue() / 4 != 1) {
-            result.error = "dynamic GEP scale is not one logical word";
+              !verifiedFitsAddressWord(scaleBytes.getSExtValue() / 4)) {
+            result.error = "dynamic GEP scale exceeds the verified i32 word-address domain";
             return result;
           }
+          const auto scaleWords = scaleBytes.getSExtValue() / 4;
           const auto affine = verifiedAffineValue(*index, *selection.loop, scalarEvolution);
-          if (!affine) {
+          if (!affine || !verifiedFitsAddressWord(affine->offset) ||
+              !verifiedFitsAddressWord(affine->stride)) {
             result.error = "dynamic GEP index is not a verified affine recurrence";
             return result;
           }
+          const auto derivedOffset = access.gepConstantOffsetWords + affine->offset * scaleWords;
+          const auto derivedStride = affine->stride * scaleWords;
+          if (!verifiedFitsAddressWord(derivedOffset) || !verifiedFitsAddressWord(derivedStride)) {
+            result.error = "affine GEP exceeds the verified i32 word-address domain";
+            return result;
+          }
           access.dynamicIndex = index;
-          access.constantOffsetWords += affine->offset;
-          access.iterationStrideWords = affine->stride;
+          access.dynamicScaleWords = scaleWords;
+          access.constantOffsetWords = derivedOffset;
+          access.iterationStrideWords = derivedStride;
         }
       }
       result.accesses.push_back(access);
@@ -1047,6 +1093,9 @@ const LLVMMemoryAccessProvenance* memoryAccessProvenance(const LLVMFrontendResul
 
 bool constantBindingMatches(const ir::DFG& dfg, ir::NodeId node, std::uint32_t operand,
                             std::int64_t expected) {
+  if (!verifiedFitsAddressWord(expected))
+    return false;
+  const auto expectedBits = static_cast<std::uint32_t>(static_cast<std::int32_t>(expected));
   for (const auto& binding : dfg.externalBindings()) {
     if (binding.node != node || binding.operand != operand)
       continue;
@@ -1054,10 +1103,41 @@ bool constantBindingMatches(const ir::DFG& dfg, ir::NodeId node, std::uint32_t o
     if (!reference || !dfg.containsConstant(reference->value))
       return false;
     return dfg.constant(reference->value).type == ir::ValueType::i32() &&
-           static_cast<std::uint32_t>(dfg.constant(reference->value).bits) ==
-               static_cast<std::uint32_t>(expected);
+           dfg.constant(reference->value).bits == expectedBits;
   }
   return false;
+}
+
+bool gepAddressGraphMatches(const LLVMFrontendResult& result,
+                            const VerifiedMemoryAccess& descriptor, ir::NodeId addressNode) {
+  if (!result.dfg->containsNode(addressNode) ||
+      result.dfg->node(addressNode).opcode != ir::Opcode::Add ||
+      !providerMatches(result, descriptor.base, addressNode, 0))
+    return false;
+  if (!descriptor.dynamicIndex)
+    return constantBindingMatches(*result.dfg, addressNode, 1, descriptor.gepConstantOffsetWords);
+
+  ir::NodeId dynamicConsumer = addressNode;
+  std::uint32_t dynamicOperand = 1;
+  if (descriptor.gepConstantOffsetWords != 0) {
+    const auto* offsetEdge = findProviderEdge(*result.dfg, addressNode, 1, ir::Edge::Kind::Data);
+    if (!offsetEdge || offsetEdge->distance != 0 ||
+        result.dfg->node(offsetEdge->src).opcode != ir::Opcode::Add ||
+        !constantBindingMatches(*result.dfg, offsetEdge->src, 1, descriptor.gepConstantOffsetWords))
+      return false;
+    dynamicConsumer = offsetEdge->src;
+    dynamicOperand = 0;
+  }
+  if (descriptor.dynamicScaleWords == 1)
+    return providerMatches(result, descriptor.dynamicIndex, dynamicConsumer, dynamicOperand);
+
+  const auto* scaleEdge =
+      findProviderEdge(*result.dfg, dynamicConsumer, dynamicOperand, ir::Edge::Kind::Data);
+  if (!scaleEdge || scaleEdge->distance != 0 ||
+      result.dfg->node(scaleEdge->src).opcode != ir::Opcode::Mul)
+    return false;
+  return providerMatches(result, descriptor.dynamicIndex, scaleEdge->src, 0) &&
+         constantBindingMatches(*result.dfg, scaleEdge->src, 1, descriptor.dynamicScaleWords);
 }
 
 void verifyMemoryDataflow(const Selection& selection, const LLVMFrontendResult& result,
@@ -1098,13 +1178,7 @@ void verifyMemoryDataflow(const Selection& selection, const LLVMFrontendResult& 
                  "Generic memory node opcode/width does not match LLVM");
 
     if (const auto* gep = llvm::dyn_cast<llvm::GetElementPtrInst>(descriptor.address)) {
-      if (!result.dfg->containsNode(actual->addressProvider) ||
-          result.dfg->node(actual->addressProvider).opcode != ir::Opcode::Add ||
-          !providerMatches(result, descriptor.base, actual->addressProvider, 0) ||
-          (descriptor.dynamicIndex
-               ? !providerMatches(result, descriptor.dynamicIndex, actual->addressProvider, 1)
-               : !constantBindingMatches(*result.dfg, actual->addressProvider, 1,
-                                         descriptor.gepConstantOffsetWords)) ||
+      if (!gepAddressGraphMatches(result, descriptor, actual->addressProvider) ||
           !providerMatches(result, gep, actual->memoryNode, 0))
         report.add("LLVM_FRONTEND_ADDRESS_SEMANTICS_MISMATCH",
                    "Generic address graph does not implement the LLVM GEP word offset");
@@ -1279,6 +1353,12 @@ LLVMFrontendVerificationReport verifyIfConvertedResult(const llvm::Module& modul
       const auto* llvmStore = llvm::dyn_cast<llvm::StoreInst>(
           nodeProvenance(result, storeNode) ? nodeProvenance(result, storeNode)->instruction
                                             : nullptr);
+      const auto* normalizedTrueBlock =
+          region.branch ? region.branch->getSuccessor(region.predicateComplemented ? 1 : 0)
+                        : nullptr;
+      if (!llvmStore || llvmStore->getParent() != normalizedTrueBlock)
+        report.add("LLVM_FRONTEND_IFCONV_VERIFY_FAILED",
+                   "predicated Store is not guarded by the normalized true branch arm");
       if (llvmStore && (!providerMatches(result, llvmStore->getPointerOperand(), storeNode, 0) ||
                         !providerMatches(result, llvmStore->getValueOperand(), storeNode, 1)))
         report.add("LLVM_FRONTEND_IFCONV_VERIFY_FAILED",
