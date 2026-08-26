@@ -38,6 +38,11 @@ Exact-head hosted evidence for candidate `f975260805cdcf421b503410d7712693327182
 - compiler-fast: [run 32944316063](https://github.com/shiyunyao/predicated-mesh-cgra/actions/runs/32944316063) — PASS.
 - hardware-regression: [run 32944316067](https://github.com/shiyunyao/predicated-mesh-cgra/actions/runs/32944316067) — PASS. The run executed retained RTL, shared scratchpad, modulo-loop, T013/T014/T015/T016 E2E, and the LLVM predication value-merge E2E.
 
+Draft PR merge-ref evidence for PR [#5](https://github.com/shiyunyao/predicated-mesh-cgra/pull/5), based on the same source candidate:
+
+- compiler-fast: [run 32947696038](https://github.com/shiyunyao/predicated-mesh-cgra/actions/runs/32947696038) — PASS.
+- hardware-regression: [run 32947696022](https://github.com/shiyunyao/predicated-mesh-cgra/actions/runs/32947696022) — PASS, including the LLVM predication V0 E2E.
+
 ## Remaining release blockers
 
 - A recurrence-driven, per-iteration predicated Store has not yet produced a
@@ -48,7 +53,9 @@ Exact-head hosted evidence for candidate `f975260805cdcf421b503410d7712693327182
   been obtained for this uncommitted candidate. The workflow push trigger now
   includes `compiler/predication-v0`; run IDs must be recorded after pushing a
   final commit.
-- PR merge-ref and post-merge `main` checks remain pending.
+- Post-merge `main` checks remain pending. The PR remains draft because the
+  recurrence-driven per-iteration predicated Store hardware gate is still
+  unresolved.
 
 ## Release decision
 
