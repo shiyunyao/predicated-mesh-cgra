@@ -1,63 +1,109 @@
 # T017 Predication V0 Release Gate
 
-Status: implementation in progress; release is blocked pending the predicated
-Store hardware gate and hosted evidence.
+Status: functional closure complete; hosted exact-head, PR merge-ref, and
+post-merge `main` evidence pending.
 
-Base `main`: `90ca9b77e371201a1cf9f358ca63c7a78d463bcc`
+Base `main` after T015/T016 evidence hardening:
+`4679644c5ef79a16920eea15ac4c73e7f628f304`
+
 Feature branch: `compiler/predication-v0`
-Feature candidate SHA: `f975260805cdcf421b503410d7712693327182dc`
 
-## Implemented scope
+Closure implementation SHA:
+`2ec558243e94dea615fbc046e5198690febcc77a`
 
-The LLVM frontend now recognizes one structured in-loop conditional branch or
-direct `select`, lowers its `icmp` to a Generic predicate, lowers merge PHIs to
-Generic `Select`, and preserves branch-local pure arithmetic for speculative
-execution. False-arm Store orientation is normalized by an equivalent
-target-independent predicate complement.
+## Frozen V0 Scope
 
-The narrow conditional Store path accepts one direct loop-external pointer
-argument, emits a Generic Store with a PredicateEdge on operand 2, and adds a
-distance-one self-WAW memory edge. Loads, GEPs, multiple Stores, nested or
-multiple internal branches, and calls in speculative arms remain structured
-T017 failures for their respective later milestones.
+The LLVM frontend accepts one structured diamond or triangle, or a direct
+LLVM `select`. It lowers an LLVM `icmp` to a Generic predicate, merge PHIs to
+Generic `Select`, and one direct-address conditional Store to a Generic Store
+with a predicate operand and a distance-one self-WAW edge. Pure arm arithmetic
+is speculated; branch-local Load, GEP Store, multiple Stores, unsafe side
+effects, nested branches, and conditional recurrence remain structured
+failures.
 
-`LLVMFrontendVerifier` independently checks predicate provenance and polarity,
-compare operands, Select arm providers, Store address/data providers, commit
-predicate, and Store self-WAW distance.
+The recurrence-driven Store fixture uses the existing T016 recurrence,
+predicate routing, T014 invocation binding, production mapper, stage/RF
+allocation, target lowering, generated manifest, Golden model, and Verilator.
+It does not use an ABI-only route, register preload, fixed placement, or a
+patched manifest.
 
-## Local evidence
+## Blocker Classification And Repair
 
-- `cgra-llvm-frontend-tests`: PASS.
-- Full `ctest --test-dir compiler/build/ci-debug`: PASS (18/18).
-- `make llvm-predication-e2e`: PASS for compiler-generated LLVM value-merge
-  cases, including Golden/Verilator replay and layout-aware ABI observation.
-- Direct predicated-Store lowering and verifier corruption tests: PASS.
+The original one-node recurrence fixture exposed two independent facts:
 
-Exact-head hosted evidence for candidate `f975260805cdcf421b503410d7712693327182dc`:
+1. Its direct fixed-register lifetime has a genuine next-version overlap on
+   the current non-rotating RF model. This is retained as the generic
+   `RFA_FIXED_REGISTER_SELF_OVERLAP` regression; it is not weakened or reported
+   as mapper infeasibility.
+2. A backend-feasible equivalent two-node periodic recurrence exposed a
+   generic TargetLowering defect: RF-backed NodeIssue operands were resolved
+   using a default tile before the mapped placement was applied. TargetLowering
+   now resolves placement first. A non-LLVM production-pipeline regression
+   verifies the resulting manifest with the independent schedule checker.
 
-- compiler-fast: [run 32944316063](https://github.com/shiyunyao/predicated-mesh-cgra/actions/runs/32944316063) — PASS.
-- hardware-regression: [run 32944316067](https://github.com/shiyunyao/predicated-mesh-cgra/actions/runs/32944316067) — PASS. The run executed retained RTL, shared scratchpad, modulo-loop, T013/T014/T015/T016 E2E, and the LLVM predication value-merge E2E.
+The mapper also preserves per-II budget classification and retries feasible
+higher IIs without converting `BudgetExceeded` into `Infeasible`. No fixture,
+function, PE, slot, route, RF, port, or fixed-II special case was added.
 
-Draft PR merge-ref evidence for PR [#5](https://github.com/shiyunyao/predicated-mesh-cgra/pull/5), based on the same source candidate:
+## Independent Verification
 
-- compiler-fast: [run 32947696038](https://github.com/shiyunyao/predicated-mesh-cgra/actions/runs/32947696038) — PASS.
-- hardware-regression: [run 32947696022](https://github.com/shiyunyao/predicated-mesh-cgra/actions/runs/32947696022) — PASS, including the LLVM predication V0 E2E.
+`LLVMFrontendVerifier` independently reconstructs the internal branch and
+merge, checks compare polarity and operands, ordinary SSA/external/constant
+providers, recurrence edges, Select completeness and uniqueness, Store
+address/data/predicate providers, self-WAW distance, LiveOut completeness, and
+silent instruction loss.
 
-## Remaining release blockers
+Corruption tests reject, among others:
 
-- A recurrence-driven, per-iteration predicated Store has not yet produced a
-  backend-feasible manifest on the current target. The production mapper
-  exhausts its bounded search with RF self-overlap rejections; no mapper or
-  target shortcut is permitted to hide this result.
-- Hosted feature-branch compiler-fast and hardware-regression runs have not
-  been obtained for this uncommitted candidate. The workflow push trigger now
-  includes `compiler/predication-v0`; run IDs must be recorded after pushing a
-  final commit.
-- Post-merge `main` checks remain pending. The PR remains draft because the
-  recurrence-driven per-iteration predicated Store hardware gate is still
-  unresolved.
+- omitted and duplicate merge Selects;
+- swapped Select arms and wrong ordinary operand providers;
+- wrong recurrence distance;
+- missing or wrong Store predicate;
+- missing or wrong-distance Store self-WAW;
+- missing LiveOut and semantic instruction loss.
 
-## Release decision
+The existing negative corpus retains structured rejection for unsafe
+speculation, predicated Load, multiple Store, GEP Store, nested/multiple branch,
+and unsupported conditional recurrence forms.
 
-**STOP — remaining T017 blocker.** Do not begin T018 until the predicated Store
-Golden/RTL path, hosted gates, and a fresh source audit are green.
+## Local Evidence
+
+- Fresh Debug CTest: PASS, 20/20.
+- Fresh sanitizer unit/semantic CTest: PASS, 18/18.
+- `make llvm-recurrence-e2e`: PASS, including external seed, scalar induction,
+  induction poison, and trip counts 1/4/7.
+- `make llvm-predication-e2e`: PASS for both value-merge polarities and both
+  recurrence-driven Store cases.
+- Value merge: compiler-generated manifest, Golden/RTL equality, layout-aware
+  ABI output observation PASS.
+- Store `tripCount=4, limit=2`: four issues, two commits, committed data
+  sequence `[0, 1]`, Golden/RTL equality PASS.
+- Store `tripCount=4, limit=0`: four issues, zero commits, Golden/RTL equality
+  PASS.
+- The lowering regression also passes with an artifact directory containing
+  spaces, proving its independent checker invocation does not depend on an
+  unquoted path.
+
+## Hosted Evidence
+
+The older candidate runs remain historical evidence only. Exact evidence for
+the closure head produced from `2ec558243e94dea615fbc046e5198690febcc77a`
+will be recorded after the feature push:
+
+- exact feature-head compiler-fast: PENDING
+- exact feature-head hardware-regression: PENDING
+- PR #5 merge-ref compiler-fast: PENDING
+- PR #5 merge-ref hardware-regression: PENDING
+- merged-main compiler-fast: PENDING
+- merged-main hardware-regression: PENDING
+
+The hardware workflow must continue to execute retained RTL/shared-scratchpad/
+modulo-loop regressions and T013, T014, T015, T016, T017 value-merge, and T017
+predicated-Store E2E targets.
+
+## Release Decision
+
+**STOP pending hosted release gates.** Functional T017 closure is complete, but
+T018 must not begin until exact feature-head and merge-ref gates pass, PR #5 is
+merged, post-merge `main` gates pass, and this record is sealed with those
+immutable SHAs and run URLs.
