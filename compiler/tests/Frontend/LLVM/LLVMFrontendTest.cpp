@@ -741,6 +741,31 @@ exit:
 }
 )IR";
 
+const char* kSameAddressArmStores = R"IR(
+target datalayout = "e-p:64:64"
+define void @same_address_arm_stores(i32* %out, i32 %x, i32 %y, i32 %limit) {
+entry:
+  br label %loop
+loop:
+  %iv = phi i32 [ 0, %entry ], [ %inc, %merge ]
+  %addr = getelementptr i32, i32* %out, i32 %iv
+  %p = icmp ult i32 %iv, %limit
+  br i1 %p, label %then, label %else
+then:
+  store i32 %x, i32* %addr, align 4
+  br label %merge
+else:
+  store i32 %y, i32* %addr, align 4
+  br label %merge
+merge:
+  %inc = add i32 %iv, 1
+  %done = icmp ult i32 %inc, 4
+  br i1 %done, label %loop, label %exit
+exit:
+  ret void
+}
+)IR";
+
 void expect(bool condition, const char* message) {
   if (!condition)
     throw std::runtime_error(message);
@@ -1598,6 +1623,29 @@ void testPredicationLowering() {
   expect(conditionalRecurrenceVerification.ok(),
          ("independent verifier must validate conditional Select recurrence semantics: " +
           conditionalRecurrenceVerification.format())
+             .c_str());
+
+  auto sameAddressStores = parse(kSameAddressArmStores, context);
+  options.functionName = "same_address_arm_stores";
+  const auto sameAddressStoreResult =
+      cgra::frontend::llvm_frontend::lowerInnermostLoop(*sameAddressStores, options);
+  expect(sameAddressStoreResult.ok(),
+         "same-address mutually exclusive Stores must normalize to Select plus Store");
+  expect(sameAddressStoreResult.metadata &&
+             sameAddressStoreResult.metadata->coalescedStorePairs == 1,
+         "frontend metadata must disclose one coalesced Store pair");
+  expect(std::ranges::count_if(sameAddressStoreResult.dfg->nodes(), [](const auto& node) {
+           return node.opcode == cgra::ir::Opcode::Store;
+         }) == 1 &&
+             std::ranges::count_if(sameAddressStoreResult.dfg->nodes(), [](const auto& node) {
+               return node.opcode == cgra::ir::Opcode::Select;
+             }) == 1,
+         "coalescing must emit exactly one semantic Store fed by one Select");
+  const auto sameAddressStoreVerification = cgra::frontend::llvm_frontend::verifyFrontendResult(
+      *sameAddressStores, options, sameAddressStoreResult);
+  expect(sameAddressStoreVerification.ok(),
+         ("normalized same-address Store semantics must verify independently: " +
+          sameAddressStoreVerification.format())
              .c_str());
 }
 

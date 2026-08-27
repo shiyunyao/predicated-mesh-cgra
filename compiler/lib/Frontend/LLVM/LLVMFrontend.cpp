@@ -47,6 +47,7 @@ struct LoopSelection {
   llvm::BranchInst* branch = nullptr;
   std::optional<LinearLoopRegionDescriptor> linearRegion;
   bool loopEntryCanonicalized = false;
+  std::uint32_t coalescedStorePairs = 0;
   std::unique_ptr<llvm::DominatorTree> dominatorTree;
   std::unique_ptr<llvm::LoopInfo> loopInfo;
 };
@@ -73,6 +74,61 @@ struct BranchRegion {
   llvm::BasicBlock* mergeBlock = nullptr;
   const llvm::ICmpInst* condition = nullptr;
 };
+
+bool sameAddress(const llvm::Value& lhs, const llvm::Value& rhs, LoopSelection& selection) {
+  if (&lhs == &rhs)
+    return true;
+  llvm::TargetLibraryInfoImpl libraryInfoImpl;
+  llvm::TargetLibraryInfo libraryInfo(libraryInfoImpl);
+  llvm::AssumptionCache assumptions(*selection.function);
+  llvm::ScalarEvolution scalarEvolution(*selection.function, libraryInfo, assumptions,
+                                        *selection.dominatorTree, *selection.loopInfo);
+  return scalarEvolution.getSCEV(const_cast<llvm::Value*>(&lhs)) ==
+         scalarEvolution.getSCEV(const_cast<llvm::Value*>(&rhs));
+}
+
+void coalesceSameAddressStores(LoopSelection& selection, const BranchRegion& region) {
+  auto storesIn = [](llvm::BasicBlock& block) {
+    std::vector<llvm::StoreInst*> stores;
+    for (auto& instruction : block)
+      if (auto* store = llvm::dyn_cast<llvm::StoreInst>(&instruction))
+        stores.push_back(store);
+    return stores;
+  };
+  auto trueStores = storesIn(*region.trueBlock);
+  auto falseStores = storesIn(*region.falseBlock);
+  if (trueStores.size() != 1 || falseStores.size() != 1)
+    return;
+  auto* trueStore = trueStores.front();
+  auto* falseStore = falseStores.front();
+  if (trueStore->isVolatile() || trueStore->isAtomic() || falseStore->isVolatile() ||
+      falseStore->isAtomic() || trueStore->getValueOperand()->getType() !=
+                                    falseStore->getValueOperand()->getType() ||
+      !sameAddress(*trueStore->getPointerOperand(), *falseStore->getPointerOperand(), selection))
+    return;
+  const auto unsafeSideEffect = [&](const llvm::BasicBlock& block, const llvm::StoreInst* accepted) {
+    return std::ranges::any_of(block, [&](const llvm::Instruction& instruction) {
+      return &instruction != accepted && !instruction.isTerminator() &&
+             instruction.mayHaveSideEffects();
+    });
+  };
+  if (unsafeSideEffect(*region.trueBlock, trueStore) ||
+      unsafeSideEffect(*region.falseBlock, falseStore))
+    return;
+
+  auto insertion = region.mergeBlock->getFirstInsertionPt();
+  if (insertion == region.mergeBlock->end())
+    return;
+  auto* selected = llvm::SelectInst::Create(region.branch->getCondition(),
+                                            trueStore->getValueOperand(),
+                                            falseStore->getValueOperand(),
+                                            "cgra.store.value", &*insertion);
+  auto* mergedStore = new llvm::StoreInst(selected, trueStore->getPointerOperand(), &*insertion);
+  mergedStore->setAlignment(std::min(trueStore->getAlign(), falseStore->getAlign()));
+  trueStore->eraseFromParent();
+  falseStore->eraseFromParent();
+  ++selection.coalescedStorePairs;
+}
 
 LLVMFrontendResult failure(LLVMFrontendStatus status, LLVMFrontendDiagnosticCode code,
                            std::string message, const LoopSelection* selection = nullptr,
@@ -1420,6 +1476,19 @@ LLVMFrontendResult lowerStructuredLoop(llvm::Module& module, const LLVMFrontendO
           if (directSelect) {
             const auto predicateNode = state.nodes.find(directSelect->getCondition());
             if (predicateNode != state.nodes.end()) {
+              if (discoveredRegion && directSelect->getCondition() == state.region.condition &&
+                  !state.provenance.ifConversions.empty()) {
+                auto& plan = state.provenance.ifConversions.front();
+                plan.predicateNode = predicateNode->second;
+                plan.selects.push_back({valueSummary(*directSelect), destination->second,
+                                        valueSummary(*directSelect->getTrueValue()),
+                                        valueSummary(*directSelect->getFalseValue()), nullptr,
+                                        directSelect, directSelect->getTrueValue(),
+                                        directSelect->getFalseValue()});
+                plan.predicateEdges.push_back(*edge);
+                ++operand;
+                continue;
+              }
               LLVMIfConversionProvenance plan;
               plan.id = static_cast<std::uint32_t>(state.provenance.ifConversions.size());
               plan.conditionBlock = blockName(*selection.function, directSelect->getParent());
@@ -1561,6 +1630,7 @@ LLVMFrontendResult lowerStructuredLoop(llvm::Module& module, const LLVMFrontendO
   metadata.staticTripCount = inferStaticTripCount(selection);
   metadata.loopShape = selection.linearRegion ? "linear_multiblock" : "structured";
   metadata.loopEntryCanonicalized = selection.loopEntryCanonicalized;
+  metadata.coalescedStorePairs = selection.coalescedStorePairs;
   result.metadata = std::move(metadata);
   if (selection.linearRegion) {
     const auto& region = *selection.linearRegion;
@@ -1639,6 +1709,8 @@ LLVMFrontendResult lowerSelectedLoop(llvm::Module& module, const LLVMFrontendOpt
     auto region = discoverBranchRegion(*selected, error);
     if (hasInternalBranch && !region)
       return error;
+    if (region)
+      coalesceSameAddressStores(*selected, *region);
     if (selected->loop->getBlocks().size() > 1 && !region) {
       const auto linear = discoverLinearLoopRegion(*selected->loop);
       if (!linear.ok()) {
@@ -2125,6 +2197,7 @@ std::string LLVMFrontendResult::toJson() const {
         {"loop_depth", metadata->loopDepth},  {"loop_block_count", metadata->loopBlockCount},
         {"loop_shape", metadata->loopShape},
         {"loop_entry_canonicalized", metadata->loopEntryCanonicalized},
+        {"coalesced_store_pairs", metadata->coalescedStorePairs},
         {"requires_trip_count", metadata->requiresTripCount}};
     if (metadata->staticTripCount)
       root["metadata"]["static_trip_count"] = *metadata->staticTripCount;

@@ -154,6 +154,7 @@ struct LLVMFrontendMetadata {
   std::optional<std::uint64_t> staticTripCount;
   std::string loopShape;
   bool loopEntryCanonicalized = false;
+  std::uint32_t coalescedStorePairs = 0;
 };
 
 struct LLVMLinearLoopProvenance {

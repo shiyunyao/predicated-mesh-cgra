@@ -451,6 +451,53 @@ llvm::BasicBlock* branchMerge(const llvm::BranchInst& branch) {
   return nullptr;
 }
 
+std::uint32_t verifiedCoalescibleStorePairs(const Selection& selection) {
+  llvm::TargetLibraryInfoImpl libraryInfoImpl;
+  llvm::TargetLibraryInfo libraryInfo(libraryInfoImpl);
+  llvm::AssumptionCache assumptions(*selection.function);
+  llvm::ScalarEvolution scalarEvolution(*selection.function, libraryInfo, assumptions,
+                                        *selection.dominatorTree, *selection.loopInfo);
+  std::uint32_t count = 0;
+  for (auto* block : selection.loop->getBlocks()) {
+    const auto* branch = llvm::dyn_cast<llvm::BranchInst>(block->getTerminator());
+    if (!branch || !branch->isConditional() ||
+        !selection.loop->contains(branch->getSuccessor(0)) ||
+        !selection.loop->contains(branch->getSuccessor(1)) || !branchMerge(*branch))
+      continue;
+    auto storesIn = [](llvm::BasicBlock& arm) {
+      std::vector<llvm::StoreInst*> stores;
+      for (auto& instruction : arm)
+        if (auto* store = llvm::dyn_cast<llvm::StoreInst>(&instruction))
+          stores.push_back(store);
+      return stores;
+    };
+    auto trueStores = storesIn(*branch->getSuccessor(0));
+    auto falseStores = storesIn(*branch->getSuccessor(1));
+    if (trueStores.size() != 1 || falseStores.size() != 1)
+      continue;
+    auto* trueStore = trueStores.front();
+    auto* falseStore = falseStores.front();
+    const bool samePointer =
+        trueStore->getPointerOperand() == falseStore->getPointerOperand() ||
+        scalarEvolution.getSCEV(trueStore->getPointerOperand()) ==
+            scalarEvolution.getSCEV(falseStore->getPointerOperand());
+    const auto unsafeSideEffect = [](const llvm::BasicBlock& arm,
+                                     const llvm::StoreInst* accepted) {
+      return std::ranges::any_of(arm, [&](const llvm::Instruction& instruction) {
+        return &instruction != accepted && !instruction.isTerminator() &&
+               instruction.mayHaveSideEffects();
+      });
+    };
+    if (samePointer && !trueStore->isVolatile() && !trueStore->isAtomic() &&
+        !falseStore->isVolatile() && !falseStore->isAtomic() &&
+        trueStore->getValueOperand()->getType() == falseStore->getValueOperand()->getType() &&
+        !unsafeSideEffect(*branch->getSuccessor(0), trueStore) &&
+        !unsafeSideEffect(*branch->getSuccessor(1), falseStore))
+      ++count;
+  }
+  return count;
+}
+
 std::uint32_t correspondingLLVMOperand(const LLVMFrontendResult& result,
                                        const llvm::Instruction& instruction,
                                        std::uint32_t genericOperand) {
@@ -1613,6 +1660,11 @@ LLVMFrontendVerificationReport verifyFrontendResult(const llvm::Module& module,
     report.add("LLVM_FRONTEND_LOOP_ENTRY_VERIFY_FAILED",
                "entry canonicalization did not retain the normalized LLVM module");
     return report;
+  }
+  if (result.metadata && result.metadata->coalescedStorePairs !=
+                             verifiedCoalescibleStorePairs(*originalSelection)) {
+    report.add("LLVM_FRONTEND_STORE_COALESCING_VERIFY_FAILED",
+               "Store-coalescing metadata does not match independently reconstructed branch arms");
   }
   const llvm::Module& verificationModule =
       result.normalizedModule ? *result.normalizedModule : module;
