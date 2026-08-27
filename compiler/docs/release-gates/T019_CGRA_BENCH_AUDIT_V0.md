@@ -40,7 +40,7 @@ a hard audit failure.
 | Source and loop reconciliation | PASS; no missing or unexpected entries |
 | Smoke run | hosted `cgra-bench-smoke` |
 | Full corpus run | hosted `cgra-bench-audit`, automatically triggered on `compiler/cgra-bench-audit-v0` pushes |
-| Retained T013-T018 compiler/hardware gates | must remain green |
+| Retained T013-T018 compiler/hardware gates | PASS |
 
 The hosted workflow rejects a full audit when reconciliation fails, or when
 the report contains `UNKNOWN` or `TIMEOUT`. It verifies the pinned, clean
@@ -50,15 +50,23 @@ T019 feature branch; its change detector treats `tools/`, `compiler/`,
 
 ## Hosted runs
 
-- Feature candidate `3865df0e80e3b681cd1d538d42e610f732443764`:
-  compiler-fast run `33053874114` / gate job `98456619454` PASS;
-  hardware-regression run `33053874110` / backend job `98455762521` /
-  gate job `98459754380` PASS; full audit run `33053874185` / job
-  `98455719145` PASS. The `cgra-bench-full-audit` artifact ID is
-  `9638788097` with digest
-  `sha256:32d8de3cce16b2a82635603f30f1ca9fc23b8fcf2f6df62703ca103aa7706b58`.
-- PR merge-ref: `<MERGE_REF_SHA>`; compiler-fast `<RUN_ID>`; hardware-regression `<RUN_ID>`.
-- Merged main: `<MERGED_MAIN_SHA>`; compiler-fast `<RUN_ID>`; hardware-regression `<RUN_ID>`; post-merge audit `<RUN_ID>`.
+- Feature HEAD `038ec38924f4945d815cb3eab320f5beac6252a6`:
+  compiler-fast run `33056194064` / gate job `98464399343` PASS;
+  hardware-regression run `33056194108` / backend job `98463498795` /
+  gate job `98468308668` PASS; full audit run `33056194085` / job
+  `98463463653` PASS. The full-audit artifact ID is `9639746550` with
+  digest `sha256:6307b26445a074c9640b89e88cfffd94cf2a68033b02b5252f0aaf3e7d8abf54`.
+- PR #8 merge-ref `a64ef55a24020acc83ff5cbc09f45dd127a90382`:
+  compiler-fast run `33056846869` / gate job `98466580811` PASS;
+  hardware-regression run `33056846884` / backend job `98465704122` /
+  gate job `98471514996` PASS.
+- Merged main `da6ef8e4fb8102dea75505966c3fd1c779aff528`:
+  compiler-fast run `33059320555` / gate job `98476052781` PASS;
+  hardware-regression run `33059320585` / backend job `98473912476` /
+  gate job `98479683728` PASS; post-merge full audit run `33060026049` /
+  job `98476211349` PASS. The post-merge artifact ID is `9641390418`
+  with digest
+  `sha256:b120143f1634f67ecb59a1c768b73caca82cb659d33a81ebb7cf9846e1513b46`.
 
 ## Hosted feature audit
 
@@ -120,8 +128,20 @@ present, but the checked-in functional case manifest is empty because the same
 audit found zero upstream L6 cases for which native input, Golden, and RTL
 observations could be compared honestly.
 
+## T020 input baseline
+
+- Project: merged main `da6ef8e4fb8102dea75505966c3fd1c779aff528`.
+- Corpus: `6729aaf225d0320e4e0d3b419e20483069a5a69b`.
+- Target SHA256: `eedcb60d6e1ef3f452b9b559564931d565172671e62fec1423ef017e5186369d`.
+- Mapping profile: `baseline`, 120-second stage timeout, `maxII=8`, node
+  candidates 100000, backtracks 50000, route calls 100000, route states 10000.
+- Results and gap ranking: post-merge artifact `9641390418` from run
+  `33060026049`.
+- Known-supported contract: `benchmarks/cgra-bench/known_supported.v1.json`
+  with zero L4 cases.
+
 ## Release decision
 
-**T-COMP-019: OPEN until the exact feature, merge-ref, and merged-main evidence above is filled and reconciliation reports zero UNKNOWN results.**
+**T-COMP-019: CLOSED.**
 
-**T-COMP-020 remains blocked until this release gate is closed.**
+**GO T-COMP-020.**
