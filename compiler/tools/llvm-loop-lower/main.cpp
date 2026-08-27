@@ -237,6 +237,21 @@ int main(int argc, char** argv) {
                                     {"features", loopFeatures(*loop)},
                                     {"static_trip_count", staticCount ? nlohmann::json(*staticCount)
                                                                       : nlohmann::json(nullptr)}};
+            nlohmann::json shape = {{"kind", "unsupported"},
+                                    {"unique_preheader", loop->getLoopPreheader() != nullptr},
+                                    {"unique_latch", latches.size() == 1},
+                                    {"unique_exit", exits.size() == 1},
+                                    {"internal_conditional_branches",
+                                     entry["features"]["counts"]["internal_conditional_branches"]}};
+            if (loop->getBlocks().size() == 1)
+              shape["kind"] = "single_block";
+            else {
+              const auto linear =
+                  cgra::frontend::llvm_frontend::discoverLinearLoopRegion(function, *loop);
+              if (linear.ok())
+                shape["kind"] = "linear_multiblock";
+            }
+            entry["shape"] = std::move(shape);
             loopsJson["loops"].push_back(std::move(entry));
             if (!listLoopsJson)
               std::cout << function.getName().str()
@@ -322,6 +337,9 @@ int main(int argc, char** argv) {
                             {"dependences", resultJson["provenance"]["memory_dependences"]}}
                  .dump(2) +
              "\n"));
+      if (resultJson["provenance"].contains("linear_loop"))
+        writeArtifact(artifactDirectory / "01_linear_loop.json",
+                      resultJson["provenance"]["linear_loop"].dump(2) + "\n");
       writeArtifact(artifactDirectory / "04_generic_dfg.json", cgra::ir::toJson(*result.dfg));
       writeArtifact(artifactDirectory / "05_generic_dfg_verification.json",
                     cgra::ir::DFGVerifier::verify(*result.dfg).toJson());

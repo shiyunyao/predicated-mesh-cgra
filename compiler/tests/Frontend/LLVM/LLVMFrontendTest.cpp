@@ -15,6 +15,7 @@
 #include <iostream>
 #include <iterator>
 #include <memory>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 
@@ -118,6 +119,10 @@ public:
       return item.node == node && item.operand == operand;
     });
     binding->source = ExternalValueRef{external};
+  }
+  static void appendExternalBinding(DFG& dfg, NodeId node, std::uint32_t operand,
+                                    ExternalValueId external) {
+    dfg.appendBinding({node, operand, ExternalValueRef{external}});
   }
   static void clearLiveOuts(DFG& dfg) {
     dfg.liveOuts_.clear();
@@ -739,6 +744,294 @@ void expect(bool condition, const char* message) {
     throw std::runtime_error(message);
 }
 
+std::unique_ptr<llvm::Module> parse(const char* text, llvm::LLVMContext& context);
+
+std::string linearLoopIR(std::size_t blockCount, std::string functionName, std::string blockPrefix,
+                         std::string valuePrefix, bool reorderText = false) {
+  if (blockCount < 2)
+    throw std::invalid_argument("linear loop fixture requires at least two blocks");
+  const auto header = blockPrefix + "_header";
+  const auto latch = blockPrefix + "_latch";
+  std::vector<std::string> blocks{header};
+  for (std::size_t index = 1; index + 1 < blockCount; ++index)
+    blocks.push_back(blockPrefix + "_body" + std::to_string(index));
+  blocks.push_back(latch);
+
+  std::vector<std::string> definitions(blockCount);
+  definitions[0] = header + ":\n  %" + valuePrefix + "_iv = phi i32 [ 0, %entry ], [ %" +
+                   valuePrefix + "_next, %" + latch + " ]\n  %" + valuePrefix +
+                   "_v0 = add i32 %x, %" + valuePrefix + "_iv\n  br label %" + blocks[1] + "\n";
+  for (std::size_t index = 1; index + 1 < blockCount; ++index) {
+    definitions[index] = blocks[index] + ":\n  %" + valuePrefix + "_v" + std::to_string(index) +
+                         " = add i32 %" + valuePrefix + "_v" + std::to_string(index - 1) +
+                         ", 1\n  br label %" + blocks[index + 1] + "\n";
+  }
+  const auto last = blockCount - 1;
+  definitions[last] = latch + ":\n  %" + valuePrefix + "_v" + std::to_string(last) +
+                      " = add i32 %" + valuePrefix + "_v" + std::to_string(last - 1) + ", 1\n  %" +
+                      valuePrefix + "_next = add i32 %" + valuePrefix + "_iv, 1\n  %" +
+                      valuePrefix + "_done = icmp ult i32 %" + valuePrefix + "_next, 4\n  br i1 %" +
+                      valuePrefix + "_done, label %" + header + ", label %exit\n";
+
+  std::ostringstream ir;
+  ir << "define i32 @" << functionName << "(i32 %x) {\nentry:\n  br label %" << header << "\n";
+  if (reorderText) {
+    ir << definitions[0] << definitions[last];
+    for (std::size_t index = 1; index < last; ++index)
+      ir << definitions[index];
+  } else {
+    for (const auto& definition : definitions)
+      ir << definition;
+  }
+  ir << "exit:\n  %out = phi i32 [ %" << valuePrefix << "_v" << last << ", %" << latch
+     << " ]\n  ret i32 %out\n}\n";
+  return ir.str();
+}
+
+const char* kLinearPretest = R"IR(
+define i32 @linear_pretest(i32 %x) {
+entry:
+  br label %header
+header:
+  %iv = phi i32 [ 0, %entry ], [ %next, %body ]
+  %done = icmp ult i32 %iv, 4
+  br i1 %done, label %body, label %exit
+body:
+  %y = add i32 %x, %iv
+  %next = add i32 %iv, 1
+  br label %header
+exit:
+  ret i32 %x
+}
+)IR";
+
+const char* kLinearNonHeaderPhi = R"IR(
+define i32 @linear_nonheader_phi(i32 %x) {
+entry:
+  br label %header
+header:
+  %iv = phi i32 [ 0, %entry ], [ %next, %body ]
+  br label %body
+body:
+  %hidden = phi i32 [ %x, %header ]
+  %y = add i32 %hidden, %iv
+  %next = add i32 %iv, 1
+  %done = icmp ult i32 %next, 4
+  br i1 %done, label %header, label %exit
+exit:
+  %out = phi i32 [ %y, %body ]
+  ret i32 %out
+}
+)IR";
+
+std::string semanticFingerprint(const cgra::ir::DFG& dfg) {
+  std::ostringstream output;
+  for (const auto& node : dfg.nodes()) {
+    output << cgra::ir::toString(node.opcode) << ':' << node.resultType.toString() << ':';
+    for (const auto& operand : node.operandTypes)
+      output << operand.toString() << ',';
+    output << ';';
+  }
+  for (const auto& edge : dfg.edges()) {
+    output << static_cast<unsigned>(edge.kind()) << ':' << edge.src << ':' << edge.dst << ':'
+           << edge.distance;
+    if (const auto* data = std::get_if<cgra::ir::DataEdgeInfo>(&edge.info))
+      output << ':' << data->dstOperand << ':' << data->boundary.has_value();
+    output << ';';
+  }
+  for (const auto& binding : dfg.externalBindings())
+    output << "B:" << binding.node << ':' << binding.operand << ':' << binding.source.index()
+           << ';';
+  for (const auto& constant : dfg.constants())
+    output << "C:" << constant.type.toString() << ':' << constant.bits << ';';
+  for (const auto& liveOut : dfg.liveOuts())
+    output << "L:" << liveOut.type.toString() << ':' << liveOut.source << ';';
+  return output.str();
+}
+
+void testLinearMultiBlockLowering() {
+  for (const auto blockCount : {2U, 3U, 4U, 5U}) {
+    llvm::LLVMContext context;
+    const auto function = "linear_" + std::to_string(blockCount);
+    const auto text = linearLoopIR(blockCount, function, "cfg", "ssa");
+    auto module = parse(text.c_str(), context);
+    cgra::frontend::llvm_frontend::LLVMFrontendOptions options;
+    options.functionName = function;
+    auto result = cgra::frontend::llvm_frontend::lowerInnermostLoop(*module, options);
+    expect(result.ok(), result.message.c_str());
+    expect(result.metadata && result.metadata->loopShape == "linear_multiblock",
+           "multi-block loop must report its structural shape");
+    expect(result.metadata->loopBlockCount == blockCount,
+           "linear loop metadata must preserve block count");
+    expect(result.provenance.linearLoop &&
+               result.provenance.linearLoop->orderedBlocks.size() == blockCount,
+           "linear loop must publish CFG-derived block order");
+    const auto report =
+        cgra::frontend::llvm_frontend::verifyFrontendResult(*module, options, result);
+    expect(report.ok(), report.format().c_str());
+
+    const auto crossBlock = std::ranges::find_if(result.dfg->edges(), [&](const auto& edge) {
+      if (edge.kind() != cgra::ir::Edge::Kind::Data || edge.distance != 0)
+        return false;
+      const auto source = std::ranges::find_if(
+          result.provenance.nodes, [&](const auto& item) { return item.node == edge.src; });
+      const auto destination = std::ranges::find_if(
+          result.provenance.nodes, [&](const auto& item) { return item.node == edge.dst; });
+      return source != result.provenance.nodes.end() &&
+             destination != result.provenance.nodes.end() &&
+             source->basicBlock != destination->basicBlock;
+    });
+    expect(crossBlock != result.dfg->edges().end(),
+           "linear fixture must contain a distance-zero cross-block SSA edge");
+
+    if (blockCount == 3) {
+      auto missingEdge = result;
+      cgra::ir::DFGTestAccess::eraseEdge(*missingEdge.dfg, crossBlock->id);
+      expect(
+          !cgra::frontend::llvm_frontend::verifyFrontendResult(*module, options, missingEdge).ok(),
+          "verifier must reject a missing cross-block SSA edge");
+
+      auto wrongOperand = result;
+      const auto crossBlockOperand = std::get<cgra::ir::DataEdgeInfo>(crossBlock->info).dstOperand;
+      cgra::ir::DFGTestAccess::setEdgeOperand(*wrongOperand.dfg, crossBlock->id,
+                                              crossBlockOperand + 1);
+      expect(
+          !cgra::frontend::llvm_frontend::verifyFrontendResult(*module, options, wrongOperand).ok(),
+          "verifier must reject a wrong cross-block destination operand");
+
+      auto missingBodyNode = result;
+      cgra::ir::DFGTestAccess::eraseNode(*missingBodyNode.dfg, crossBlock->dst);
+      expect(!cgra::frontend::llvm_frontend::verifyFrontendResult(*module, options, missingBodyNode)
+                  .ok(),
+             "verifier must reject a dropped body-block semantic node");
+
+      auto externalizedBodyValue = result;
+      cgra::ir::DFGTestAccess::eraseEdge(*externalizedBodyValue.dfg, crossBlock->id);
+      cgra::ir::DFGTestAccess::appendExternalBinding(
+          *externalizedBodyValue.dfg, crossBlock->dst, crossBlockOperand,
+          externalizedBodyValue.dfg->externalValues().front().id);
+      expect(!cgra::frontend::llvm_frontend::verifyFrontendResult(*module, options,
+                                                                  externalizedBodyValue)
+                  .ok(),
+             "verifier must reject an in-loop cross-block value externalized as a live-in");
+
+      const auto recurrence = std::ranges::find_if(result.dfg->edges(), [](const auto& edge) {
+        return edge.kind() == cgra::ir::Edge::Kind::Data && edge.distance == 1;
+      });
+      expect(recurrence != result.dfg->edges().end(),
+             "linear fixture must retain its header-PHI recurrence edge");
+      auto missingRecurrence = result;
+      cgra::ir::DFGTestAccess::eraseEdge(*missingRecurrence.dfg, recurrence->id);
+      expect(
+          !cgra::frontend::llvm_frontend::verifyFrontendResult(*module, options, missingRecurrence)
+               .ok(),
+          "verifier must reject a missing cross-block recurrence edge");
+
+      auto wrongRecurrenceSource = result;
+      const auto replacement =
+          recurrence->src == crossBlock->src ? crossBlock->dst : crossBlock->src;
+      cgra::ir::DFGTestAccess::setEdgeSource(*wrongRecurrenceSource.dfg, recurrence->id,
+                                             replacement);
+      expect(!cgra::frontend::llvm_frontend::verifyFrontendResult(*module, options,
+                                                                  wrongRecurrenceSource)
+                  .ok(),
+             "verifier must reject a recurrence sourced from the wrong latch value");
+
+      auto badOrder = result;
+      std::reverse(badOrder.provenance.linearLoop->orderedBlocks.begin(),
+                   badOrder.provenance.linearLoop->orderedBlocks.end());
+      expect(!cgra::frontend::llvm_frontend::verifyFrontendResult(*module, options, badOrder).ok(),
+             "verifier must reject corrupted linear CFG order");
+
+      auto badBlock = result;
+      badBlock.provenance.nodes.front().basicBlock = "wrong.block";
+      expect(!cgra::frontend::llvm_frontend::verifyFrontendResult(*module, options, badBlock).ok(),
+             "verifier must reject wrong node block provenance");
+
+      auto fakeBranchNode = result;
+      const auto duplicate = cgra::ir::DFGTestAccess::appendDuplicateNode(
+          *fakeBranchNode.dfg, fakeBranchNode.dfg->nodes().front().id);
+      const llvm::BranchInst* termination = nullptr;
+      for (const auto& block : *module->getFunction(function)) {
+        const auto* branch = llvm::dyn_cast<llvm::BranchInst>(block.getTerminator());
+        if (branch && branch->isConditional()) {
+          termination = branch;
+          break;
+        }
+      }
+      expect(termination != nullptr, "linear fixture must contain a termination branch");
+      fakeBranchNode.provenance.nodes.push_back(
+          {duplicate, function, termination->getParent()->getName().str(), 0, "br", termination});
+      expect(!cgra::frontend::llvm_frontend::verifyFrontendResult(*module, options, fakeBranchNode)
+                  .ok(),
+             "verifier must reject a fake Generic node for the LLVM branch terminator");
+    }
+  }
+
+  llvm::LLVMContext renamedContext;
+  auto renamed = parse(linearLoopIR(4, "renamed_function", "random_block", "random_value").c_str(),
+                       renamedContext);
+  cgra::frontend::llvm_frontend::LLVMFrontendOptions renamedOptions;
+  renamedOptions.functionName = "renamed_function";
+  const auto renamedResult =
+      cgra::frontend::llvm_frontend::lowerInnermostLoop(*renamed, renamedOptions);
+  expect(renamedResult.ok(), "renamed linear loop must lower");
+
+  llvm::LLVMContext reorderedContext;
+  auto reordered =
+      parse(linearLoopIR(4, "layout_changed", "bb", "q", true).c_str(), reorderedContext);
+  cgra::frontend::llvm_frontend::LLVMFrontendOptions reorderedOptions;
+  reorderedOptions.functionName = "layout_changed";
+  const auto reorderedResult =
+      cgra::frontend::llvm_frontend::lowerInnermostLoop(*reordered, reorderedOptions);
+  expect(reorderedResult.ok(), "textually reordered linear loop must lower");
+  expect(semanticFingerprint(*renamedResult.dfg) == semanticFingerprint(*reorderedResult.dfg),
+         "function/block/SSA renaming and textual layout must preserve Generic semantics");
+
+  for (const auto seed : {0U, 1U, 7U, 19U, 42U}) {
+    llvm::LLVMContext context;
+    const auto blocks = 2U + seed % 4U;
+    const auto function = "property_" + std::to_string(seed);
+    const auto text = linearLoopIR(blocks, function, "block_" + std::to_string(seed),
+                                   "value_" + std::to_string(seed), seed % 2U != 0);
+    auto module = parse(text.c_str(), context);
+    cgra::frontend::llvm_frontend::LLVMFrontendOptions options;
+    options.functionName = function;
+    const auto result = cgra::frontend::llvm_frontend::lowerInnermostLoop(*module, options);
+    expect(result.ok(), "deterministic linear-loop property fixture must lower");
+    expect(cgra::frontend::llvm_frontend::verifyFrontendResult(*module, options, result).ok(),
+           "deterministic linear-loop property fixture must verify");
+  }
+
+  llvm::LLVMContext pretestContext;
+  auto pretest = parse(kLinearPretest, pretestContext);
+  cgra::frontend::llvm_frontend::LLVMFrontendOptions pretestOptions;
+  pretestOptions.functionName = "linear_pretest";
+  const auto pretestResult =
+      cgra::frontend::llvm_frontend::lowerInnermostLoop(*pretest, pretestOptions);
+  expect(pretestResult.ok(), "pre-test header termination loop must lower");
+  expect(
+      cgra::frontend::llvm_frontend::verifyFrontendResult(*pretest, pretestOptions, pretestResult)
+          .ok(),
+      "pre-test header termination loop must verify");
+
+  llvm::LLVMContext phiContext;
+  auto nonHeaderPhi = parse(kLinearNonHeaderPhi, phiContext);
+  cgra::frontend::llvm_frontend::LLVMFrontendOptions phiOptions;
+  phiOptions.functionName = "linear_nonheader_phi";
+  const auto phiResult =
+      cgra::frontend::llvm_frontend::lowerInnermostLoop(*nonHeaderPhi, phiOptions);
+  expect(!phiResult.ok() &&
+             phiResult.status ==
+                 cgra::frontend::llvm_frontend::LLVMFrontendStatus::UnsupportedLoopShape,
+         "linear loop with non-header PHI must be rejected");
+  expect(!phiResult.diagnostics.empty() &&
+             phiResult.diagnostics.front().code ==
+                 cgra::frontend::llvm_frontend::LLVMFrontendDiagnosticCode::
+                     LLVM_FRONTEND_LINEAR_LOOP_NONHEADER_PHI,
+         "non-header PHI rejection must have a stable diagnostic");
+}
+
 std::unique_ptr<llvm::Module> parse(const char* text, llvm::LLVMContext& context) {
   llvm::SMDiagnostic diagnostic;
   auto module = llvm::parseAssemblyString(text, diagnostic, context);
@@ -927,6 +1220,8 @@ void testPredicationLowering() {
   expect(diamondResult.dfg->nodes().size() == 4, "diamond emits ICmp, two arm adds, and Select");
   expect(diamondResult.dfg->liveOuts().size() == 1, "diamond Select becomes LiveOut");
   expect(diamondResult.provenance.ifConversions.size() == 1, "diamond emits one IfConversion plan");
+  expect(!diamondResult.provenance.linearLoop,
+         "T017 diamond must not be swallowed by the linear-loop path");
   expect(cgra::frontend::llvm_frontend::verifyFrontendResult(*diamond, options, diamondResult).ok(),
          "diamond verifier");
   auto swappedArms = diamondResult;
@@ -1016,6 +1311,8 @@ void testPredicationLowering() {
   expect(triangleResult.ok(), "triangle branch must lower");
   expect(triangleResult.dfg->nodes().size() == 3,
          "triangle emits ICmp, one arm operation, and Select");
+  expect(!triangleResult.provenance.linearLoop,
+         "T017 triangle must not be swallowed by the linear-loop path");
   expect(
       cgra::frontend::llvm_frontend::verifyFrontendResult(*triangle, options, triangleResult).ok(),
       "triangle verifier");
@@ -1347,6 +1644,7 @@ int main() {
     testRecurrenceLowering();
     testRecurrenceNegativeCorpus();
     testPredicationLowering();
+    testLinearMultiBlockLowering();
     std::cout << "CGRA_LLVM_FRONTEND_TEST_PASS\n";
     return EXIT_SUCCESS;
   } catch (const std::exception& error) {

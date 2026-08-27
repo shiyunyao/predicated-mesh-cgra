@@ -13,6 +13,7 @@ on:
       - compiler/predication-v0
       - compiler/memory-dependence-v0
       - compiler/cgra-bench-audit-v0
+      - compiler/linear-multiblock-loop-v0
   workflow_dispatch:
 
 permissions:
@@ -90,6 +91,8 @@ jobs:
         run: make llvm-predication-e2e
       - name: LLVM memory dependence V0 E2E
         run: make llvm-memory-e2e
+      - name: LLVM linear multi-block loop V0 E2E
+        run: make llvm-linear-loop-e2e
       - name: Upload backend diagnostics
         if: failure()
         uses: actions/upload-artifact@v4
@@ -112,6 +115,7 @@ jobs:
             build/compiler-e2e/**
             build/kernel-e2e/**
             build/llvm-frontend-e2e/memory/**
+            build/llvm-frontend-e2e/linear-multiblock/**
 
   hardware-regression-gate:
     name: hardware-regression-gate

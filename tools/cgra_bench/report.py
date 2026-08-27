@@ -107,6 +107,10 @@ def report(out: pathlib.Path, corpus: dict[str, Any], results: list[dict[str, An
     for item in results:
         dfg_edge_kinds.update(item.get("dfg", {}).get("edge_kind_histogram", {}))
         dfg_distances.update(item.get("dfg", {}).get("distance_histogram", {}))
+    linear_results = [
+        item for item in results
+        if item.get("loop", {}).get("shape", {}).get("kind") == "linear_multiblock"
+    ]
     summary = {
         "schema": "cgra.cgra_bench.summary.v1",
         "denominator": {
@@ -140,6 +144,28 @@ def report(out: pathlib.Path, corpus: dict[str, Any], results: list[dict[str, An
         "generic_opcode_histogram": dict(sorted(isa.items())),
         "generic_edge_kind_histogram": dict(sorted(dfg_edge_kinds.items())),
         "generic_distance_histogram": dict(sorted(dfg_distances.items(), key=lambda item: int(item[0]))),
+        "linear_multiblock": {
+            "candidate_count": len(linear_results),
+            "frontend_dfg_count": sum(
+                TIERS.get(item.get("tier", "DISCOVERED"), 0) >= 2 for item in linear_results
+            ),
+            "mapped_count": sum(
+                TIERS.get(item.get("tier", "DISCOVERED"), 0) >= 4 for item in linear_results
+            ),
+            "shape_rejection_count": sum(
+                item.get("diagnostic_code") in {
+                    "LLVM_FRONTEND_UNSUPPORTED_LOOP_SHAPE",
+                    "LLVM_FRONTEND_LINEAR_LOOP_NO_PREHEADER",
+                    "LLVM_FRONTEND_LINEAR_LOOP_NO_LATCH",
+                    "LLVM_FRONTEND_LINEAR_LOOP_EXIT_SHAPE",
+                    "LLVM_FRONTEND_LINEAR_LOOP_INTERNAL_BRANCH",
+                    "LLVM_FRONTEND_LINEAR_LOOP_UNSUPPORTED_TERMINATOR",
+                    "LLVM_FRONTEND_LINEAR_LOOP_NON_LINEAR_CFG",
+                    "LLVM_FRONTEND_LINEAR_LOOP_NONHEADER_PHI",
+                }
+                for item in linear_results
+            ),
+        },
         "backend_metrics": {
             "cases_with_stats": len(backend_stats),
             "mii": [stats.get("mii") for stats in backend_stats if stats.get("mii") is not None],
@@ -184,7 +210,7 @@ def report(out: pathlib.Path, corpus: dict[str, Any], results: list[dict[str, An
         writer = csv.writer(stream)
         writer.writerow(["metric", "value"])
         writer.writerows([("candidate_loops", candidate_loop_count), ("terminal_results", len(results)), *sorted(tiers.items()), *sorted(terminal.items())])
-    lines = ["# CGRA-Bench Audit Summary", "", f"- Source units represented: {source_count}/{len(expected_sources)}", f"- Candidate loops represented: {len(represented_loops)}/{candidate_loop_count}", f"- Terminal results: {len(results)}", f"- UNKNOWN/unclassified: {summary['unknown_count']}", f"- Timeouts: {summary['timeout_count']}", f"- Reconciliation: {'PASS' if summary['reconciliation']['ok'] else 'FAIL'}", "", "## Tiers", ""]
+    lines = ["# CGRA-Bench Audit Summary", "", f"- Source units represented: {source_count}/{len(expected_sources)}", f"- Candidate loops represented: {len(represented_loops)}/{candidate_loop_count}", f"- Terminal results: {len(results)}", f"- UNKNOWN/unclassified: {summary['unknown_count']}", f"- Timeouts: {summary['timeout_count']}", f"- Reconciliation: {'PASS' if summary['reconciliation']['ok'] else 'FAIL'}", f"- Linear multi-block: candidates={summary['linear_multiblock']['candidate_count']}, frontend={summary['linear_multiblock']['frontend_dfg_count']}, mapped={summary['linear_multiblock']['mapped_count']}, shape-rejected={summary['linear_multiblock']['shape_rejection_count']}", "", "## Tiers", ""]
     lines.extend(f"- {key}: {value}" for key, value in sorted(tiers.items()))
     lines.extend(["", "## First blockers", ""])
     lines.extend(f"- {key}: {value}" for key, value in sorted(first_blockers.items()))

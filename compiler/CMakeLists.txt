@@ -183,6 +183,7 @@ cgra_enable_sanitizers(cgra_abi)
 add_library(cgra_llvm_frontend
   lib/Frontend/LLVM/LLVMFrontend.cpp
   lib/Frontend/LLVM/LLVMFrontendVerifier.cpp
+  lib/Frontend/LLVM/LLVMLinearLoop.cpp
   lib/Frontend/LLVM/LLVMMemoryAnalysis.cpp
 )
 target_include_directories(cgra_llvm_frontend PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)

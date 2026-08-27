@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - compiler/cgra-bench-audit-v0
+      - compiler/linear-multiblock-loop-v0
   workflow_dispatch:
   schedule:
     - cron: '17 3 * * 0'

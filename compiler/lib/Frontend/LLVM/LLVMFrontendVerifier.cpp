@@ -503,6 +503,58 @@ void verifyIfRegionStructure(const Selection& selection, const LLVMFrontendResul
                "internal LLVM branch coverage does not match if-conversion plans");
 }
 
+void verifyLinearRegionStructure(const Selection& selection, const LLVMFrontendResult& result,
+                                 LLVMFrontendVerificationReport& report) {
+  if (selection.loop->getBlocks().size() <= 1) {
+    if (result.provenance.linearLoop)
+      report.add("LLVM_FRONTEND_LINEAR_LOOP_VERIFY_FAILED",
+                 "single-block loop has spurious linear-loop provenance");
+    return;
+  }
+
+  const auto analysis = discoverLinearLoopRegion(*selection.function, *selection.loop);
+  const bool hasBranchPlan = std::ranges::any_of(
+      result.provenance.ifConversions, [](const auto& region) { return region.branch != nullptr; });
+  if (!analysis.ok()) {
+    if (!hasBranchPlan)
+      report.add("LLVM_FRONTEND_LINEAR_LOOP_VERIFY_FAILED",
+                 "multi-block result is neither a supported branch region nor a linear loop: " +
+                     analysis.message);
+    return;
+  }
+  if (hasBranchPlan) {
+    report.add("LLVM_FRONTEND_LINEAR_LOOP_VERIFY_FAILED",
+               "linear loop unexpectedly carries an if-conversion plan");
+    return;
+  }
+  if (!result.provenance.linearLoop) {
+    report.add("LLVM_FRONTEND_LINEAR_LOOP_VERIFY_FAILED",
+               "linear-loop result has no structural provenance");
+    return;
+  }
+
+  const auto& expected = *analysis.region;
+  const auto& actual = *result.provenance.linearLoop;
+  std::vector<std::string> ordered;
+  for (const auto* block : expected.orderedBlocks)
+    ordered.push_back(blockName(*selection.function, *block));
+  if (actual.header != blockName(*selection.function, *expected.header) ||
+      actual.preheader != blockName(*selection.function, *expected.preheader) ||
+      actual.latch != blockName(*selection.function, *expected.latch) ||
+      actual.exiting != blockName(*selection.function, *expected.exiting) ||
+      actual.exit != blockName(*selection.function, *expected.exit) ||
+      actual.terminationBlock !=
+          blockName(*selection.function, *expected.terminationBranch->getParent()) ||
+      actual.orderedBlocks != ordered) {
+    report.add("LLVM_FRONTEND_LINEAR_LOOP_VERIFY_FAILED",
+               "linear-loop provenance does not match independently reconstructed CFG order");
+  }
+  if (!result.metadata || result.metadata->loopShape != "linear_multiblock" ||
+      result.metadata->loopBlockCount != expected.orderedBlocks.size())
+    report.add("LLVM_FRONTEND_LINEAR_LOOP_VERIFY_FAILED",
+               "linear-loop metadata does not match the selected LLVM loop");
+}
+
 void verifyIfDataflow(const Selection& selection, const LLVMFrontendResult& result,
                       LLVMFrontendVerificationReport& report) {
   auto slice = controlSlice(selection);
@@ -572,6 +624,18 @@ void verifyIfDataflow(const Selection& selection, const LLVMFrontendResult& resu
       report.add("LLVM_FRONTEND_NODE_PROVENANCE_INVALID",
                  "node provenance is outside the selected data path");
       continue;
+    }
+    std::uint32_t instructionOrdinal = 0;
+    for (const auto& candidate : *instruction->getParent()) {
+      if (&candidate == instruction)
+        break;
+      ++instructionOrdinal;
+    }
+    if (provenance->function != selection.function->getName().str() ||
+        provenance->basicBlock != blockName(*selection.function, *instruction->getParent()) ||
+        provenance->instructionOrdinal != instructionOrdinal) {
+      report.add("LLVM_FRONTEND_NODE_PROVENANCE_INVALID",
+                 "node function, block, or instruction ordinal provenance is inconsistent");
     }
     mappedInstructions.insert(instruction);
     if (const auto expected = opcode(*instruction)) {
@@ -1248,6 +1312,7 @@ LLVMFrontendVerificationReport verifyIfConvertedResult(const llvm::Module& modul
   if (!dfgReport.ok())
     report.add("LLVM_FRONTEND_DFG_VERIFY_FAILED", dfgReport.format());
   verifyIfRegionStructure(*selection, result, report);
+  verifyLinearRegionStructure(*selection, result, report);
   verifyIfDataflow(*selection, result, report);
   verifyMemoryDataflow(*selection, result, report);
 
@@ -1413,7 +1478,8 @@ LLVMFrontendVerificationReport verifyFrontendResult(const llvm::Module& module,
   const auto selection = select(module, options, report);
   if (!selection)
     return report;
-  if (!result.provenance.ifConversions.empty() || !result.provenance.memoryAccesses.empty())
+  if (!result.provenance.ifConversions.empty() || !result.provenance.memoryAccesses.empty() ||
+      result.provenance.linearLoop)
     return verifyIfConvertedResult(module, options, result);
   if (!selection->branch || selection->loop->getBlocks().size() != 1) {
     report.add("LLVM_FRONTEND_LOOP_SHAPE_MISMATCH", "selected loop shape changed after lowering");

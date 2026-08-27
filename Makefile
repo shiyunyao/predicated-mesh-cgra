@@ -106,7 +106,7 @@ CGRA_BENCH_FRONTEND_BUILD ?= build/compiler-llvm
 CGRA_BENCH_FRONTEND_BIN := $(CGRA_BENCH_FRONTEND_BUILD)/bin/cgra-llvm-loop-lower
 CGRA_BENCH_COMPILE_BIN := $(CGRA_BENCH_FRONTEND_BUILD)/bin/cgrac-compile-kernel
 
-.PHONY: help check-test lint build test regression shared-scratchpad-tests shared-scratchpad-negative-tests program program-prepare program-build program-run program-check compiler-e2e kernel-abi-e2e kernel-abi-scalar-e2e kernel-abi-base-load-e2e kernel-abi-recurrence-e2e kernel-abi-tripcount-e2e llvm-frontend-e2e llvm-frontend-c-smoke llvm-recurrence-e2e llvm-predication-e2e llvm-memory-e2e cgra-bench-inventory cgra-bench-smoke cgra-bench-audit cgra-bench-freeze-supported modulo-loop modulo-loop-prepare modulo-loop-check modulo-loop-tripcount-tests modulo-loop-zero-boundary-test modulo-loop-reuse-test modulo-loop-assert-tests synth-fetch-asap7 synth-memory-shape synth-area synth-timing synth-power synth-power-feasibility synth-fn-cacti clean
+.PHONY: help check-test lint build test regression shared-scratchpad-tests shared-scratchpad-negative-tests program program-prepare program-build program-run program-check compiler-e2e kernel-abi-e2e kernel-abi-scalar-e2e kernel-abi-base-load-e2e kernel-abi-recurrence-e2e kernel-abi-tripcount-e2e llvm-frontend-e2e llvm-frontend-c-smoke llvm-recurrence-e2e llvm-predication-e2e llvm-memory-e2e llvm-linear-loop-e2e cgra-bench-inventory cgra-bench-smoke cgra-bench-audit cgra-bench-freeze-supported modulo-loop modulo-loop-prepare modulo-loop-check modulo-loop-tripcount-tests modulo-loop-zero-boundary-test modulo-loop-reuse-test modulo-loop-assert-tests synth-fetch-asap7 synth-memory-shape synth-area synth-timing synth-power synth-power-feasibility synth-fn-cacti clean
 
 help:
 	@echo "make test TEST=<name>  Build and run one testbench"
@@ -118,6 +118,7 @@ help:
 	@echo "make llvm-recurrence-e2e  Lower LLVM PHI recurrences through Generic DFG, Kernel ABI, and RTL"
 	@echo "make llvm-predication-e2e  Lower LLVM if-conversion predicates through Generic DFG and verifier"
 	@echo "make llvm-memory-e2e  Lower affine LLVM memory through Generic DFG, Kernel ABI, and RTL"
+	@echo "make llvm-linear-loop-e2e  Lower multi-block C loops through Generic DFG, Kernel ABI, and RTL"
 	@echo "make cgra-bench-inventory  Rebuild the pinned CGRA-Bench corpus lock and case manifest"
 	@echo "make cgra-bench-smoke  Run the fixed T019 smoke corpus audit"
 	@echo "make cgra-bench-audit  Run the complete pinned CGRA-Bench kernels audit"
@@ -370,6 +371,31 @@ llvm-memory-e2e:
 	test "$$(sha256sum "$$case_dir/raw_trip1/program_manifest.json" | cut -d' ' -f1)" != "$$(sha256sum "$$case_dir/raw_trip7/program_manifest.json" | cut -d' ' -f1)"; \
 	jq -e '.dependences | length == 0' "$$case_dir/vector_trip4/frontend/02_memory_analysis.json" >/dev/null; \
 	jq -e 'any(.dependences[]; .kind == "RAW" and .distance == 1)' "$$case_dir/raw_trip4/frontend/02_memory_analysis.json" >/dev/null
+
+llvm-linear-loop-e2e:
+	@set -eu; \
+	case_dir="$(LLVM_FRONTEND_E2E_DIR)/linear-multiblock"; mkdir -p "$$case_dir"; \
+	command -v "$(LLVM_FRONTEND_CLANG)" >/dev/null || { echo "missing $(LLVM_FRONTEND_CLANG)"; exit 2; }; \
+	command -v "$(LLVM_FRONTEND_OPT)" >/dev/null || { echo "missing $(LLVM_FRONTEND_OPT)"; exit 2; }; \
+	cmake -S compiler -B "$(LLVM_FRONTEND_BUILD_DIR)" -DCGRA_BUILD_TESTS=OFF -DCGRA_WARNINGS_AS_ERRORS=ON $(LLVM_CMAKE_ARG); \
+	cmake --build "$(LLVM_FRONTEND_BUILD_DIR)" --target cgra-llvm-loop-lower cgrac-compile-kernel --parallel; \
+	compile_case() { \
+		name="$$1"; source="$$2"; function="$$3"; invocation="$$4"; expectation="$$5"; root="$$case_dir/$$name"; \
+		mkdir -p "$$root/source" "$$root/frontend" "$$root/backend"; \
+		"$(LLVM_FRONTEND_CLANG)" -m32 -O0 -Xclang -disable-O0-optnone -fno-discard-value-names -S -emit-llvm "$$source" -o "$$root/source/kernel.raw.ll"; \
+		"$(LLVM_FRONTEND_OPT)" -S -passes='mem2reg,loop-simplify,lcssa,simplifycfg' "$$root/source/kernel.raw.ll" -o "$$root/source/kernel.ll"; \
+		"$(LLVM_FRONTEND_BUILD_DIR)/bin/cgra-llvm-loop-lower" "$$root/source/kernel.ll" --function "$$function" --list-loops --json > "$$root/source/loops.json"; \
+		jq -e '.loops | length == 1 and .[0].block_count > 1 and .[0].shape.kind == "linear_multiblock" and .[0].shape.internal_conditional_branches == 0' "$$root/source/loops.json" >/dev/null; \
+		"$(LLVM_FRONTEND_BUILD_DIR)/bin/cgra-llvm-loop-lower" "$$root/source/kernel.ll" --function "$$function" --artifact-dir "$$root/frontend" --invocation "$$invocation" -o "$$root/frontend/generic_dfg.json"; \
+		jq -e '.metadata.loop_shape == "linear_multiblock" and .metadata.loop_block_count > 1' "$$root/frontend/06_frontend_result.json" >/dev/null; \
+		test -s "$$root/frontend/01_linear_loop.json"; \
+		"$(LLVM_FRONTEND_BUILD_DIR)/bin/cgrac-compile-kernel" "$$root/frontend/generic_dfg.json" --target target/cgra_v3.json --invocation "$$invocation" --artifact-dir "$$root/backend" --max-ii 12 --max-node-candidates 30000 --max-backtracks 30000 --max-route-calls 60000 --max-route-states 10000 -o "$$root/program_manifest.json"; \
+		$(MAKE) --no-print-directory program BUILD_DIR="$$root" PROGRAM_MANIFEST="$$root/program_manifest.json"; \
+		python3 tools/check_llvm_memory_e2e.py --layout "$$root/backend/04_kernel_abi_layout.json" --expectation "$$expectation" --golden "$$root/program/program_manifest/golden_trace.csv" --rtl "$$root/program/program_manifest/rtl_trace.csv"; \
+	}; \
+	compile_case vector_add compiler/tests/Frontend/LLVM/fixtures/kernel_linear_vector_add.c linear_vector_add compiler/tests/Frontend/LLVM/fixtures/linear_vector_add_trip4.json compiler/tests/Frontend/LLVM/fixtures/memory_vector_add_trip4_expected.json; \
+	compile_case recurrence compiler/tests/Frontend/LLVM/fixtures/kernel_linear_recurrence.c linear_recurrence compiler/tests/Frontend/LLVM/fixtures/linear_recurrence_trip4.json compiler/tests/Frontend/LLVM/fixtures/linear_recurrence_trip4_expected.json; \
+	jq -e 'any(.edges[]; .kind == "data" and .distance == 1)' "$$case_dir/recurrence/frontend/generic_dfg.json" >/dev/null
 
 cgra-bench-inventory:
 	python3 tools/cgra_bench/inventory.py --corpus "$(CGRA_BENCH_CORPUS)" --out benchmarks/cgra-bench/corpus.lock.json --cases-out "$(CGRA_BENCH_CASES)"

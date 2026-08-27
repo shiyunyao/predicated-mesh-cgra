@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 
+#include "cgra/Frontend/LLVM/LLVMLinearLoop.h"
 #include "cgra/Frontend/LLVM/LLVMMemoryAnalysis.h"
 #include "cgra/IR/DFG.h"
 
@@ -118,6 +119,13 @@ enum class LLVMFrontendDiagnosticCode {
   LLVM_FRONTEND_DATA_DEPENDENT_CONTROL,
   LLVM_FRONTEND_DFG_VERIFY_FAILED,
   LLVM_FRONTEND_VERIFY_FAILED,
+  LLVM_FRONTEND_LINEAR_LOOP_NO_PREHEADER,
+  LLVM_FRONTEND_LINEAR_LOOP_NO_LATCH,
+  LLVM_FRONTEND_LINEAR_LOOP_EXIT_SHAPE,
+  LLVM_FRONTEND_LINEAR_LOOP_INTERNAL_BRANCH,
+  LLVM_FRONTEND_LINEAR_LOOP_UNSUPPORTED_TERMINATOR,
+  LLVM_FRONTEND_LINEAR_LOOP_NON_LINEAR_CFG,
+  LLVM_FRONTEND_LINEAR_LOOP_NONHEADER_PHI,
   LLVM_FRONTEND_INTERNAL_ERROR,
 };
 
@@ -143,6 +151,17 @@ struct LLVMFrontendMetadata {
   std::uint32_t loopBlockCount = 0;
   bool requiresTripCount = true;
   std::optional<std::uint64_t> staticTripCount;
+  std::string loopShape;
+};
+
+struct LLVMLinearLoopProvenance {
+  std::string header;
+  std::string preheader;
+  std::string latch;
+  std::string exiting;
+  std::string exit;
+  std::string terminationBlock;
+  std::vector<std::string> orderedBlocks;
 };
 
 struct LLVMFrontendNodeProvenance {
@@ -249,6 +268,7 @@ struct LLVMFrontendProvenance {
   std::vector<LLVMMemoryAccessProvenance> memoryAccesses;
   std::vector<LLVMMemoryDependenceProvenance> memoryDependences;
   std::vector<std::string> controlSlice;
+  std::optional<LLVMLinearLoopProvenance> linearLoop;
 };
 
 struct LLVMFrontendResult {

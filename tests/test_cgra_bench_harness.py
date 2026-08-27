@@ -217,6 +217,44 @@ def test_report_reconciles_discovered_loops(tmp_path: Path) -> None:
     assert summary["reconciliation"]["missing_loop_cases"] == ["kernels/a/a.c::kernel::loop"]
 
 
+def test_report_tracks_linear_multiblock_outcomes(tmp_path: Path) -> None:
+    case_dir = tmp_path / "cases" / "a"
+    case_dir.mkdir(parents=True)
+    loop = {
+        "function": "kernel",
+        "header": "loop",
+        "shape": {"kind": "linear_multiblock"},
+    }
+    (case_dir / "loop_inventory.json").write_text(json.dumps({
+        "schema": "cgra.cgra_bench.loop_inventory.v1",
+        "source": "kernels/a/a.c",
+        "loops": [loop],
+    }))
+    corpus = {
+        "denominator": {"kernel_directories": 1, "source_translation_units": 1},
+        "sources": [{"path": "kernels/a/a.c", "enabled": True}],
+    }
+    summary = report(tmp_path, corpus, [{
+        "id": "kernels/a/a.c::kernel::loop",
+        "kernel": "a",
+        "source": "kernels/a/a.c",
+        "function": "kernel",
+        "loop_header": "loop",
+        "loop": loop,
+        "tier": "MAPPED",
+        "status": "FAIL",
+        "category": "RF",
+        "owner": "RF",
+        "diagnostic_code": "RF_ALLOCATION_FAILED",
+    }])
+    assert summary["linear_multiblock"] == {
+        "candidate_count": 1,
+        "frontend_dfg_count": 1,
+        "mapped_count": 1,
+        "shape_rejection_count": 0,
+    }
+
+
 def test_failure_evidence_contains_metrics_reproducer_and_stage_hashes(tmp_path: Path) -> None:
     out = tmp_path / "run"
     artifact = out / "cases" / "case"

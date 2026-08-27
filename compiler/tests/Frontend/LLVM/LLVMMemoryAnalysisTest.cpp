@@ -440,6 +440,48 @@ exit:
 }
 )IR";
 
+const char* kCrossBlockLoadThenStore = R"IR(
+target datalayout = "e-p:64:64"
+define void @cross_block_load_store(i32* %A, i32 %value) {
+entry:
+  br label %header
+header:
+  %i = phi i32 [ 0, %entry ], [ %inc, %latch ]
+  %read = load i32, i32* %A, align 4
+  br label %body
+body:
+  store i32 %value, i32* %A, align 4
+  br label %latch
+latch:
+  %inc = add i32 %i, 1
+  %done = icmp ult i32 %inc, 4
+  br i1 %done, label %header, label %exit
+exit:
+  ret void
+}
+)IR";
+
+const char* kCrossBlockStoreThenLoad = R"IR(
+target datalayout = "e-p:64:64"
+define void @cross_block_store_load(i32* %A, i32 %value) {
+entry:
+  br label %header
+header:
+  %i = phi i32 [ 0, %entry ], [ %inc, %latch ]
+  store i32 %value, i32* %A, align 4
+  br label %body
+body:
+  %read = load i32, i32* %A, align 4
+  br label %latch
+latch:
+  %inc = add i32 %i, 1
+  %done = icmp ult i32 %inc, 4
+  br i1 %done, label %header, label %exit
+exit:
+  ret void
+}
+)IR";
+
 const char* kVolatileLoad = R"IR(
 target datalayout = "e-p:64:64"
 define void @volatile_load(i32* %A) {
@@ -686,6 +728,22 @@ void runSemanticCases() {
          "Load before Store gets WAR distance zero");
   expect(countMemoryEdge(*mayAlias.dfg, cgra::ir::MemoryDepKind::RAW, 1) == 1,
          "MayAlias pair gets reverse RAW distance one");
+
+  const auto crossBlockWar = lower(kCrossBlockLoadThenStore, "cross_block_load_store", context);
+  expect(crossBlockWar.ok(), "cross-block Load then Store must lower: " + crossBlockWar.message);
+  expect(crossBlockWar.metadata && crossBlockWar.metadata->loopShape == "linear_multiblock",
+         "cross-block memory fixture must use the linear multi-block path");
+  expect(countMemoryEdge(*crossBlockWar.dfg, cgra::ir::MemoryDepKind::WAR, 0) == 1 &&
+             countMemoryEdge(*crossBlockWar.dfg, cgra::ir::MemoryDepKind::RAW, 1) == 1,
+         "cross-block program order must preserve WAR d0 and reverse RAW d1");
+
+  const auto crossBlockRaw = lower(kCrossBlockStoreThenLoad, "cross_block_store_load", context);
+  expect(crossBlockRaw.ok(), "cross-block Store then Load must lower: " + crossBlockRaw.message);
+  expect(crossBlockRaw.metadata && crossBlockRaw.metadata->loopShape == "linear_multiblock",
+         "reverse cross-block memory fixture must use the linear multi-block path");
+  expect(countMemoryEdge(*crossBlockRaw.dfg, cgra::ir::MemoryDepKind::RAW, 0) == 1 &&
+             countMemoryEdge(*crossBlockRaw.dfg, cgra::ir::MemoryDepKind::WAR, 1) == 1,
+         "cross-block program order must preserve RAW d0 and reverse WAR d1");
 
   const auto affine = lower(kAffineOffsetStride, "affine_offset_stride", context);
   expect(affine.ok(), "A[2*i+3] must lower as real Generic address arithmetic: " + affine.message);

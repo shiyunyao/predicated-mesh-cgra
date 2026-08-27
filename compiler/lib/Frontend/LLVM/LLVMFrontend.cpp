@@ -43,6 +43,7 @@ struct LoopSelection {
   llvm::BasicBlock* exit = nullptr;
   llvm::BasicBlock* preheader = nullptr;
   llvm::BranchInst* branch = nullptr;
+  std::optional<LinearLoopRegionDescriptor> linearRegion;
   std::unique_ptr<llvm::DominatorTree> dominatorTree;
   std::unique_ptr<llvm::LoopInfo> loopInfo;
 };
@@ -1093,9 +1094,11 @@ LLVMFrontendResult lowerIfConvertedLoop(llvm::Module& module, const LLVMFrontend
     }
   }
 
-  // LLVM LoopInfo order is stable; retain it rather than depending on pointer order.
-  std::vector<llvm::BasicBlock*> blocks(selection.loop->getBlocks().begin(),
-                                        selection.loop->getBlocks().end());
+  std::vector<llvm::BasicBlock*> blocks;
+  if (selection.linearRegion)
+    blocks = selection.linearRegion->orderedBlocks;
+  else
+    blocks.assign(selection.loop->getBlocks().begin(), selection.loop->getBlocks().end());
 
   auto shouldSkip = [&](const llvm::Instruction& instruction) {
     if (ignoredInstruction(instruction) || instruction.isTerminator() ||
@@ -1523,7 +1526,21 @@ LLVMFrontendResult lowerIfConvertedLoop(llvm::Module& module, const LLVMFrontend
   metadata.loopBlockCount = selection.loop->getBlocks().size();
   metadata.requiresTripCount = true;
   metadata.staticTripCount = inferStaticTripCount(selection);
+  metadata.loopShape = selection.linearRegion ? "linear_multiblock" : "structured";
   result.metadata = std::move(metadata);
+  if (selection.linearRegion) {
+    const auto& region = *selection.linearRegion;
+    LLVMLinearLoopProvenance linear;
+    linear.header = blockName(*selection.function, region.header);
+    linear.preheader = blockName(*selection.function, region.preheader);
+    linear.latch = blockName(*selection.function, region.latch);
+    linear.exiting = blockName(*selection.function, region.exiting);
+    linear.exit = blockName(*selection.function, region.exit);
+    linear.terminationBlock = blockName(*selection.function, region.terminationBranch->getParent());
+    for (const auto* block : region.orderedBlocks)
+      linear.orderedBlocks.push_back(blockName(*selection.function, block));
+    state.provenance.linearLoop = std::move(linear);
+  }
   std::unordered_map<const llvm::Instruction*, std::uint32_t> ordinals;
   for (const auto& block : *selection.function) {
     std::uint32_t ordinal = 0;
@@ -1586,10 +1603,29 @@ LLVMFrontendResult lowerSelectedLoop(llvm::Module& module, const LLVMFrontendOpt
     auto region = discoverBranchRegion(*selected, error);
     if (hasInternalBranch && !region)
       return error;
-    if (selected->loop->getBlocks().size() > 1 && !region && !hasDirectSelect)
-      return failure(LLVMFrontendStatus::UnsupportedLoopShape,
-                     LLVMFrontendDiagnosticCode::LLVM_FRONTEND_UNSUPPORTED_LOOP_SHAPE,
-                     "multi-block loop requires one supported internal branch region", &*selected);
+    if (selected->loop->getBlocks().size() > 1 && !region) {
+      const auto linear = discoverLinearLoopRegion(*selected->function, *selected->loop);
+      if (!linear.ok()) {
+        LLVMFrontendDiagnosticCode code =
+            LLVMFrontendDiagnosticCode::LLVM_FRONTEND_UNSUPPORTED_LOOP_SHAPE;
+        if (linear.status == LinearLoopStatus::NoPreheader)
+          code = LLVMFrontendDiagnosticCode::LLVM_FRONTEND_LINEAR_LOOP_NO_PREHEADER;
+        else if (linear.status == LinearLoopStatus::NoLatch)
+          code = LLVMFrontendDiagnosticCode::LLVM_FRONTEND_LINEAR_LOOP_NO_LATCH;
+        else if (linear.status == LinearLoopStatus::ExitShape)
+          code = LLVMFrontendDiagnosticCode::LLVM_FRONTEND_LINEAR_LOOP_EXIT_SHAPE;
+        else if (linear.status == LinearLoopStatus::InternalConditionalBranch)
+          code = LLVMFrontendDiagnosticCode::LLVM_FRONTEND_LINEAR_LOOP_INTERNAL_BRANCH;
+        else if (linear.status == LinearLoopStatus::UnsupportedTerminator)
+          code = LLVMFrontendDiagnosticCode::LLVM_FRONTEND_LINEAR_LOOP_UNSUPPORTED_TERMINATOR;
+        else if (linear.status == LinearLoopStatus::NonHeaderPHI)
+          code = LLVMFrontendDiagnosticCode::LLVM_FRONTEND_LINEAR_LOOP_NONHEADER_PHI;
+        else if (linear.status == LinearLoopStatus::NonLinearCFG)
+          code = LLVMFrontendDiagnosticCode::LLVM_FRONTEND_LINEAR_LOOP_NON_LINEAR_CFG;
+        return failure(LLVMFrontendStatus::UnsupportedLoopShape, code, linear.message, &*selected);
+      }
+      selected->linearRegion = *linear.region;
+    }
     return lowerIfConvertedLoop(module, options, *selected, std::move(region));
   }
   if (!shapeIsValid(*selected, error))
@@ -2022,6 +2058,20 @@ std::string_view toString(LLVMFrontendDiagnosticCode code) noexcept {
     return "LLVM_FRONTEND_DFG_VERIFY_FAILED";
   case LLVMFrontendDiagnosticCode::LLVM_FRONTEND_VERIFY_FAILED:
     return "LLVM_FRONTEND_VERIFY_FAILED";
+  case LLVMFrontendDiagnosticCode::LLVM_FRONTEND_LINEAR_LOOP_NO_PREHEADER:
+    return "LLVM_FRONTEND_LINEAR_LOOP_NO_PREHEADER";
+  case LLVMFrontendDiagnosticCode::LLVM_FRONTEND_LINEAR_LOOP_NO_LATCH:
+    return "LLVM_FRONTEND_LINEAR_LOOP_NO_LATCH";
+  case LLVMFrontendDiagnosticCode::LLVM_FRONTEND_LINEAR_LOOP_EXIT_SHAPE:
+    return "LLVM_FRONTEND_LINEAR_LOOP_EXIT_SHAPE";
+  case LLVMFrontendDiagnosticCode::LLVM_FRONTEND_LINEAR_LOOP_INTERNAL_BRANCH:
+    return "LLVM_FRONTEND_LINEAR_LOOP_INTERNAL_BRANCH";
+  case LLVMFrontendDiagnosticCode::LLVM_FRONTEND_LINEAR_LOOP_UNSUPPORTED_TERMINATOR:
+    return "LLVM_FRONTEND_LINEAR_LOOP_UNSUPPORTED_TERMINATOR";
+  case LLVMFrontendDiagnosticCode::LLVM_FRONTEND_LINEAR_LOOP_NON_LINEAR_CFG:
+    return "LLVM_FRONTEND_LINEAR_LOOP_NON_LINEAR_CFG";
+  case LLVMFrontendDiagnosticCode::LLVM_FRONTEND_LINEAR_LOOP_NONHEADER_PHI:
+    return "LLVM_FRONTEND_LINEAR_LOOP_NONHEADER_PHI";
   case LLVMFrontendDiagnosticCode::LLVM_FRONTEND_INTERNAL_ERROR:
     return "LLVM_FRONTEND_INTERNAL_ERROR";
   }
@@ -2034,11 +2084,10 @@ std::string LLVMFrontendResult::toJson() const {
             {"message", message},
             {"diagnostics", Json::array()}};
   if (metadata) {
-    root["metadata"] = {{"function", metadata->functionName},
-                        {"loop_header", metadata->loopHeader},
-                        {"loop_depth", metadata->loopDepth},
-                        {"loop_block_count", metadata->loopBlockCount},
-                        {"requires_trip_count", metadata->requiresTripCount}};
+    root["metadata"] = {
+        {"function", metadata->functionName}, {"loop_header", metadata->loopHeader},
+        {"loop_depth", metadata->loopDepth},  {"loop_block_count", metadata->loopBlockCount},
+        {"loop_shape", metadata->loopShape},  {"requires_trip_count", metadata->requiresTripCount}};
     if (metadata->staticTripCount)
       root["metadata"]["static_trip_count"] = *metadata->staticTripCount;
     else
@@ -2054,6 +2103,17 @@ std::string LLVMFrontendResult::toJson() const {
                             {"if_conversions", Json::array()},
                             {"memory_accesses", Json::array()},
                             {"memory_dependences", Json::array()}};
+  if (provenance.linearLoop) {
+    const auto& linear = *provenance.linearLoop;
+    root["provenance"]["linear_loop"] = {{"schema", "cgra.llvm_linear_loop.v1"},
+                                         {"header", linear.header},
+                                         {"preheader", linear.preheader},
+                                         {"latch", linear.latch},
+                                         {"exiting", linear.exiting},
+                                         {"exit", linear.exit},
+                                         {"termination_block", linear.terminationBlock},
+                                         {"ordered_blocks", linear.orderedBlocks}};
+  }
   for (const auto& node : provenance.nodes)
     root["provenance"]["nodes"].push_back({{"node", node.node},
                                            {"function", node.function},
