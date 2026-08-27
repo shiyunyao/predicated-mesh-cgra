@@ -116,7 +116,14 @@ The reserved metrics schema is `cgra.compiler.metrics.v1`:
 Allowed statuses are `success`, `infeasible`, `budget_exceeded`,
 `invalid_input`, and `internal_error`. II, wall time, node attempts, route
 expansions, backtracks, and resource usage are record-only at this stage; no
-quality threshold gates merges yet.
+general quality threshold gates merges yet. An explicitly approved milestone may
+define a fixed-corpus release outcome gate without changing mapper legality or
+reclassifying `budget_exceeded` as `infeasible`. Such a gate must be named in its
+release document, emitted as machine-readable summary data, and scoped to that
+milestone's feature branch and post-merge audit. T020's frozen CGRA-Bench
+`10 frontend / 8 mapped / 5 mapped kernel directories` gate is the first such
+milestone-specific exception; it does not establish a repository-wide performance
+threshold for unrelated changes.
 
 Future search implementations must expose explicit node-attempt, route-
 expansion, and backtrack budgets. `infeasible` means the bounded search proved
