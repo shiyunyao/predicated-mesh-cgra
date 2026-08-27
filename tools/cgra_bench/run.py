@@ -92,6 +92,8 @@ def tier_from_compile(artifact_dir: pathlib.Path, frontend_ok: bool) -> tuple[st
         backend = result.get("backend") or {}
         status = backend.get("status", result.get("status", ""))
         if status == "success":
+            if backend.get("mode") == "mapping_research":
+                return "MAPPED", "S10_MODULO_MAPPING"
             return "MANIFEST_COMPLETE", "SUCCESS"
         if status == "invalid_invocation":
             return "FRONTEND_DFG", "S7_ABI_BIND"
@@ -165,6 +167,10 @@ def backend_observation(artifact_dir: pathlib.Path) -> dict[str, Any]:
             stats.update({f"{filename[:-5]}_{key}": value for key, value in report_stats.items()})
     return {
         "status": backend.get("status", result.get("status")),
+        "mode": backend.get("mode", "hardware_executable"),
+        "mapping_status": backend.get("mapping_status", "not_available"),
+        "hardware_executable": bool(backend.get("hardware_executable", False)),
+        "physical_realizability": backend.get("physical_realizability", {"status": "not_run"}),
         "message": backend.get("message", result.get("message", ""))[-4000:],
         "stats": stats,
     }
@@ -173,7 +179,7 @@ def backend_observation(artifact_dir: pathlib.Path) -> dict[str, Any]:
 def run_case(case: dict[str, Any], root: pathlib.Path, corpus: pathlib.Path, out: pathlib.Path,
              target: pathlib.Path, frontend_bin: pathlib.Path, compile_bin: pathlib.Path,
              timeout: int, functional_cases: dict[str, dict[str, Any]],
-             mapping_profile: dict[str, int]) -> list[dict[str, Any]]:
+             mapping_profile: dict[str, int], pipeline_lane: str = "hardware") -> list[dict[str, Any]]:
     if not case.get("enabled", True):
         return [{"id": case["id"], "kernel": case["kernel"], "source": case["source"], "loop_header": None, "tier": "DISCOVERED", "terminal_stage": "S0_CORPUS_DISCOVERY", "status": "EXCLUDED", "stages": [{"stage": "S0_CORPUS_DISCOVERY", "status": "EXCLUDED"}], "category": "CORPUS", "owner": "HARNESS", "diagnostic_code": "EXPLICIT_EXCLUSION", "message": case.get("exclusion", "explicitly excluded"), "excluded": True}]
     source = corpus / case["source"]
@@ -311,7 +317,9 @@ def run_case(case: dict[str, Any], root: pathlib.Path, corpus: pathlib.Path, out
             continue
         write_json(loop_out / "invocation.json", invocation)
         abi_out = loop_out / "abi"
-        manifest = abi_out / "program_manifest.json"
+        compiler_output = abi_out / (
+            "modulo_mapping.json" if pipeline_lane == "mapping-research" else "program_manifest.json"
+        )
         compile_command = [
             str(compile_bin),
             str(dfg_path),
@@ -324,7 +332,7 @@ def run_case(case: dict[str, Any], root: pathlib.Path, corpus: pathlib.Path, out
             "--kernel-name",
             loop_case["id"],
             "-o",
-            str(manifest),
+            str(compiler_output),
             "--max-ii",
             str(mapping_profile["max_ii"]),
             "--max-node-candidates",
@@ -336,6 +344,8 @@ def run_case(case: dict[str, Any], root: pathlib.Path, corpus: pathlib.Path, out
             "--max-route-states",
             str(mapping_profile["max_route_states"]),
         ]
+        if pipeline_lane == "mapping-research":
+            compile_command.extend(["--mode", "mapping-research"])
         rc, stdout, stderr, compile_duration = command_result(compile_command, root, timeout)
         base["command"] = compile_command
         tier, stage = tier_from_compile(abi_out, True)
@@ -347,6 +357,8 @@ def run_case(case: dict[str, Any], root: pathlib.Path, corpus: pathlib.Path, out
             )
             failure = classify(stage, classification_message, rc)
             results.append({**base, "tier": tier, "terminal_stage": stage, "stages": [*base["stages"], {"stage": "S4_FRONTEND_LOWER", "status": "PASS"}, {"stage": "S5_GENERIC_VERIFY", "status": "PASS"}, {"stage": stage, "status": "FAIL"}], "message": (stderr or stdout)[-4000:], "stdout": stdout[-4000:], "stderr": stderr[-4000:], "duration_ms": {**base["duration_ms"], "abi_backend": compile_duration}, "backend": backend, **failure})
+        elif pipeline_lane == "mapping-research":
+            results.append({**base, "tier": "MAPPED", "terminal_stage": "S10_MODULO_MAPPING", "status": "PASS", "stages": [*base["stages"], {"stage": "S4_FRONTEND_LOWER", "status": "PASS"}, {"stage": "S5_GENERIC_VERIFY", "status": "PASS"}, {"stage": "S7_ABI_BIND", "status": "PASS"}, {"stage": "S8_TARGET_LEGALIZE", "status": "PASS"}, {"stage": "S9_MII_ANALYSIS", "status": "PASS"}, {"stage": "S10_MODULO_MAPPING", "status": "PASS"}], "diagnostic_code": "MODULO_MAPPING_VERIFIED", "category": "MAPPING", "owner": "MAPPER", "message": stdout[-2000:], "duration_ms": {**base["duration_ms"], "abi_backend": compile_duration}, "backend": backend, "artifacts": [str(path) for path in abi_out.rglob("*") if path.is_file()]})
         else:
             results.append({**base, "tier": tier, "terminal_stage": "S15_MANIFEST_VERIFY", "status": "PASS", "stages": [*base["stages"], {"stage": "S4_FRONTEND_LOWER", "status": "PASS"}, {"stage": "S5_GENERIC_VERIFY", "status": "PASS"}, {"stage": "S7_ABI_BIND", "status": "PASS"}, {"stage": "S8_TARGET_LEGALIZE", "status": "PASS"}, {"stage": "S15_MANIFEST_VERIFY", "status": "PASS"}], "diagnostic_code": "SUCCESS", "category": "MANIFEST", "owner": "LOWERING", "message": stdout[-2000:], "duration_ms": {**base["duration_ms"], "abi_backend": compile_duration}, "backend": backend, "artifacts": [str(path) for path in abi_out.rglob("*") if path.is_file()]})
     return results
@@ -426,6 +438,7 @@ def main() -> int:
     )
     parser.add_argument("--timeout", type=int, default=120)
     parser.add_argument("--profile", choices=sorted(MAPPING_PROFILES), default="baseline")
+    parser.add_argument("--lane", choices=("hardware", "mapping-research"), default="hardware")
     parser.add_argument("--all", action="store_true")
     parser.add_argument("--allow-subset", action="store_true", help="allow a smoke manifest to cover a corpus subset")
     args = parser.parse_args()
@@ -506,6 +519,7 @@ def main() -> int:
             "timestamp_utc": datetime.now(timezone.utc).isoformat(),
             "profile": {
                 "name": args.profile,
+                "lane": args.lane,
                 "timeout_seconds": args.timeout,
                 "mapping": mapping_profile,
             },
@@ -525,6 +539,7 @@ def main() -> int:
                         args.timeout,
                         functional_cases,
                         mapping_profile,
+                        args.lane,
                     )
                 )
             except Exception as error:  # every case must have a terminal result
@@ -542,6 +557,7 @@ def main() -> int:
         for result in results:
             result["audit_profile"] = {
                 "name": args.profile,
+                "lane": args.lane,
                 "timeout_seconds": args.timeout,
                 "mapping": mapping_profile,
             }

@@ -75,6 +75,50 @@ cgra::ir::DFG affineMemoryFanout() {
   return builder.finish();
 }
 
+cgra::ir::DFG fixedRegisterOverlapCandidate() {
+  using cgra::ir::Opcode;
+  using cgra::ir::ValueType;
+
+  cgra::ir::DFGBuilder builder("generic_fixed_register_overlap_candidate");
+  const auto zero = builder.addConstant(ValueType::i32(), 0);
+  const auto one = builder.addConstant(ValueType::i32(), 1);
+  const auto baseA = builder.addConstant(ValueType::i32(), 0);
+  const auto baseB = builder.addConstant(ValueType::i32(), 64);
+  const auto baseC = builder.addConstant(ValueType::i32(), 128);
+  const auto add = [&] {
+    return builder.addNode(Opcode::Add, {ValueType::i32(), ValueType::i32()}, ValueType::i32());
+  };
+
+  const auto addressA = add();
+  const auto loadA = builder.addNode(Opcode::Load, {ValueType::i32()}, ValueType::i32(),
+                                     std::nullopt, cgra::ir::MemoryOpInfo{32, false});
+  const auto addressB = add();
+  const auto loadB = builder.addNode(Opcode::Load, {ValueType::i32()}, ValueType::i32(),
+                                     std::nullopt, cgra::ir::MemoryOpInfo{32, false});
+  const auto sum = add();
+  const auto addressC = add();
+  const auto increment = add();
+  const auto store =
+      builder.addNode(Opcode::Store, {ValueType::i32(), ValueType::i32()}, ValueType::voidTy(),
+                      std::nullopt, cgra::ir::MemoryOpInfo{32, false});
+
+  builder.bindConstant(addressA, 0, baseA);
+  builder.addDataEdge(increment, addressA, 1, 1, boundary(zero));
+  builder.addDataEdge(addressA, loadA, 0);
+  builder.bindConstant(addressB, 0, baseB);
+  builder.addDataEdge(increment, addressB, 1, 1, boundary(zero));
+  builder.addDataEdge(addressB, loadB, 0);
+  builder.addDataEdge(loadA, sum, 0);
+  builder.addDataEdge(loadB, sum, 1);
+  builder.bindConstant(addressC, 0, baseC);
+  builder.addDataEdge(increment, addressC, 1, 1, boundary(zero));
+  builder.addDataEdge(addressC, store, 0);
+  builder.addDataEdge(sum, store, 1);
+  builder.addDataEdge(increment, increment, 0, 1, boundary(zero));
+  builder.bindConstant(increment, 1, one);
+  return builder.finish();
+}
+
 } // namespace
 
 int main() {
@@ -100,6 +144,23 @@ int main() {
     const auto result = cgra::pipeline::compileGenericDFG(affineMemoryFanout(), target, options);
     expect(result.ok(),
            "generic recurrence/address fanout must find an RF-feasible mapping: " + result.message);
+
+    options.artifactDirectory =
+        cgra::test::TestArtifacts::forCase("mapping_research_fixed_rf_overlap").root();
+    options.mode = cgra::pipeline::CompileDFGMode::MappingResearch;
+    options.mapper.minII = 1;
+    options.mapper.maxII = 8;
+    const auto research =
+        cgra::pipeline::compileGenericDFG(fixedRegisterOverlapCandidate(), target, options);
+    expect(research.ok(), "mapping research must preserve a verified modulo mapping: " +
+                              research.message);
+    expect(research.moduloMapping.has_value(), "mapping research returned no modulo mapping");
+    expect(!research.manifest.has_value(), "mapping research must not emit a hardware manifest");
+    expect(research.physicalRealizability.status ==
+               cgra::pipeline::PhysicalRealizabilityStatus::Infeasible,
+           "fixed-RF overlap must remain visible as physical infeasibility");
+    expect(research.physicalRealizability.reasonCode == "rf_infeasible",
+           "mapping research lost the RF failure reason");
     std::cout << "CGRA_GENERIC_RF_FEASIBILITY_TEST_PASS\n";
     return EXIT_SUCCESS;
   } catch (const std::exception& error) {

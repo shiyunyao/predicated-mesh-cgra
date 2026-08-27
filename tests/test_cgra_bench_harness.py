@@ -18,7 +18,13 @@ from tools.cgra_bench.functional import (
 from tools.cgra_bench.inventory import PIN, inventory
 from tools.cgra_bench.invocation import address_external_ids, synthesize_invocation
 from tools.cgra_bench.report import report, target_contract_summary
-from tools.cgra_bench.run import MAPPING_PROFILES, active_functional_cases, apply_functional_cases
+from tools.cgra_bench.run import (
+    MAPPING_PROFILES,
+    active_functional_cases,
+    apply_functional_cases,
+    backend_observation,
+    tier_from_compile,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -42,6 +48,35 @@ def test_smoke_mapping_profile_is_bounded_below_full_audit() -> None:
         "max_route_states",
     ):
         assert 0 < smoke[budget] < baseline[budget]
+
+
+def test_mapping_research_success_is_mapped_not_manifest_complete(tmp_path: Path) -> None:
+    artifact = tmp_path / "abi"
+    backend = artifact / "backend" / "backend"
+    backend.mkdir(parents=True)
+    (artifact / "kernel_compile_result.json").write_text(json.dumps({
+        "schema": "cgra.kernel_compile.result.v1",
+        "status": "success",
+        "backend": {
+            "schema": "cgra.compiler_pipeline.result.v1",
+            "mode": "mapping_research",
+            "status": "success",
+            "mapping_status": "success",
+            "hardware_executable": False,
+            "physical_realizability": {
+                "status": "infeasible",
+                "reason_code": "rf_infeasible",
+                "message": "fixed register overlap",
+            },
+            "stats": {"mii": 1, "mapped_ii": 2},
+        },
+    }))
+
+    assert tier_from_compile(artifact, True) == ("MAPPED", "S10_MODULO_MAPPING")
+    observation = backend_observation(artifact)
+    assert observation["mapping_status"] == "success"
+    assert observation["hardware_executable"] is False
+    assert observation["physical_realizability"]["reason_code"] == "rf_infeasible"
 
 
 def functional_spec(

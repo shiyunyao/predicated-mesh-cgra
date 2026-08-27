@@ -18,6 +18,28 @@
 
 namespace cgra::pipeline {
 
+enum class CompileDFGMode {
+  HardwareExecutable,
+  MappingResearch,
+};
+
+std::string_view toString(CompileDFGMode mode) noexcept;
+
+enum class PhysicalRealizabilityStatus {
+  NotRun,
+  Feasible,
+  Infeasible,
+  Error,
+};
+
+std::string_view toString(PhysicalRealizabilityStatus status) noexcept;
+
+struct PhysicalRealizabilityResult {
+  PhysicalRealizabilityStatus status = PhysicalRealizabilityStatus::NotRun;
+  std::string reasonCode;
+  std::string message;
+};
+
 enum class CompileDFGStatus {
   Success,
   GenericDFGVerificationFailure,
@@ -42,6 +64,7 @@ enum class CompileDFGStatus {
 std::string_view toString(CompileDFGStatus status) noexcept;
 
 struct CompileDFGOptions {
+  CompileDFGMode mode = CompileDFGMode::HardwareExecutable;
   std::uint64_t tripCount = 1;
   std::filesystem::path targetPath;
   std::filesystem::path artifactDirectory;
@@ -72,12 +95,20 @@ struct CompileDFGStats {
 
 struct CompileDFGResult {
   CompileDFGStatus status = CompileDFGStatus::InternalError;
+  CompileDFGMode mode = CompileDFGMode::HardwareExecutable;
   std::string message;
+  std::optional<mapping::ModuloMapping> moduloMapping;
+  PhysicalRealizabilityResult physicalRealizability;
   std::optional<lowering::ProgramManifest> manifest;
   CompileDFGStats stats;
   std::vector<std::filesystem::path> artifacts;
 
-  bool ok() const noexcept { return status == CompileDFGStatus::Success && manifest.has_value(); }
+  bool ok() const noexcept {
+    if (status != CompileDFGStatus::Success || !moduloMapping)
+      return false;
+    return mode == CompileDFGMode::MappingResearch || manifest.has_value();
+  }
+  bool hardwareExecutable() const noexcept { return manifest.has_value(); }
   std::string toJson() const;
 };
 

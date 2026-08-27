@@ -2,6 +2,7 @@
 #include "cgra/ABI/CompileKernel.h"
 #include "cgra/ABI/KernelInvocation.h"
 #include "cgra/IR/DFGSerialization.h"
+#include "cgra/Mapping/ModuloMappingSerialization.h"
 #include "cgra/Target/TargetModel.h"
 
 #include <filesystem>
@@ -15,6 +16,7 @@ void usage(const char* name) {
   std::cerr << "usage: " << name
             << " input.generic_dfg.json --target target.json --invocation invocation.json"
                " --artifact-dir dir -o manifest.json [--abi-layout-out path]"
+               " [--mode hardware|mapping-research]"
                " [--max-ii N] [--min-ii N] [--max-node-candidates N]"
                " [--max-backtracks N] [--max-route-calls N] [--max-route-states N]"
                " [--no-virtual-hold]\n";
@@ -54,6 +56,20 @@ int main(int argc, char** argv) {
         layoutPath = next();
       else if (arg == "--kernel-name")
         kernelName = next();
+      else if (arg == "--mode") {
+        const auto mode = next();
+        if (mode == "hardware")
+          options.backend.mode = cgra::pipeline::CompileDFGMode::HardwareExecutable;
+        else if (mode == "mapping-research")
+          options.backend.mode = cgra::pipeline::CompileDFGMode::MappingResearch;
+        else
+          throw std::invalid_argument("unsupported compile mode: " + mode);
+      } else if (arg == "--pipeline-stop") {
+        const auto stop = next();
+        if (stop != "modulo-map")
+          throw std::invalid_argument("unsupported pipeline stop: " + stop);
+        options.backend.mode = cgra::pipeline::CompileDFGMode::MappingResearch;
+      }
       else if (arg == "--max-ii")
         options.backend.mapper.maxII = std::stoul(next());
       else if (arg == "--min-ii")
@@ -113,12 +129,15 @@ int main(int argc, char** argv) {
     }
     if (!outputPath.parent_path().empty())
       std::filesystem::create_directories(outputPath.parent_path());
-    std::ofstream manifest(outputPath, std::ios::trunc);
-    if (!manifest)
+    std::ofstream output(outputPath, std::ios::trunc);
+    if (!output)
       throw std::runtime_error("cannot write generated manifest");
-    manifest << result.backend->manifest->json << '\n';
-    if (!manifest)
-      throw std::runtime_error("cannot flush generated manifest");
+    if (options.backend.mode == cgra::pipeline::CompileDFGMode::MappingResearch)
+      output << cgra::mapping::toJson(*result.backend->moduloMapping) << '\n';
+    else
+      output << result.backend->manifest->json << '\n';
+    if (!output)
+      throw std::runtime_error("cannot flush generated compiler output");
     const auto actualLayoutPath =
         layoutPath.empty() ? artifactDirectory / "kernel_abi_layout.json" : layoutPath;
     if (!actualLayoutPath.parent_path().empty())
@@ -129,8 +148,12 @@ int main(int argc, char** argv) {
     layout << cgra::abi::toJson(*result.abiLayout, &*result.signature, &options.invocation);
     if (!layout)
       throw std::runtime_error("cannot flush kernel ABI layout");
-    std::cout << "status: success\ntrip count: " << options.invocation.tripCount
-              << "\nmanifest: " << outputPath << "\nabi layout: " << actualLayoutPath << '\n';
+    std::cout << "status: success\nmode: " << cgra::pipeline::toString(options.backend.mode)
+              << "\ntrip count: " << options.invocation.tripCount
+              << "\nmapped ii: " << result.backend->stats.mappedII
+              << "\nhardware executable: "
+              << (result.backend->hardwareExecutable() ? "true" : "false")
+              << "\noutput: " << outputPath << "\nabi layout: " << actualLayoutPath << '\n';
     return 0;
   } catch (const std::exception& error) {
     std::cerr << "cgrac-compile-kernel: " << error.what() << '\n';

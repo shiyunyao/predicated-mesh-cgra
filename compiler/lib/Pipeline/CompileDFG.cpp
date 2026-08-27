@@ -120,10 +120,41 @@ std::string_view toString(CompileDFGStatus status) noexcept {
   return "internal_error";
 }
 
+std::string_view toString(CompileDFGMode mode) noexcept {
+  switch (mode) {
+  case CompileDFGMode::HardwareExecutable:
+    return "hardware_executable";
+  case CompileDFGMode::MappingResearch:
+    return "mapping_research";
+  }
+  return "hardware_executable";
+}
+
+std::string_view toString(PhysicalRealizabilityStatus status) noexcept {
+  switch (status) {
+  case PhysicalRealizabilityStatus::NotRun:
+    return "not_run";
+  case PhysicalRealizabilityStatus::Feasible:
+    return "feasible";
+  case PhysicalRealizabilityStatus::Infeasible:
+    return "infeasible";
+  case PhysicalRealizabilityStatus::Error:
+    return "error";
+  }
+  return "error";
+}
+
 std::string CompileDFGResult::toJson() const {
   Json value{{"schema", "cgra.compiler_pipeline.result.v1"},
+             {"mode", toString(mode)},
              {"status", toString(status)},
              {"message", message},
+             {"mapping_status", moduloMapping ? "success" : "not_available"},
+             {"hardware_executable", hardwareExecutable()},
+             {"physical_realizability",
+              {{"status", toString(physicalRealizability.status)},
+               {"reason_code", physicalRealizability.reasonCode},
+               {"message", physicalRealizability.message}}},
              {"stats",
               {{"trip_count", stats.tripCount},
                {"mii", stats.mii},
@@ -150,6 +181,7 @@ CompileDFGResult compileGenericDFG(const ir::DFG& dfg, const TargetModel& target
                                    const CompileDFGOptions& options) {
   CompileDFGResult result;
   try {
+    result.mode = options.mode;
     ArtifactWriter artifacts(options.artifactDirectory, result);
     result.stats.tripCount = options.tripCount;
     artifacts.write("00_input.generic_dfg.json", ir::toJson(dfg));
@@ -181,12 +213,16 @@ CompileDFGResult compileGenericDFG(const ir::DFG& dfg, const TargetModel& target
 
     auto mapperOptions = options.mapper;
     BackendFeasibilityChecker completionChecker(options.rfAllocation);
-    mapperOptions.completeMappingChecker =
-        [&completionChecker](const target::TargetDFG& candidateDFG,
-                             const TargetModel& candidateTarget,
-                             const mapping::ModuloMapping& candidate) {
-          return completionChecker.check(candidateDFG, candidateTarget, candidate);
-        };
+    if (options.mode == CompileDFGMode::HardwareExecutable) {
+      mapperOptions.completeMappingChecker =
+          [&completionChecker](const target::TargetDFG& candidateDFG,
+                               const TargetModel& candidateTarget,
+                               const mapping::ModuloMapping& candidate) {
+            return completionChecker.check(candidateDFG, candidateTarget, candidate);
+          };
+    } else {
+      mapperOptions.completeMappingChecker = {};
+    }
     const auto mapped = mapping::ModuloMapper::map(targetDFG, target, mapperOptions);
     artifacts.write("06_mapper_report.json", mapped.toJson());
     result.stats.nodeCandidateAttempts = mapped.stats.nodeCandidateAttempts;
@@ -199,6 +235,7 @@ CompileDFGResult compileGenericDFG(const ir::DFG& dfg, const TargetModel& target
     if (!mapped.ok())
       return failure(result, CompileDFGStatus::MappingFailure, mapped.format(), artifacts);
     result.stats.mappedII = mapped.mapping->ii();
+    result.moduloMapping = mapped.mapping;
     artifacts.write("07_modulo_mapping.json", mapping::toJson(*mapped.mapping));
     const auto mappingReport =
         mapping::ModuloMappingVerifier::verify(targetDFG, target, *mapped.mapping);
@@ -206,6 +243,33 @@ CompileDFGResult compileGenericDFG(const ir::DFG& dfg, const TargetModel& target
     if (!mappingReport.ok())
       return failure(result, CompileDFGStatus::ModuloMappingVerificationFailure,
                      mappingReport.format(), artifacts);
+
+    if (options.mode == CompileDFGMode::MappingResearch) {
+      const auto physical = completionChecker.check(targetDFG, target, *mapped.mapping);
+      result.physicalRealizability.reasonCode = physical.reasonCode;
+      result.physicalRealizability.message = physical.message;
+      switch (physical.decision) {
+      case mapping::CompleteMappingDecision::Accept:
+        result.physicalRealizability.status = PhysicalRealizabilityStatus::Feasible;
+        break;
+      case mapping::CompleteMappingDecision::Reject:
+        result.physicalRealizability.status = PhysicalRealizabilityStatus::Infeasible;
+        break;
+      case mapping::CompleteMappingDecision::Abort:
+        result.physicalRealizability.status = PhysicalRealizabilityStatus::Error;
+        break;
+      }
+      result.status = CompileDFGStatus::Success;
+      result.message = "verified modulo mapping produced; physical realizability recorded separately";
+      artifacts.write("09_physical_realizability.json",
+                      Json{{"schema", "cgra.physical_realizability.v1"},
+                           {"status", toString(result.physicalRealizability.status)},
+                           {"reason_code", result.physicalRealizability.reasonCode},
+                           {"message", result.physicalRealizability.message}}
+                          .dump(2));
+      artifacts.write("compiler_pipeline_report.json", result.toJson());
+      return result;
+    }
 
     const auto staged = schedule::StageScheduler::schedule(targetDFG, target, *mapped.mapping);
     artifacts.write("09_stage_report.json", staged.toJson());
