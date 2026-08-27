@@ -111,6 +111,20 @@ def report(out: pathlib.Path, corpus: dict[str, Any], results: list[dict[str, An
         item for item in results
         if item.get("loop", {}).get("shape", {}).get("kind") == "linear_multiblock"
     ]
+    frontend_dfg_or_higher = sum(
+        TIERS.get(item.get("tier", "DISCOVERED"), 0) >= TIERS["FRONTEND_DFG"]
+        for item in results
+    )
+    mapped_or_higher = sum(
+        TIERS.get(item.get("tier", "DISCOVERED"), 0) >= TIERS["MAPPED"]
+        for item in results
+    )
+    mapped_kernel_directories = len({
+        item.get("kernel")
+        for item in results
+        if item.get("kernel") and
+        TIERS.get(item.get("tier", "DISCOVERED"), 0) >= TIERS["MAPPED"]
+    })
     summary = {
         "schema": "cgra.cgra_bench.summary.v1",
         "denominator": {
@@ -166,6 +180,16 @@ def report(out: pathlib.Path, corpus: dict[str, Any], results: list[dict[str, An
                 for item in linear_results
             ),
         },
+        "t020_outcome": {
+            "frontend_dfg_or_higher": frontend_dfg_or_higher,
+            "mapped_or_higher": mapped_or_higher,
+            "mapped_kernel_directories": mapped_kernel_directories,
+            "required_frontend_dfg_or_higher": 10,
+            "required_mapped_or_higher": 8,
+            "required_mapped_kernel_directories": 5,
+            "pass": frontend_dfg_or_higher >= 10 and mapped_or_higher >= 8 and
+                    mapped_kernel_directories >= 5,
+        },
         "backend_metrics": {
             "cases_with_stats": len(backend_stats),
             "mii": [stats.get("mii") for stats in backend_stats if stats.get("mii") is not None],
@@ -210,7 +234,7 @@ def report(out: pathlib.Path, corpus: dict[str, Any], results: list[dict[str, An
         writer = csv.writer(stream)
         writer.writerow(["metric", "value"])
         writer.writerows([("candidate_loops", candidate_loop_count), ("terminal_results", len(results)), *sorted(tiers.items()), *sorted(terminal.items())])
-    lines = ["# CGRA-Bench Audit Summary", "", f"- Source units represented: {source_count}/{len(expected_sources)}", f"- Candidate loops represented: {len(represented_loops)}/{candidate_loop_count}", f"- Terminal results: {len(results)}", f"- UNKNOWN/unclassified: {summary['unknown_count']}", f"- Timeouts: {summary['timeout_count']}", f"- Reconciliation: {'PASS' if summary['reconciliation']['ok'] else 'FAIL'}", f"- Linear multi-block: candidates={summary['linear_multiblock']['candidate_count']}, frontend={summary['linear_multiblock']['frontend_dfg_count']}, mapped={summary['linear_multiblock']['mapped_count']}, shape-rejected={summary['linear_multiblock']['shape_rejection_count']}", "", "## Tiers", ""]
+    lines = ["# CGRA-Bench Audit Summary", "", f"- Source units represented: {source_count}/{len(expected_sources)}", f"- Candidate loops represented: {len(represented_loops)}/{candidate_loop_count}", f"- Terminal results: {len(results)}", f"- UNKNOWN/unclassified: {summary['unknown_count']}", f"- Timeouts: {summary['timeout_count']}", f"- Reconciliation: {'PASS' if summary['reconciliation']['ok'] else 'FAIL'}", f"- Linear multi-block: candidates={summary['linear_multiblock']['candidate_count']}, frontend={summary['linear_multiblock']['frontend_dfg_count']}, mapped={summary['linear_multiblock']['mapped_count']}, shape-rejected={summary['linear_multiblock']['shape_rejection_count']}", f"- T020 outcome: frontend={frontend_dfg_or_higher}/10, mapped={mapped_or_higher}/8, mapped kernels={mapped_kernel_directories}/5 ({'PASS' if summary['t020_outcome']['pass'] else 'FAIL'})", "", "## Tiers", ""]
     lines.extend(f"- {key}: {value}" for key, value in sorted(tiers.items()))
     lines.extend(["", "## First blockers", ""])
     lines.extend(f"- {key}: {value}" for key, value in sorted(first_blockers.items()))

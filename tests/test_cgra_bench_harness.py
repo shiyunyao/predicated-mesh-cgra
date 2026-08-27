@@ -253,6 +253,15 @@ def test_report_tracks_linear_multiblock_outcomes(tmp_path: Path) -> None:
         "mapped_count": 1,
         "shape_rejection_count": 0,
     }
+    assert summary["t020_outcome"] == {
+        "frontend_dfg_or_higher": 1,
+        "mapped_or_higher": 1,
+        "mapped_kernel_directories": 1,
+        "required_frontend_dfg_or_higher": 10,
+        "required_mapped_or_higher": 8,
+        "required_mapped_kernel_directories": 5,
+        "pass": False,
+    }
 
 
 def test_failure_evidence_contains_metrics_reproducer_and_stage_hashes(tmp_path: Path) -> None:

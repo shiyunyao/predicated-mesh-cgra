@@ -106,7 +106,7 @@ CGRA_BENCH_FRONTEND_BUILD ?= build/compiler-llvm
 CGRA_BENCH_FRONTEND_BIN := $(CGRA_BENCH_FRONTEND_BUILD)/bin/cgra-llvm-loop-lower
 CGRA_BENCH_COMPILE_BIN := $(CGRA_BENCH_FRONTEND_BUILD)/bin/cgrac-compile-kernel
 
-.PHONY: help check-test lint build test regression shared-scratchpad-tests shared-scratchpad-negative-tests program program-prepare program-build program-run program-check compiler-e2e kernel-abi-e2e kernel-abi-scalar-e2e kernel-abi-base-load-e2e kernel-abi-recurrence-e2e kernel-abi-tripcount-e2e llvm-frontend-e2e llvm-frontend-c-smoke llvm-recurrence-e2e llvm-predication-e2e llvm-memory-e2e llvm-linear-loop-e2e cgra-bench-inventory cgra-bench-smoke cgra-bench-audit cgra-bench-freeze-supported modulo-loop modulo-loop-prepare modulo-loop-check modulo-loop-tripcount-tests modulo-loop-zero-boundary-test modulo-loop-reuse-test modulo-loop-assert-tests synth-fetch-asap7 synth-memory-shape synth-area synth-timing synth-power synth-power-feasibility synth-fn-cacti clean
+.PHONY: help check-test lint build test regression shared-scratchpad-tests shared-scratchpad-negative-tests program program-prepare program-build program-run program-check compiler-e2e kernel-abi-e2e kernel-abi-scalar-e2e kernel-abi-base-load-e2e kernel-abi-recurrence-e2e kernel-abi-tripcount-e2e llvm-frontend-e2e llvm-frontend-c-smoke llvm-recurrence-e2e llvm-predication-e2e llvm-memory-e2e llvm-linear-loop-canonical-smoke llvm-linear-loop-reachability-e2e cgra-bench-inventory cgra-bench-smoke cgra-bench-audit cgra-bench-freeze-supported modulo-loop modulo-loop-prepare modulo-loop-check modulo-loop-tripcount-tests modulo-loop-zero-boundary-test modulo-loop-reuse-test modulo-loop-assert-tests synth-fetch-asap7 synth-memory-shape synth-area synth-timing synth-power synth-power-feasibility synth-fn-cacti clean
 
 help:
 	@echo "make test TEST=<name>  Build and run one testbench"
@@ -118,7 +118,8 @@ help:
 	@echo "make llvm-recurrence-e2e  Lower LLVM PHI recurrences through Generic DFG, Kernel ABI, and RTL"
 	@echo "make llvm-predication-e2e  Lower LLVM if-conversion predicates through Generic DFG and verifier"
 	@echo "make llvm-memory-e2e  Lower affine LLVM memory through Generic DFG, Kernel ABI, and RTL"
-	@echo "make llvm-linear-loop-e2e  Lower multi-block C loops through Generic DFG, Kernel ABI, and RTL"
+	@echo "make llvm-linear-loop-canonical-smoke  Lower canonical multi-block C loops to Generic DFG"
+	@echo "make llvm-linear-loop-reachability-e2e  Run supplemental RF-feasible multi-block RTL cases"
 	@echo "make cgra-bench-inventory  Rebuild the pinned CGRA-Bench corpus lock and case manifest"
 	@echo "make cgra-bench-smoke  Run the fixed T019 smoke corpus audit"
 	@echo "make cgra-bench-audit  Run the complete pinned CGRA-Bench kernels audit"
@@ -372,7 +373,30 @@ llvm-memory-e2e:
 	jq -e '.dependences | length == 0' "$$case_dir/vector_trip4/frontend/02_memory_analysis.json" >/dev/null; \
 	jq -e 'any(.dependences[]; .kind == "RAW" and .distance == 1)' "$$case_dir/raw_trip4/frontend/02_memory_analysis.json" >/dev/null
 
-llvm-linear-loop-e2e:
+llvm-linear-loop-canonical-smoke:
+	@set -eu; \
+	case_dir="$(LLVM_FRONTEND_E2E_DIR)/linear-canonical-smoke"; mkdir -p "$$case_dir"; \
+	command -v "$(LLVM_FRONTEND_CLANG)" >/dev/null || { echo "missing $(LLVM_FRONTEND_CLANG)"; exit 2; }; \
+	command -v "$(LLVM_FRONTEND_OPT)" >/dev/null || { echo "missing $(LLVM_FRONTEND_OPT)"; exit 2; }; \
+	cmake -S compiler -B "$(LLVM_FRONTEND_BUILD_DIR)" -DCGRA_BUILD_TESTS=OFF -DCGRA_WARNINGS_AS_ERRORS=ON $(LLVM_CMAKE_ARG); \
+	cmake --build "$(LLVM_FRONTEND_BUILD_DIR)" --target cgra-llvm-loop-lower --parallel; \
+	lower_case() { \
+		name="$$1"; source="$$2"; function="$$3"; root="$$case_dir/$$name"; \
+		mkdir -p "$$root/source" "$$root/frontend"; \
+		"$(LLVM_FRONTEND_CLANG)" -m32 -O0 -Xclang -disable-O0-optnone -fno-discard-value-names -S -emit-llvm "$$source" -o "$$root/source/kernel.raw.ll"; \
+		"$(LLVM_FRONTEND_OPT)" -S -passes='mem2reg,loop-simplify,lcssa,simplifycfg' "$$root/source/kernel.raw.ll" -o "$$root/source/kernel.ll"; \
+		"$(LLVM_FRONTEND_BUILD_DIR)/bin/cgra-llvm-loop-lower" "$$root/source/kernel.ll" --function "$$function" --list-loops --json > "$$root/source/loops.json"; \
+		jq -e '.loops | length == 1 and .[0].block_count > 1 and .[0].shape.kind == "linear_multiblock" and .[0].shape.internal_conditional_branches == 0' "$$root/source/loops.json" >/dev/null; \
+		"$(LLVM_FRONTEND_BUILD_DIR)/bin/cgra-llvm-loop-lower" "$$root/source/kernel.ll" --function "$$function" --artifact-dir "$$root/frontend" -o "$$root/frontend/generic_dfg.json"; \
+		jq -e '.metadata.loop_shape == "linear_multiblock" and .metadata.loop_block_count > 1' "$$root/frontend/06_frontend_result.json" >/dev/null; \
+		test -s "$$root/frontend/01_linear_loop.json"; \
+	}; \
+	lower_case vector compiler/tests/Frontend/LLVM/fixtures/kernel_linear_vector_add_canonical.c linear_vector_add_canonical; \
+	lower_case recurrence compiler/tests/Frontend/LLVM/fixtures/kernel_linear_recurrence_canonical.c linear_recurrence_canonical; \
+	jq -e 'any(.nodes[]; .opcode == "Load") and any(.nodes[]; .opcode == "Store") and any(.edges[]; .kind == "data" and .distance == 1)' "$$case_dir/vector/frontend/generic_dfg.json" >/dev/null; \
+	jq -e 'any(.nodes[]; .opcode == "Add") and any(.edges[]; .kind == "data" and .distance == 1)' "$$case_dir/recurrence/frontend/generic_dfg.json" >/dev/null
+
+llvm-linear-loop-reachability-e2e:
 	@set -eu; \
 	case_dir="$(LLVM_FRONTEND_E2E_DIR)/linear-multiblock"; mkdir -p "$$case_dir"; \
 	command -v "$(LLVM_FRONTEND_CLANG)" >/dev/null || { echo "missing $(LLVM_FRONTEND_CLANG)"; exit 2; }; \

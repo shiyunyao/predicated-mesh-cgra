@@ -246,8 +246,7 @@ int main(int argc, char** argv) {
             if (loop->getBlocks().size() == 1)
               shape["kind"] = "single_block";
             else {
-              const auto linear =
-                  cgra::frontend::llvm_frontend::discoverLinearLoopRegion(function, *loop);
+              const auto linear = cgra::frontend::llvm_frontend::discoverLinearLoopRegion(*loop);
               if (linear.ok())
                 shape["kind"] = "linear_multiblock";
             }

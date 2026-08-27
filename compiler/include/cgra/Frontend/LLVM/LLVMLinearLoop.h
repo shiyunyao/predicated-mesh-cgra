@@ -10,7 +10,6 @@
 namespace llvm {
 class BasicBlock;
 class BranchInst;
-class Function;
 class Loop;
 } // namespace llvm
 
@@ -47,6 +46,6 @@ struct LinearLoopAnalysisResult {
   bool ok() const noexcept { return status == LinearLoopStatus::Success && region.has_value(); }
 };
 
-LinearLoopAnalysisResult discoverLinearLoopRegion(llvm::Function& function, llvm::Loop& loop);
+LinearLoopAnalysisResult discoverLinearLoopRegion(llvm::Loop& loop);
 
 } // namespace cgra::frontend::llvm_frontend

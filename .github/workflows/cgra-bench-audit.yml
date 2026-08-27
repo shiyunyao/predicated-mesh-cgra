@@ -41,6 +41,17 @@ jobs:
             .unknown_count == 0 and
             .timeout_count == 0
           ' "$summary" >/dev/null
+      - name: Verify T020 mapping outcome gate
+        run: |
+          set -euo pipefail
+          summary=build/cgra-bench/run/full/summary.json
+          jq -e '
+            .linear_multiblock.shape_rejection_count == 0 and
+            .t020_outcome.frontend_dfg_or_higher >= 10 and
+            .t020_outcome.mapped_or_higher >= 8 and
+            .t020_outcome.mapped_kernel_directories >= 5 and
+            .t020_outcome.pass == true
+          ' "$summary" >/dev/null
       - name: Upload complete audit
         if: always()
         uses: actions/upload-artifact@v4

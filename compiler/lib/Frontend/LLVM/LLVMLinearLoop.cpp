@@ -5,7 +5,6 @@
 #include <llvm/Analysis/LoopInfo.h>
 #include <llvm/IR/BasicBlock.h>
 #include <llvm/IR/CFG.h>
-#include <llvm/IR/Function.h>
 #include <llvm/IR/Instructions.h>
 
 #include <algorithm>
@@ -49,8 +48,7 @@ std::string_view toString(LinearLoopStatus status) noexcept {
   return "non_linear_cfg";
 }
 
-LinearLoopAnalysisResult discoverLinearLoopRegion(llvm::Function& function, llvm::Loop& loop) {
-  static_cast<void>(function);
+LinearLoopAnalysisResult discoverLinearLoopRegion(llvm::Loop& loop) {
   auto* header = loop.getHeader();
   auto* preheader = loop.getLoopPreheader();
   auto* latch = loop.getLoopLatch();

@@ -943,9 +943,9 @@ std::optional<ir::ValueType> addressTypeForStore(const llvm::Value& address) {
   return valueType(address);
 }
 
-LLVMFrontendResult lowerIfConvertedLoop(llvm::Module& module, const LLVMFrontendOptions& options,
-                                        LoopSelection& selection,
-                                        std::optional<BranchRegion> discoveredRegion) {
+LLVMFrontendResult lowerStructuredLoop(llvm::Module& module, const LLVMFrontendOptions& options,
+                                       LoopSelection& selection,
+                                       std::optional<BranchRegion> discoveredRegion) {
   static_cast<void>(module);
   static_cast<void>(options);
   LLVMFrontendResult error;
@@ -1604,7 +1604,7 @@ LLVMFrontendResult lowerSelectedLoop(llvm::Module& module, const LLVMFrontendOpt
     if (hasInternalBranch && !region)
       return error;
     if (selected->loop->getBlocks().size() > 1 && !region) {
-      const auto linear = discoverLinearLoopRegion(*selected->function, *selected->loop);
+      const auto linear = discoverLinearLoopRegion(*selected->loop);
       if (!linear.ok()) {
         LLVMFrontendDiagnosticCode code =
             LLVMFrontendDiagnosticCode::LLVM_FRONTEND_UNSUPPORTED_LOOP_SHAPE;
@@ -1626,7 +1626,7 @@ LLVMFrontendResult lowerSelectedLoop(llvm::Module& module, const LLVMFrontendOpt
       }
       selected->linearRegion = *linear.region;
     }
-    return lowerIfConvertedLoop(module, options, *selected, std::move(region));
+    return lowerStructuredLoop(module, options, *selected, std::move(region));
   }
   if (!shapeIsValid(*selected, error))
     return error;

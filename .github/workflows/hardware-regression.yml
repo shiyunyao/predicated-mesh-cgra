@@ -91,8 +91,10 @@ jobs:
         run: make llvm-predication-e2e
       - name: LLVM memory dependence V0 E2E
         run: make llvm-memory-e2e
-      - name: LLVM linear multi-block loop V0 E2E
-        run: make llvm-linear-loop-e2e
+      - name: Canonical LLVM linear multi-block frontend smoke
+        run: make llvm-linear-loop-canonical-smoke
+      - name: Supplemental RF-feasible linear multi-block RTL reachability
+        run: make llvm-linear-loop-reachability-e2e
       - name: Upload backend diagnostics
         if: failure()
         uses: actions/upload-artifact@v4

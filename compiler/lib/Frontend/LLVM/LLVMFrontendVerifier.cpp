@@ -4,6 +4,7 @@
 #include "cgra/IR/DFGVerifier.h"
 
 #include <llvm/ADT/MapVector.h>
+#include <llvm/ADT/SmallVector.h>
 #include <llvm/Analysis/AliasAnalysis.h>
 #include <llvm/Analysis/AssumptionCache.h>
 #include <llvm/Analysis/BasicAliasAnalysis.h>
@@ -13,6 +14,7 @@
 #include <llvm/Analysis/ScalarEvolutionExpressions.h>
 #include <llvm/Analysis/TargetLibraryInfo.h>
 #include <llvm/Analysis/ValueTracking.h>
+#include <llvm/IR/CFG.h>
 #include <llvm/IR/DataLayout.h>
 #include <llvm/IR/Dominators.h>
 #include <llvm/IR/Function.h>
@@ -512,19 +514,88 @@ void verifyLinearRegionStructure(const Selection& selection, const LLVMFrontendR
     return;
   }
 
-  const auto analysis = discoverLinearLoopRegion(*selection.function, *selection.loop);
   const bool hasBranchPlan = std::ranges::any_of(
       result.provenance.ifConversions, [](const auto& region) { return region.branch != nullptr; });
-  if (!analysis.ok()) {
-    if (!hasBranchPlan)
+  if (hasBranchPlan) {
+    if (result.provenance.linearLoop)
       report.add("LLVM_FRONTEND_LINEAR_LOOP_VERIFY_FAILED",
-                 "multi-block result is neither a supported branch region nor a linear loop: " +
-                     analysis.message);
+                 "if-converted loop has spurious linear-loop provenance");
     return;
   }
-  if (hasBranchPlan) {
+
+  auto* preheader = selection.loop->getLoopPreheader();
+  auto* header = selection.loop->getHeader();
+  auto* latch = selection.loop->getLoopLatch();
+  llvm::SmallVector<llvm::BasicBlock*, 4> exitingBlocks;
+  llvm::SmallVector<llvm::BasicBlock*, 4> exitBlocks;
+  selection.loop->getExitingBlocks(exitingBlocks);
+  selection.loop->getExitBlocks(exitBlocks);
+  if (!preheader || !latch || exitingBlocks.size() != 1 || exitBlocks.size() != 1) {
     report.add("LLVM_FRONTEND_LINEAR_LOOP_VERIFY_FAILED",
-               "linear loop unexpectedly carries an if-conversion plan");
+               "multi-block result does not have the unique preheader/latch/exit linear shape");
+    return;
+  }
+
+  auto* exiting = exitingBlocks.front();
+  auto* exit = exitBlocks.front();
+  const llvm::BranchInst* termination = nullptr;
+  std::unordered_map<llvm::BasicBlock*, llvm::BasicBlock*> nextBlock;
+  std::unordered_map<llvm::BasicBlock*, unsigned> forwardPredecessors;
+  bool invalidShape = exiting != header && exiting != latch;
+  for (auto* block : selection.loop->getBlocks()) {
+    for (const auto& instruction : *block)
+      invalidShape |= llvm::isa<llvm::PHINode>(instruction) && block != header;
+    const auto* branch = llvm::dyn_cast<llvm::BranchInst>(block->getTerminator());
+    if (!branch) {
+      invalidShape = true;
+      continue;
+    }
+    if (branch->isConditional()) {
+      const bool firstInside = selection.loop->contains(branch->getSuccessor(0));
+      const bool secondInside = selection.loop->contains(branch->getSuccessor(1));
+      const bool exitsSelectedLoop =
+          firstInside != secondInside &&
+          (firstInside ? branch->getSuccessor(1) : branch->getSuccessor(0)) == exit;
+      if (termination || branch->getParent() != exiting || !exitsSelectedLoop)
+        invalidShape = true;
+      else
+        termination = branch;
+    } else if (!selection.loop->contains(branch->getSuccessor(0))) {
+      invalidShape = true;
+    }
+
+    for (auto* successor : llvm::successors(block)) {
+      if (!selection.loop->contains(successor) || (block == latch && successor == header))
+        continue;
+      if (nextBlock.contains(block))
+        invalidShape = true;
+      else
+        nextBlock.emplace(block, successor);
+      ++forwardPredecessors[successor];
+    }
+  }
+  for (auto* block : selection.loop->getBlocks()) {
+    const auto expectedPredecessors = block == header ? 0U : 1U;
+    const auto expectedSuccessors = block == latch ? 0U : 1U;
+    invalidShape |= forwardPredecessors[block] != expectedPredecessors;
+    invalidShape |= static_cast<unsigned>(nextBlock.contains(block)) != expectedSuccessors;
+  }
+
+  std::vector<llvm::BasicBlock*> orderedBlocks;
+  std::unordered_set<llvm::BasicBlock*> visited;
+  auto* block = header;
+  while (block && visited.insert(block).second) {
+    orderedBlocks.push_back(block);
+    if (block == latch)
+      break;
+    const auto next = nextBlock.find(block);
+    block = next == nextBlock.end() ? nullptr : next->second;
+  }
+  invalidShape |=
+      !termination || block != latch || orderedBlocks.size() != selection.loop->getBlocks().size();
+  if (invalidShape) {
+    report.add("LLVM_FRONTEND_LINEAR_LOOP_VERIFY_FAILED",
+               "multi-block result is not an independently reconstructed linear CFG path");
     return;
   }
   if (!result.provenance.linearLoop) {
@@ -533,24 +604,22 @@ void verifyLinearRegionStructure(const Selection& selection, const LLVMFrontendR
     return;
   }
 
-  const auto& expected = *analysis.region;
   const auto& actual = *result.provenance.linearLoop;
   std::vector<std::string> ordered;
-  for (const auto* block : expected.orderedBlocks)
+  for (const auto* block : orderedBlocks)
     ordered.push_back(blockName(*selection.function, *block));
-  if (actual.header != blockName(*selection.function, *expected.header) ||
-      actual.preheader != blockName(*selection.function, *expected.preheader) ||
-      actual.latch != blockName(*selection.function, *expected.latch) ||
-      actual.exiting != blockName(*selection.function, *expected.exiting) ||
-      actual.exit != blockName(*selection.function, *expected.exit) ||
-      actual.terminationBlock !=
-          blockName(*selection.function, *expected.terminationBranch->getParent()) ||
+  if (actual.header != blockName(*selection.function, *header) ||
+      actual.preheader != blockName(*selection.function, *preheader) ||
+      actual.latch != blockName(*selection.function, *latch) ||
+      actual.exiting != blockName(*selection.function, *exiting) ||
+      actual.exit != blockName(*selection.function, *exit) ||
+      actual.terminationBlock != blockName(*selection.function, *termination->getParent()) ||
       actual.orderedBlocks != ordered) {
     report.add("LLVM_FRONTEND_LINEAR_LOOP_VERIFY_FAILED",
                "linear-loop provenance does not match independently reconstructed CFG order");
   }
   if (!result.metadata || result.metadata->loopShape != "linear_multiblock" ||
-      result.metadata->loopBlockCount != expected.orderedBlocks.size())
+      result.metadata->loopBlockCount != orderedBlocks.size())
     report.add("LLVM_FRONTEND_LINEAR_LOOP_VERIFY_FAILED",
                "linear-loop metadata does not match the selected LLVM loop");
 }

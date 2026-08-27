@@ -3,7 +3,9 @@
 #include "cgra/Frontend/LLVM/FrontendInvocationValidation.h"
 #include "cgra/Frontend/LLVM/LLVMFrontendVerifier.h"
 
+#include <llvm/Analysis/LoopInfo.h>
 #include <llvm/AsmParser/Parser.h>
+#include <llvm/IR/Dominators.h>
 #include <llvm/IR/Instructions.h>
 #include <llvm/IR/LLVMContext.h>
 #include <llvm/IR/Module.h>
@@ -747,7 +749,8 @@ void expect(bool condition, const char* message) {
 std::unique_ptr<llvm::Module> parse(const char* text, llvm::LLVMContext& context);
 
 std::string linearLoopIR(std::size_t blockCount, std::string functionName, std::string blockPrefix,
-                         std::string valuePrefix, bool reorderText = false) {
+                         std::string valuePrefix, bool reorderText = false,
+                         bool dataRecurrence = true) {
   if (blockCount < 2)
     throw std::invalid_argument("linear loop fixture requires at least two blocks");
   const auto header = blockPrefix + "_header";
@@ -760,7 +763,9 @@ std::string linearLoopIR(std::size_t blockCount, std::string functionName, std::
   std::vector<std::string> definitions(blockCount);
   definitions[0] = header + ":\n  %" + valuePrefix + "_iv = phi i32 [ 0, %entry ], [ %" +
                    valuePrefix + "_next, %" + latch + " ]\n  %" + valuePrefix +
-                   "_v0 = add i32 %x, %" + valuePrefix + "_iv\n  br label %" + blocks[1] + "\n";
+                   "_v0 = add i32 %x, %" +
+                   (dataRecurrence ? valuePrefix + "_iv" : std::string("x")) + "\n  br label %" +
+                   blocks[1] + "\n";
   for (std::size_t index = 1; index + 1 < blockCount; ++index) {
     definitions[index] = blocks[index] + ":\n  %" + valuePrefix + "_v" + std::to_string(index) +
                          " = add i32 %" + valuePrefix + "_v" + std::to_string(index - 1) +
@@ -823,6 +828,94 @@ exit:
   ret i32 %out
 }
 )IR";
+
+const char* kLinearNoPreheader = R"IR(
+define void @linear_no_preheader(i1 %choose) {
+entry:
+  br i1 %choose, label %header, label %alternate
+alternate:
+  br label %header
+header:
+  %iv = phi i32 [ 0, %entry ], [ 0, %alternate ], [ %next, %body ]
+  %done = icmp ult i32 %iv, 4
+  br i1 %done, label %body, label %exit
+body:
+  %next = add i32 %iv, 1
+  br label %header
+exit:
+  ret void
+}
+)IR";
+
+const char* kLinearSwitchTerminator = R"IR(
+define void @linear_switch() {
+entry:
+  br label %header
+header:
+  %iv = phi i32 [ 0, %entry ], [ %next, %body ]
+  br label %body
+body:
+  %next = add i32 %iv, 1
+  switch i32 %next, label %exit [ i32 0, label %header ]
+exit:
+  ret void
+}
+)IR";
+
+const char* kLinearTwoExits = R"IR(
+define void @linear_two_exits(i1 %stop) {
+entry:
+  br label %header
+header:
+  %iv = phi i32 [ 0, %entry ], [ %next, %latch ]
+  %done = icmp ult i32 %iv, 4
+  br i1 %done, label %body, label %exit0
+body:
+  br i1 %stop, label %exit1, label %latch
+latch:
+  %next = add i32 %iv, 1
+  br label %header
+exit0:
+  ret void
+exit1:
+  ret void
+}
+)IR";
+
+const char* kLinearInternalDiamond = R"IR(
+define void @linear_internal_diamond(i1 %condition) {
+entry:
+  br label %header
+header:
+  %iv = phi i32 [ 0, %entry ], [ %next, %latch ]
+  %done = icmp ult i32 %iv, 4
+  br i1 %done, label %body, label %exit
+body:
+  br i1 %condition, label %left, label %right
+left:
+  br label %merge
+right:
+  br label %merge
+merge:
+  br label %latch
+latch:
+  %next = add i32 %iv, 1
+  br label %header
+exit:
+  ret void
+}
+)IR";
+
+cgra::frontend::llvm_frontend::LinearLoopStatus linearAnalysisStatus(const char* text,
+                                                                     const char* functionName) {
+  llvm::LLVMContext context;
+  auto module = parse(text, context);
+  auto* function = module->getFunction(functionName);
+  llvm::DominatorTree dominatorTree(*function);
+  llvm::LoopInfo loopInfo(dominatorTree);
+  expect(!loopInfo.empty(), "linear analysis fixture must contain a natural loop");
+  return cgra::frontend::llvm_frontend::discoverLinearLoopRegion(**loopInfo.begin()).status;
+}
 
 std::string semanticFingerprint(const cgra::ir::DFG& dfg) {
   std::ostringstream output;
@@ -993,7 +1086,7 @@ void testLinearMultiBlockLowering() {
     const auto blocks = 2U + seed % 4U;
     const auto function = "property_" + std::to_string(seed);
     const auto text = linearLoopIR(blocks, function, "block_" + std::to_string(seed),
-                                   "value_" + std::to_string(seed), seed % 2U != 0);
+                                   "value_" + std::to_string(seed), seed % 2U != 0, seed % 3U != 0);
     auto module = parse(text.c_str(), context);
     cgra::frontend::llvm_frontend::LLVMFrontendOptions options;
     options.functionName = function;
@@ -1030,6 +1123,19 @@ void testLinearMultiBlockLowering() {
                  cgra::frontend::llvm_frontend::LLVMFrontendDiagnosticCode::
                      LLVM_FRONTEND_LINEAR_LOOP_NONHEADER_PHI,
          "non-header PHI rejection must have a stable diagnostic");
+
+  expect(linearAnalysisStatus(kLinearNoPreheader, "linear_no_preheader") ==
+             cgra::frontend::llvm_frontend::LinearLoopStatus::NoPreheader,
+         "linear analyzer must reject a loop without one canonical preheader");
+  expect(linearAnalysisStatus(kLinearSwitchTerminator, "linear_switch") !=
+             cgra::frontend::llvm_frontend::LinearLoopStatus::Success,
+         "linear analyzer must reject switch termination");
+  expect(linearAnalysisStatus(kLinearTwoExits, "linear_two_exits") ==
+             cgra::frontend::llvm_frontend::LinearLoopStatus::ExitShape,
+         "linear analyzer must reject multiple exits");
+  expect(linearAnalysisStatus(kLinearInternalDiamond, "linear_internal_diamond") ==
+             cgra::frontend::llvm_frontend::LinearLoopStatus::InternalConditionalBranch,
+         "linear analyzer must not absorb an internal diamond");
 }
 
 std::unique_ptr<llvm::Module> parse(const char* text, llvm::LLVMContext& context) {
