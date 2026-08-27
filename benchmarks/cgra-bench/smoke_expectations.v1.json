@@ -1,12 +1,12 @@
 {
   "cases": [
     {
-      "diagnostic_codes": ["LLVM_FRONTEND_UNSUPPORTED_LOOP_SHAPE"],
+      "diagnostic_codes": ["RFA_FIXED_REGISTER_SELF_OVERLAP"],
       "id": "kernels/fir/fir_int.cpp::_Z6kernelPiS_S_::for.cond",
-      "terminal_stage": "S4_FRONTEND_LOWER"
+      "terminal_stage": "S10_MODULO_MAPPING"
     },
     {
-      "diagnostic_codes": ["LLVM_FRONTEND_UNSUPPORTED_LOOP_SHAPE"],
+      "diagnostic_codes": ["LLVM_FRONTEND_UNSUPPORTED_NON_AFFINE_ADDRESS"],
       "id": "kernels/spmv/spmv.c::kernel::for.cond",
       "terminal_stage": "S4_FRONTEND_LOWER"
     }

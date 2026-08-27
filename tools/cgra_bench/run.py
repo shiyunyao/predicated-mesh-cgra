@@ -41,6 +41,18 @@ BASELINE_MAPPING_PROFILE = {
     "max_route_calls": 100000,
     "max_route_states": 10000,
 }
+MAPPING_PROFILES = {
+    "baseline": BASELINE_MAPPING_PROFILE,
+    "smoke": {
+        "max_ii": 4,
+        "max_node_candidates": 500,
+        "max_backtracks": 500,
+        "max_route_calls": 1000,
+        "max_route_states": 500,
+    },
+}
+
+
 def tool_version(executable: str) -> str | None:
     path = shutil.which(executable)
     if not path:
@@ -160,7 +172,8 @@ def backend_observation(artifact_dir: pathlib.Path) -> dict[str, Any]:
 
 def run_case(case: dict[str, Any], root: pathlib.Path, corpus: pathlib.Path, out: pathlib.Path,
              target: pathlib.Path, frontend_bin: pathlib.Path, compile_bin: pathlib.Path,
-             timeout: int, functional_cases: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+             timeout: int, functional_cases: dict[str, dict[str, Any]],
+             mapping_profile: dict[str, int]) -> list[dict[str, Any]]:
     if not case.get("enabled", True):
         return [{"id": case["id"], "kernel": case["kernel"], "source": case["source"], "loop_header": None, "tier": "DISCOVERED", "terminal_stage": "S0_CORPUS_DISCOVERY", "status": "EXCLUDED", "stages": [{"stage": "S0_CORPUS_DISCOVERY", "status": "EXCLUDED"}], "category": "CORPUS", "owner": "HARNESS", "diagnostic_code": "EXPLICIT_EXCLUSION", "message": case.get("exclusion", "explicitly excluded"), "excluded": True}]
     source = corpus / case["source"]
@@ -313,15 +326,15 @@ def run_case(case: dict[str, Any], root: pathlib.Path, corpus: pathlib.Path, out
             "-o",
             str(manifest),
             "--max-ii",
-            str(BASELINE_MAPPING_PROFILE["max_ii"]),
+            str(mapping_profile["max_ii"]),
             "--max-node-candidates",
-            str(BASELINE_MAPPING_PROFILE["max_node_candidates"]),
+            str(mapping_profile["max_node_candidates"]),
             "--max-backtracks",
-            str(BASELINE_MAPPING_PROFILE["max_backtracks"]),
+            str(mapping_profile["max_backtracks"]),
             "--max-route-calls",
-            str(BASELINE_MAPPING_PROFILE["max_route_calls"]),
+            str(mapping_profile["max_route_calls"]),
             "--max-route-states",
-            str(BASELINE_MAPPING_PROFILE["max_route_states"]),
+            str(mapping_profile["max_route_states"]),
         ]
         rc, stdout, stderr, compile_duration = command_result(compile_command, root, timeout)
         base["command"] = compile_command
@@ -412,6 +425,7 @@ def main() -> int:
         default=pathlib.Path("benchmarks/cgra-bench/functional_cases.v1.json"),
     )
     parser.add_argument("--timeout", type=int, default=120)
+    parser.add_argument("--profile", choices=sorted(MAPPING_PROFILES), default="baseline")
     parser.add_argument("--all", action="store_true")
     parser.add_argument("--allow-subset", action="store_true", help="allow a smoke manifest to cover a corpus subset")
     args = parser.parse_args()
@@ -423,6 +437,7 @@ def main() -> int:
     frontend_bin = (root / args.frontend_bin).resolve()
     compile_bin = (root / args.compile_kernel_bin).resolve()
     functional_cases_path = (root / args.functional_cases).resolve()
+    mapping_profile = MAPPING_PROFILES[args.profile]
     try:
         if not args.all:
             parser.error("--all is required for an audit run")
@@ -489,7 +504,11 @@ def main() -> int:
             "cmake_version": tool_version("cmake"),
             "host": platform.platform(),
             "timestamp_utc": datetime.now(timezone.utc).isoformat(),
-            "profile": {"name": "baseline", "timeout_seconds": args.timeout, "mapping": BASELINE_MAPPING_PROFILE},
+            "profile": {
+                "name": args.profile,
+                "timeout_seconds": args.timeout,
+                "mapping": mapping_profile,
+            },
         })
         results: list[dict[str, Any]] = []
         for case in cases:
@@ -505,6 +524,7 @@ def main() -> int:
                         compile_bin,
                         args.timeout,
                         functional_cases,
+                        mapping_profile,
                     )
                 )
             except Exception as error:  # every case must have a terminal result
@@ -521,11 +541,11 @@ def main() -> int:
         )
         for result in results:
             result["audit_profile"] = {
-                "name": "baseline",
+                "name": args.profile,
                 "timeout_seconds": args.timeout,
-                "mapping": BASELINE_MAPPING_PROFILE,
+                "mapping": mapping_profile,
             }
-            write_case_evidence(out, corpus, target, result, BASELINE_MAPPING_PROFILE)
+            write_case_evidence(out, corpus, target, result, mapping_profile)
             complete_stage_records(result)
             if [stage["stage"] for stage in result["stages"]] != STAGES:
                 raise ValueError(f"incomplete stage record for {result['id']}")

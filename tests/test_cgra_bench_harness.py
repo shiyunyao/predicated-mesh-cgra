@@ -18,10 +18,30 @@ from tools.cgra_bench.functional import (
 from tools.cgra_bench.inventory import PIN, inventory
 from tools.cgra_bench.invocation import address_external_ids, synthesize_invocation
 from tools.cgra_bench.report import report, target_contract_summary
-from tools.cgra_bench.run import active_functional_cases, apply_functional_cases
+from tools.cgra_bench.run import MAPPING_PROFILES, active_functional_cases, apply_functional_cases
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_smoke_mapping_profile_is_bounded_below_full_audit() -> None:
+    baseline = MAPPING_PROFILES["baseline"]
+    smoke = MAPPING_PROFILES["smoke"]
+    assert baseline == {
+        "max_ii": 8,
+        "max_node_candidates": 100000,
+        "max_backtracks": 50000,
+        "max_route_calls": 100000,
+        "max_route_states": 10000,
+    }
+    assert 0 < smoke["max_ii"] < baseline["max_ii"]
+    for budget in (
+        "max_node_candidates",
+        "max_backtracks",
+        "max_route_calls",
+        "max_route_states",
+    ):
+        assert 0 < smoke[budget] < baseline[budget]
 
 
 def functional_spec(
