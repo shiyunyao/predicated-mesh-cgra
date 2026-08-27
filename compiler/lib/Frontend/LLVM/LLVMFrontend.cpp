@@ -753,8 +753,12 @@ bool discoverIfRecurrences(IfLoweringState& state) {
       continue;
     const auto* backedge = llvm::dyn_cast<llvm::Instruction>(
         phi->getIncomingValue(static_cast<unsigned>(backedgeIndex)));
+    const auto* backedgePhi = llvm::dyn_cast_or_null<llvm::PHINode>(backedge);
+    const bool conditionalSelectBackedge =
+        backedgePhi && state.region.branch && backedgePhi->getParent() == state.region.mergeBlock &&
+        backedgePhi->getNumIncomingValues() == 2;
     if (!backedge || !state.selection.loop->contains(backedge) ||
-        llvm::isa<llvm::PHINode>(backedge) || !opcode(*backedge))
+        (!conditionalSelectBackedge && !opcode(*backedge)))
       continue;
     bool dataUse = false;
     for (const auto* user : phi->users()) {
@@ -803,8 +807,10 @@ void promoteIfRecurrenceProducerClosure(IfLoweringState& state) {
     state.terminationSlice.erase(instruction);
     for (const auto& operand : instruction->operands()) {
       const auto* dependency = llvm::dyn_cast<llvm::Instruction>(operand.get());
+      const auto* dependencyPhi = llvm::dyn_cast_or_null<llvm::PHINode>(dependency);
+      const bool mergePhi = dependencyPhi && dependencyPhi->getParent() != state.selection.block;
       if (!dependency || !state.selection.loop->contains(dependency) ||
-          llvm::isa<llvm::PHINode>(dependency) || !opcode(*dependency))
+          (!mergePhi && !opcode(*dependency)))
         continue;
       work.push_back(dependency);
     }
@@ -990,23 +996,6 @@ LLVMFrontendResult lowerStructuredLoop(llvm::Module& module, const LLVMFrontendO
     state.region = *discoveredRegion;
   collectTerminationSlice(state);
 
-  if (const auto* latch = selection.loop->getLoopLatch()) {
-    for (const auto& instruction : *selection.block) {
-      const auto* phi = llvm::dyn_cast<llvm::PHINode>(&instruction);
-      if (!phi)
-        continue;
-      const int backedgeIndex = phi->getBasicBlockIndex(latch);
-      if (backedgeIndex < 0)
-        continue;
-      const auto* backedgePhi = llvm::dyn_cast<llvm::PHINode>(
-          phi->getIncomingValue(static_cast<unsigned>(backedgeIndex)));
-      if (backedgePhi && selection.loop->contains(backedgePhi))
-        return failure(LLVMFrontendStatus::ConditionalRecurrenceUnsupported,
-                       LLVMFrontendDiagnosticCode::LLVM_FRONTEND_CONDITIONAL_RECURRENCE_UNSUPPORTED,
-                       "a control-merge PHI cannot provide a loop recurrence in T017 V0",
-                       &selection, phi);
-    }
-  }
   discoverIfRecurrences(state);
   promoteIfRecurrenceProducerClosure(state);
 
@@ -1280,8 +1269,14 @@ LLVMFrontendResult lowerStructuredLoop(llvm::Module& module, const LLVMFrontendO
       if (recurrence == state.recurrences.end() || predicate)
         return std::nullopt;
       auto& descriptor = state.provenance.recurrences[recurrence->second];
-      const auto source = state.nodes.find(descriptor.backedge);
-      if (source == state.nodes.end())
+      std::optional<ir::NodeId> source;
+      if (const auto node = state.nodes.find(descriptor.backedge); node != state.nodes.end())
+        source = node->second;
+      else if (const auto* mergePhi = llvm::dyn_cast<llvm::PHINode>(descriptor.backedge)) {
+        if (const auto select = state.selects.find(mergePhi); select != state.selects.end())
+          source = select->second;
+      }
+      if (!source)
         return std::nullopt;
       ir::RecurrenceBoundary boundary;
       const auto type = valueType(*descriptor.initial);
@@ -1293,7 +1288,7 @@ LLVMFrontendResult lowerStructuredLoop(llvm::Module& module, const LLVMFrontendO
       else
         boundary.values.push_back(
             {0, ir::ExternalValueRef{getIfExternal(state, builder, *descriptor.initial, *type)}});
-      const auto edge = builder.addDataEdge(source->second, destination, operand, 1, boundary);
+      const auto edge = builder.addDataEdge(*source, destination, operand, 1, boundary);
       descriptor.uses.push_back(
           {valueSummary(*llvm::cast<llvm::Instruction>(&value)), operand, destination, edge});
       return edge;

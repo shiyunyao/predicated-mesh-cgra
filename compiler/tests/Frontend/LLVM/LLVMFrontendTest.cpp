@@ -1580,8 +1580,25 @@ void testPredicationLowering() {
   expect(
       cgra::frontend::llvm_frontend::verifyFrontendResult(*gepStore, options, gepStoreResult).ok(),
       "predicated GEP Store must pass memory/predicate verification");
-  expectStatus(kConditionalRecurrence, "conditional_recurrence",
-               cgra::frontend::llvm_frontend::LLVMFrontendStatus::ConditionalRecurrenceUnsupported);
+  auto conditionalRecurrence = parse(kConditionalRecurrence, context);
+  options.functionName = "conditional_recurrence";
+  const auto conditionalRecurrenceResult =
+      cgra::frontend::llvm_frontend::lowerInnermostLoop(*conditionalRecurrence, options);
+  expect(conditionalRecurrenceResult.ok(),
+         "canonical control-merge Select must provide a distance-one recurrence");
+  expect(std::ranges::any_of(conditionalRecurrenceResult.dfg->edges(), [&](const auto& edge) {
+           if (edge.kind() != cgra::ir::Edge::Kind::Data || edge.distance != 1)
+             return false;
+           return conditionalRecurrenceResult.dfg->node(edge.src).opcode == cgra::ir::Opcode::Select;
+         }),
+         "conditional recurrence must use the merge Select as its distance-one producer");
+  const auto conditionalRecurrenceVerification =
+      cgra::frontend::llvm_frontend::verifyFrontendResult(*conditionalRecurrence, options,
+                                                          conditionalRecurrenceResult);
+  expect(conditionalRecurrenceVerification.ok(),
+         ("independent verifier must validate conditional Select recurrence semantics: " +
+          conditionalRecurrenceVerification.format())
+             .c_str());
 }
 
 void testRecurrenceLowering() {

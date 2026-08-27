@@ -255,8 +255,12 @@ void removeRecurrenceProducerClosure(const Selection& selection,
         continue;
       const auto* backedge = llvm::dyn_cast<llvm::Instruction>(
           phi->getIncomingValue(static_cast<unsigned>(latchIndex)));
-      if (!backedge || !selection.loop->contains(backedge) || llvm::isa<llvm::PHINode>(backedge) ||
-          !opcode(*backedge))
+      const auto* backedgePhi = llvm::dyn_cast_or_null<llvm::PHINode>(backedge);
+      const bool conditionalSelectBackedge =
+          backedgePhi && backedgePhi->getParent() != selection.block &&
+          backedgePhi->getNumIncomingValues() == 2;
+      if (!backedge || !selection.loop->contains(backedge) ||
+          (!conditionalSelectBackedge && !opcode(*backedge)))
         continue;
       const bool hasDataUse = std::ranges::any_of(phi->users(), [&](const llvm::User* user) {
         const auto* use = llvm::dyn_cast<llvm::Instruction>(user);
@@ -277,8 +281,10 @@ void removeRecurrenceProducerClosure(const Selection& selection,
     slice.erase(instruction);
     for (const auto& operand : instruction->operands()) {
       const auto* dependency = llvm::dyn_cast<llvm::Instruction>(operand.get());
+      const auto* dependencyPhi = llvm::dyn_cast_or_null<llvm::PHINode>(dependency);
+      const bool mergePhi = dependencyPhi && dependencyPhi->getParent() != selection.block;
       if (!dependency || !selection.loop->contains(dependency) ||
-          llvm::isa<llvm::PHINode>(dependency) || !opcode(*dependency))
+          (!mergePhi && !opcode(*dependency)))
         continue;
       work.push_back(dependency);
     }
