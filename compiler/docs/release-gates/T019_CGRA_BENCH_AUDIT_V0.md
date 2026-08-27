@@ -38,8 +38,14 @@ a hard audit failure.
 | UNKNOWN / unclassified results | must be zero |
 | Source accounting reconciliation | must pass |
 | Smoke run | hosted `cgra-bench-smoke` |
-| Full corpus run | hosted `cgra-bench-audit` |
+| Full corpus run | hosted `cgra-bench-audit`, automatically triggered on `compiler/cgra-bench-audit-v0` pushes |
 | Retained T013-T018 compiler/hardware gates | must remain green |
+
+The hosted workflow rejects a full audit when reconciliation fails, or when
+the report contains `UNKNOWN` or `TIMEOUT`. It verifies the pinned, clean
+submodule before invoking the audit. `hardware-regression` also runs on the
+T019 feature branch; its change detector treats `tools/`, `compiler/`,
+`tests/`, `Makefile`, and workflow edits as backend-affecting.
 
 ## Hosted runs
 
@@ -74,6 +80,13 @@ T019 does not add frontend, ISA, mapper, RF, memory, or hardware semantics. A
 benchmark blocked by an unsupported operation, timeout, budget, or backend
 resource limit remains accounted for and is ranked for T020. No benchmark is
 edited, removed, or silently excluded to improve the measured rate.
+
+`known_supported.v1.json` is generated only from the immutable hosted full
+audit via `tools/cgra_bench/freeze_supported.py`. If no hosted loop reaches
+L4, the generated baseline remains empty and this record must say so. The
+functional adapter framework is present, but the checked-in functional case
+manifest remains empty until the hosted audit exposes an upstream L6 case for
+which native input, Golden, and RTL observations can be compared honestly.
 
 ## Release decision
 

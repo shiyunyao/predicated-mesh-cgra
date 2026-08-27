@@ -15,6 +15,16 @@ make cgra-bench-inventory
 make cgra-bench-audit
 ```
 
+After a completed **hosted** full audit, freeze its mapped-case contract with:
+
+```sh
+make cgra-bench-freeze-supported
+```
+
+This command reads the exact `results.jsonl` and `environment.json` from the
+selected full-audit directory. It does not invent a supported benchmark when
+no case reached L4.
+
 The smoke gate uses the fixed six-source manifest:
 
 ```sh
@@ -79,6 +89,20 @@ terminal results. Failures are reproduced from the saved canonical LLVM,
 exact command, pinned target and compiler hashes; source semantics are never
 rewritten by the harness. `known_supported.v1.json` is checked after smoke and
 full runs so an established L4-or-higher case cannot silently regress.
+
+## Functional validation
+
+`functional_cases.v1.json` is intentionally separate from the structural
+audit corpus. A functional entry names an adapter, a non-synthetic
+`KernelInvocation`, source input/expected observation, and three argv-form
+commands: `native`, `golden`, and `rtl`. The latter two must consume the
+compiler-generated manifest. The adapter records three JSON observations and
+requires `native == expected == golden == rtl` before it assigns L7
+`FUNCTIONAL_RTL_VALIDATED`. Commands cannot read the checked expectation or
+another phase's observation; the native command consumes only the declared
+source input, while Golden and RTL receive the generated manifest. A synthetic
+audit invocation can never enter this path. The initial manifest is empty until a hosted full audit identifies an
+upstream L6 case with a trustworthy source-input/scratchpad adapter.
 
 To add a source override, edit `benchmarks/cgra-bench/cases.v1.json` and keep
 the source enabled or provide one of the explicit exclusion reasons recorded in

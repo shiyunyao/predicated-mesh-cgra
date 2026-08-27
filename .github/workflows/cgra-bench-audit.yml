@@ -1,6 +1,9 @@
 name: cgra-bench-audit
 
 on:
+  push:
+    branches:
+      - compiler/cgra-bench-audit-v0
   workflow_dispatch:
   schedule:
     - cron: '17 3 * * 0'
@@ -27,6 +30,16 @@ jobs:
           test -z "$(git -C third_party/CGRA-Bench status --porcelain)"
       - name: Run complete audit
         run: make cgra-bench-audit
+      - name: Verify audit reconciliation contract
+        run: |
+          set -euo pipefail
+          summary=build/cgra-bench/run/full/summary.json
+          test -s build/cgra-bench/run/full/results.jsonl
+          jq -e '
+            .reconciliation.ok == true and
+            .unknown_count == 0 and
+            .timeout_count == 0
+          ' "$summary" >/dev/null
       - name: Upload complete audit
         if: always()
         uses: actions/upload-artifact@v4

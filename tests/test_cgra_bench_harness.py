@@ -3,17 +3,71 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 from tools.cgra_bench.classify import classify
 from tools.cgra_bench.check_baseline import check, check_expectations
 from tools.cgra_bench.evidence import complete_stage_records, write_case_evidence
+from tools.cgra_bench.freeze_supported import freeze, load_completed_run
+from tools.cgra_bench.functional import (
+    FunctionalCaseError,
+    load_cases,
+    validate_case,
+)
 from tools.cgra_bench.inventory import PIN, inventory
 from tools.cgra_bench.invocation import address_external_ids, synthesize_invocation
 from tools.cgra_bench.report import report, target_contract_summary
+from tools.cgra_bench.run import active_functional_cases, apply_functional_cases
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def functional_spec(
+    *,
+    native_multiplier: int = 2,
+    golden_multiplier: int = 2,
+    rtl_multiplier: int = 2,
+) -> dict[str, object]:
+    """Create a command adapter case with three independent observations."""
+    program = (
+        "import json,sys; data=json.load(open(sys.argv[-2])); "
+        "json.dump({'output': data['input'] * MULTIPLIER}, open(sys.argv[-1], 'w'))"
+    )
+    return {
+        "id": "kernels/example.c::kernel::loop",
+        "adapter": "command_observation_v1",
+        "invocation": {
+            "schema": "cgra.kernel_invocation.v1",
+            "trip_count": 1,
+            "scalar_inputs": {},
+            "scratchpad_preload": [],
+        },
+        "inputs": {"input": 1},
+        "expected": {"output": 2},
+        "commands": {
+            "native": [sys.executable, "-c", program.replace("MULTIPLIER", str(native_multiplier)), "{input}", "{native}"],
+            "golden": [sys.executable, "-c", program.replace("MULTIPLIER", str(golden_multiplier)), "{manifest}", "{input}", "{golden}"],
+            "rtl": [sys.executable, "-c", program.replace("MULTIPLIER", str(rtl_multiplier)), "{manifest}", "{input}", "{rtl}"],
+        },
+    }
+
+
+def functional_result() -> dict[str, object]:
+    return {
+        "id": "kernels/example.c::kernel::loop",
+        "artifact_directory": "case",
+        "synthetic_invocation": False,
+    }
+
+
+def prepare_functional_manifest(tmp_path: Path) -> Path:
+    out = tmp_path / "out"
+    manifest = out / "case" / "abi" / "program_manifest.json"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text("{}\n")
+    return out
 
 
 def test_inventory_is_pinned_and_complete(tmp_path: Path) -> None:
@@ -226,3 +280,198 @@ def test_smoke_expectations_reject_classification_drift(tmp_path: Path) -> None:
         "cases": [{"id": "case::loop", "terminal_stage": "S4_FRONTEND_LOWER", "diagnostic_code": "LLVM_FRONTEND_UNSUPPORTED_LOOP_SHAPE"}],
     }))
     assert check_expectations(run, expectations) == []
+
+
+def test_freeze_supported_retains_only_l4_or_higher_cases() -> None:
+    frozen = freeze(
+        [
+            {"id": "case-z", "tier": "MANIFEST_COMPLETE"},
+            {"id": "case-a", "tier": "MAPPED"},
+            {"id": "case-b", "tier": "TARGET_LEGAL"},
+        ],
+        {
+            "project_sha": "project",
+            "corpus_sha": "corpus",
+            "target_sha256": "target",
+            "profile": {"name": "baseline"},
+        },
+    )
+    assert frozen["source"] == {
+        "project_sha": "project",
+        "corpus_sha": "corpus",
+        "target_sha256": "target",
+        "profile": "baseline",
+    }
+    assert frozen["cases"] == [
+        {"id": "case-a", "minimum_tier": "MAPPED"},
+        {"id": "case-z", "minimum_tier": "MAPPED"},
+    ]
+
+
+def test_freeze_supported_requires_complete_clean_audit(tmp_path: Path) -> None:
+    run = tmp_path / "run"
+    run.mkdir()
+    result = {"id": "case-a", "tier": "MAPPED"}
+    (run / "results.jsonl").write_text(json.dumps(result) + "\n")
+    (run / "environment.json").write_text(json.dumps({
+        "schema": "cgra.cgra_bench.environment.v1",
+        "project_dirty": False,
+    }))
+    summary = {
+        "schema": "cgra.cgra_bench.summary.v1",
+        "reconciliation": {"ok": True},
+        "unknown_count": 0,
+        "timeout_count": 0,
+        "denominator": {"terminal_results": 1},
+    }
+    (run / "summary.json").write_text(json.dumps(summary))
+    assert load_completed_run(run)[0] == [result]
+
+    summary["timeout_count"] = 1
+    (run / "summary.json").write_text(json.dumps(summary))
+    try:
+        load_completed_run(run)
+    except ValueError as error:
+        assert "timeouts" in str(error)
+    else:
+        raise AssertionError("timed-out audit must not become the supported baseline")
+
+
+def test_functional_manifest_rejects_unknown_adapter_and_missing_manifest_argument(tmp_path: Path) -> None:
+    invalid = functional_spec()
+    invalid["adapter"] = "unknown"
+    manifest = tmp_path / "functional.json"
+    manifest.write_text(json.dumps({"schema": "cgra.cgra_bench.functional_cases.v1", "cases": [invalid]}))
+    try:
+        load_cases(manifest)
+    except FunctionalCaseError as error:
+        assert error.code == "FUNCTIONAL_UNKNOWN_ADAPTER"
+    else:
+        raise AssertionError("unknown adapter must be rejected")
+
+    invalid = functional_spec()
+    commands = invalid["commands"]
+    assert isinstance(commands, dict)
+    commands["golden"] = [sys.executable, "-c", "pass"]
+    manifest.write_text(json.dumps({"schema": "cgra.cgra_bench.functional_cases.v1", "cases": [invalid]}))
+    try:
+        load_cases(manifest)
+    except FunctionalCaseError as error:
+        assert error.code == "FUNCTIONAL_COMMANDS_INVALID"
+    else:
+        raise AssertionError("Golden must consume a compiler-generated manifest")
+
+    invalid = functional_spec()
+    commands = invalid["commands"]
+    assert isinstance(commands, dict)
+    commands["native"] = [sys.executable, "-c", "pass", "{input}", "{expected}", "{native}"]
+    manifest.write_text(json.dumps({"schema": "cgra.cgra_bench.functional_cases.v1", "cases": [invalid]}))
+    try:
+        load_cases(manifest)
+    except FunctionalCaseError as error:
+        assert error.code == "FUNCTIONAL_ORACLE_LEAK"
+    else:
+        raise AssertionError("native adapter must not consume the expected oracle")
+
+
+def test_functional_adapter_validates_native_golden_and_rtl(tmp_path: Path) -> None:
+    out = prepare_functional_manifest(tmp_path)
+    validation = validate_case(functional_spec(), functional_result(), tmp_path, out, 5)
+    assert validation.ok
+    assert validation.code == "FUNCTIONAL_RTL_VALIDATED"
+    assert (out / "case" / "functional" / "golden.json").is_file()
+    assert (out / "case" / "functional" / "rtl.json").is_file()
+
+
+def test_functional_adapter_classifies_reference_golden_and_rtl_failures(tmp_path: Path) -> None:
+    out = prepare_functional_manifest(tmp_path)
+    native_mismatch = validate_case(
+        functional_spec(native_multiplier=3), functional_result(), tmp_path, out, 5
+    )
+    assert native_mismatch.code == "FUNCTIONAL_NATIVE_MISMATCH"
+
+    golden_mismatch = validate_case(
+        functional_spec(golden_multiplier=3), functional_result(), tmp_path, out, 5
+    )
+    assert golden_mismatch.code == "FUNCTIONAL_GOLDEN_MISMATCH"
+
+    rtl_mismatch = validate_case(
+        functional_spec(rtl_multiplier=3), functional_result(), tmp_path, out, 5
+    )
+    assert rtl_mismatch.code == "FUNCTIONAL_RTL_MISMATCH"
+
+    failed = functional_spec()
+    commands = failed["commands"]
+    assert isinstance(commands, dict)
+    commands["native"] = [sys.executable, "-c", "raise SystemExit(3)", "{input}", "{native}"]
+    command_failure = validate_case(failed, functional_result(), tmp_path, out, 5)
+    assert command_failure.code == "FUNCTIONAL_COMMAND_FAILED"
+
+
+def test_functional_adapter_rejects_missing_manifest_and_synthetic_result(tmp_path: Path) -> None:
+    out = tmp_path / "out"
+    missing_manifest = validate_case(functional_spec(), functional_result(), tmp_path, out, 5)
+    assert missing_manifest.code == "FUNCTIONAL_MANIFEST_MISSING"
+
+    out = prepare_functional_manifest(tmp_path)
+    synthetic = functional_result()
+    synthetic["synthetic_invocation"] = True
+    validation = validate_case(functional_spec(), synthetic, tmp_path, out, 5)
+    assert validation.code == "FUNCTIONAL_SYNTHETIC_INVOCATION_FORBIDDEN"
+
+
+def test_functional_timeout_stays_distinct_and_subset_ignores_other_sources(tmp_path: Path) -> None:
+    out = prepare_functional_manifest(tmp_path)
+    spec = functional_spec()
+    commands = spec["commands"]
+    assert isinstance(commands, dict)
+    commands["native"] = [
+        sys.executable,
+        "-c",
+        "import time; time.sleep(1)",
+        "{input}",
+        "{native}",
+    ]
+    result = {
+        **functional_result(),
+        "status": "PASS",
+        "tier": "MANIFEST_COMPLETE",
+    }
+    failures = apply_functional_cases([result], {spec["id"]: spec}, tmp_path, out, 0)
+    assert failures
+    assert result["category"] == "TIMEOUT"
+    assert result["owner"] == "HARNESS"
+
+    cases = {
+        "kernels/a/a.c::kernel::loop": {},
+        "kernels/b/b.c::kernel::loop": {},
+    }
+    assert set(active_functional_cases(cases, {"kernels/a/a.c"}, True)) == {
+        "kernels/a/a.c::kernel::loop"
+    }
+    assert active_functional_cases(cases, {"kernels/a/a.c"}, False) == cases
+
+
+def test_stage_records_include_functional_duration() -> None:
+    result = {
+        "terminal_stage": "S16_OPTIONAL_FUNCTIONAL_RTL",
+        "status": "PASS",
+        "diagnostic_code": "FUNCTIONAL_RTL_VALIDATED",
+        "duration_ms": {"functional": 17},
+    }
+    complete_stage_records(result)
+    functional = next(stage for stage in result["stages"] if stage["stage"] == "S16_OPTIONAL_FUNCTIONAL_RTL")
+    assert functional["status"] == "PASS"
+    assert functional["duration_ms"] == 17
+
+
+def test_t019_workflows_run_feature_full_audit_and_hardware_regression() -> None:
+    audit = (ROOT / ".github/workflows/cgra-bench-audit.yml").read_text()
+    hardware = (ROOT / ".github/workflows/hardware-regression.yml").read_text()
+    assert "compiler/cgra-bench-audit-v0" in audit
+    assert "make cgra-bench-audit" in audit
+    assert ".unknown_count == 0" in audit
+    assert ".timeout_count == 0" in audit
+    assert "compiler/cgra-bench-audit-v0" in hardware
+    assert "tools/" in hardware
+    assert r"\.github/workflows/.*\.yml" in hardware

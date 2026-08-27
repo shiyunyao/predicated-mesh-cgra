@@ -65,6 +65,8 @@ def complete_stage_records(result: dict[str, Any]) -> None:
             duration = durations.get("loop_selection")
         elif stage == "S4_FRONTEND_LOWER":
             duration = durations.get("frontend")
+        elif stage == "S16_OPTIONAL_FUNCTIONAL_RTL":
+            duration = durations.get("functional")
         elif stage == terminal and terminal_index is not None and terminal_index >= 7:
             duration = durations.get("abi_backend")
         record = {

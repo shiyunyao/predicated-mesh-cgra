@@ -18,6 +18,7 @@ try:
     from .build_llvm import build
     from .classify import classify
     from .evidence import STAGES, complete_stage_records, write_case_evidence
+    from .functional import FunctionalCaseError, build_kernel_invocation, load_cases, validate_case
     from .inventory import PIN, inventory
     from .invocation import InvocationSynthesisError, synthesize_invocation
     from .report import report
@@ -26,6 +27,7 @@ except ImportError:  # pragma: no cover - direct script execution
     from build_llvm import build
     from classify import classify
     from evidence import STAGES, complete_stage_records, write_case_evidence
+    from functional import FunctionalCaseError, build_kernel_invocation, load_cases, validate_case
     from inventory import PIN, inventory
     from invocation import InvocationSynthesisError, synthesize_invocation
     from report import report
@@ -156,7 +158,9 @@ def backend_observation(artifact_dir: pathlib.Path) -> dict[str, Any]:
     }
 
 
-def run_case(case: dict[str, Any], root: pathlib.Path, corpus: pathlib.Path, out: pathlib.Path, target: pathlib.Path, frontend_bin: pathlib.Path, compile_bin: pathlib.Path, timeout: int) -> list[dict[str, Any]]:
+def run_case(case: dict[str, Any], root: pathlib.Path, corpus: pathlib.Path, out: pathlib.Path,
+             target: pathlib.Path, frontend_bin: pathlib.Path, compile_bin: pathlib.Path,
+             timeout: int, functional_cases: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
     if not case.get("enabled", True):
         return [{"id": case["id"], "kernel": case["kernel"], "source": case["source"], "loop_header": None, "tier": "DISCOVERED", "terminal_stage": "S0_CORPUS_DISCOVERY", "status": "EXCLUDED", "stages": [{"stage": "S0_CORPUS_DISCOVERY", "status": "EXCLUDED"}], "category": "CORPUS", "owner": "HARNESS", "diagnostic_code": "EXPLICIT_EXCLUSION", "message": case.get("exclusion", "explicitly excluded"), "excluded": True}]
     source = corpus / case["source"]
@@ -221,6 +225,7 @@ def run_case(case: dict[str, Any], root: pathlib.Path, corpus: pathlib.Path, out
     for loop in loops:
         loop_case = dict(case)
         loop_case["id"] = f"{case['source']}::{loop['function']}::{loop['header']}"
+        functional_spec = functional_cases.get(loop_case["id"])
         loop_out = source_out / "loops" / f"{loop['function']}__{loop['header']}"
         frontend_out = loop_out / "frontend"
         frontend_out.mkdir(parents=True, exist_ok=True)
@@ -232,7 +237,10 @@ def run_case(case: dict[str, Any], root: pathlib.Path, corpus: pathlib.Path, out
             "function": loop["function"], "loop_header": loop["header"],
             "feature": loop.get("features", {}), "loop": loop,
             "duration_ms": {"llvm_build": source_result.get("duration_ms"), "loop_selection": duration, "frontend": lower_duration},
-            "synthetic_invocation": True, "status": "FAIL",
+            "synthetic_invocation": functional_spec is None,
+            "functional_required": functional_spec is not None,
+            "functional_adapter": functional_spec.get("adapter") if functional_spec else None,
+            "status": "FAIL",
             "artifact_directory": loop_out.relative_to(out).as_posix(),
             "source_artifact_directory": source_out.relative_to(out).as_posix(),
             "command": lower_command,
@@ -275,13 +283,17 @@ def run_case(case: dict[str, Any], root: pathlib.Path, corpus: pathlib.Path, out
         }
         try:
             target_spec = read_json(target)
-            invocation = synthesize_invocation(
-                dfg,
-                int(loop.get("static_trip_count") or 4),
-                memory_analysis,
-                int(target_spec.get("memory", {}).get("depth", 0)) or None,
+            invocation = (
+                build_kernel_invocation(functional_spec)
+                if functional_spec
+                else synthesize_invocation(
+                    dfg,
+                    int(loop.get("static_trip_count") or 4),
+                    memory_analysis,
+                    int(target_spec.get("memory", {}).get("depth", 0)) or None,
+                )
             )
-        except InvocationSynthesisError as error:
+        except (InvocationSynthesisError, FunctionalCaseError) as error:
             results.append({**base, "tier": "FRONTEND_DFG", "terminal_stage": "S6_INVOCATION_SYNTHESIS", "message": str(error), "stdout": "", "stderr": "", **classify("S6_INVOCATION_SYNTHESIS", str(error))})
             continue
         write_json(loop_out / "invocation.json", invocation)
@@ -327,6 +339,65 @@ def run_case(case: dict[str, Any], root: pathlib.Path, corpus: pathlib.Path, out
     return results
 
 
+def apply_functional_cases(results: list[dict[str, Any]], functional_cases: dict[str, dict[str, Any]],
+                           root: pathlib.Path, out: pathlib.Path, timeout: int) -> list[str]:
+    """Run S16 only for declared, non-synthetic cases that reached a manifest."""
+    result_by_id = {result["id"]: result for result in results}
+    missing = sorted(set(functional_cases) - set(result_by_id))
+    if missing:
+        raise FunctionalCaseError(
+            "FUNCTIONAL_CASE_NOT_DISCOVERED",
+            f"functional cases did not appear in this audit: {', '.join(missing)}",
+        )
+    failures = []
+    for case_id, spec in functional_cases.items():
+        result = result_by_id[case_id]
+        if result.get("status") != "PASS":
+            failures.append(f"{case_id}: did not reach S15 ({result.get('diagnostic_code')})")
+            continue
+        validation = validate_case(spec, result, root, out, timeout)
+        result.setdefault("duration_ms", {})["functional"] = validation.duration_ms
+        result["terminal_stage"] = "S16_OPTIONAL_FUNCTIONAL_RTL"
+        result["functional"] = {
+            "adapter": spec["adapter"],
+            "code": validation.code,
+            "message": validation.message,
+        }
+        if validation.ok:
+            result.update({
+                "tier": "FUNCTIONAL_RTL_VALIDATED",
+                "status": "PASS",
+                "category": "RTL",
+                "owner": "HARDWARE",
+                "diagnostic_code": validation.code,
+                "message": validation.message,
+            })
+            continue
+        timeout_failure = validation.code == "FUNCTIONAL_TIMEOUT"
+        result.update({
+            "tier": "MANIFEST_COMPLETE",
+            "status": "FAIL",
+            "category": "TIMEOUT" if timeout_failure else "RTL",
+            "owner": "HARNESS" if timeout_failure else "HARDWARE",
+            "diagnostic_code": validation.code,
+            "message": validation.message,
+        })
+        failures.append(f"{case_id}: {validation.code}")
+    return failures
+
+
+def active_functional_cases(functional_cases: dict[str, dict[str, Any]], case_sources: set[str],
+                            allow_subset: bool) -> dict[str, dict[str, Any]]:
+    """Select functional cases relevant to this corpus view."""
+    if not allow_subset:
+        return functional_cases
+    return {
+        case_id: spec
+        for case_id, spec in functional_cases.items()
+        if case_id.partition("::")[0] in case_sources
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--corpus", type=pathlib.Path, default=pathlib.Path("third_party/CGRA-Bench"))
@@ -335,6 +406,11 @@ def main() -> int:
     parser.add_argument("--out", type=pathlib.Path, default=pathlib.Path("build/cgra-bench/run"))
     parser.add_argument("--frontend-bin", type=pathlib.Path, default=pathlib.Path("build/compiler-llvm/bin/cgra-llvm-loop-lower"))
     parser.add_argument("--compile-kernel-bin", type=pathlib.Path, default=pathlib.Path("build/compiler/bin/cgrac-compile-kernel"))
+    parser.add_argument(
+        "--functional-cases",
+        type=pathlib.Path,
+        default=pathlib.Path("benchmarks/cgra-bench/functional_cases.v1.json"),
+    )
     parser.add_argument("--timeout", type=int, default=120)
     parser.add_argument("--all", action="store_true")
     parser.add_argument("--allow-subset", action="store_true", help="allow a smoke manifest to cover a corpus subset")
@@ -346,6 +422,7 @@ def main() -> int:
     target = (root / args.target).resolve()
     frontend_bin = (root / args.frontend_bin).resolve()
     compile_bin = (root / args.compile_kernel_bin).resolve()
+    functional_cases_path = (root / args.functional_cases).resolve()
     try:
         if not args.all:
             parser.error("--all is required for an audit run")
@@ -361,6 +438,7 @@ def main() -> int:
         if case_manifest.get("schema") != "cgra.cgra_bench.cases.v1":
             raise ValueError("cases manifest schema mismatch")
         cases = case_manifest.get("cases", [])
+        functional_cases = load_cases(functional_cases_path)
         expected_sources = {item["path"] for item in lock.get("sources", [])}
         case_sources = {item.get("source") for item in cases}
         if not case_sources.issubset(expected_sources):
@@ -369,6 +447,7 @@ def main() -> int:
         if not args.allow_subset and case_sources != expected_sources:
             missing = sorted(expected_sources - case_sources)
             raise ValueError(f"cases manifest does not cover corpus sources (missing={missing})")
+        functional_cases = active_functional_cases(functional_cases, case_sources, args.allow_subset)
         for case in cases:
             source_name = case.get("source", "")
             source_path = pathlib.PurePosixPath(source_name)
@@ -415,7 +494,19 @@ def main() -> int:
         results: list[dict[str, Any]] = []
         for case in cases:
             try:
-                results.extend(run_case(case, root, corpus, out, target, frontend_bin, compile_bin, args.timeout))
+                results.extend(
+                    run_case(
+                        case,
+                        root,
+                        corpus,
+                        out,
+                        target,
+                        frontend_bin,
+                        compile_bin,
+                        args.timeout,
+                        functional_cases,
+                    )
+                )
             except Exception as error:  # every case must have a terminal result
                 result = result_for_failure(case, "INTERNAL", f"unclassified harness exception: {error}")
                 case_dir = out / "cases" / case["id"].replace("/", "_").replace("::", "__")
@@ -425,6 +516,9 @@ def main() -> int:
                     "command": [],
                 })
                 results.append(result)
+        functional_failures = apply_functional_cases(
+            results, functional_cases, root, out, args.timeout
+        )
         for result in results:
             result["audit_profile"] = {
                 "name": "baseline",
@@ -437,11 +531,14 @@ def main() -> int:
                 raise ValueError(f"incomplete stage record for {result['id']}")
         (out / "results.jsonl").write_text("".join(json.dumps(item, sort_keys=True) + "\n" for item in results), encoding="utf-8")
         summary = report(out, report_corpus, results)
-        if summary["unknown_count"] or summary["timeout_count"] or not summary["reconciliation"]["ok"]:
+        if (summary["unknown_count"] or summary["timeout_count"]
+                or not summary["reconciliation"]["ok"] or functional_failures):
+            if functional_failures:
+                print("functional validation failures:\n" + "\n".join(functional_failures), file=sys.stderr)
             return 1
         print(json.dumps(summary, indent=2, sort_keys=True))
         return 0
-    except (OSError, ValueError, subprocess.CalledProcessError, json.JSONDecodeError) as error:
+    except (OSError, ValueError, subprocess.CalledProcessError, json.JSONDecodeError, FunctionalCaseError) as error:
         print(f"cgra-bench audit: {error}", file=sys.stderr)
         return 2
 
