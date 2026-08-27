@@ -1,5 +1,11 @@
 {
   "cases": [],
+  "note": "Generated from a completed audit. An empty list means that no case reached L4 MAPPED in that exact environment.",
   "schema": "cgra.cgra_bench.known_supported.v1",
-  "note": "Populated after the first full audit with cases reaching L4 MAPPED or higher."
+  "source": {
+    "corpus_sha": "6729aaf225d0320e4e0d3b419e20483069a5a69b",
+    "profile": "baseline",
+    "project_sha": "3865df0e80e3b681cd1d538d42e610f732443764",
+    "target_sha256": "eedcb60d6e1ef3f452b9b559564931d565172671e62fec1423ef017e5186369d"
+  }
 }
