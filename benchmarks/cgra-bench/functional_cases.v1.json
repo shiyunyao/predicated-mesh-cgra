@@ -1,0 +1,5 @@
+{
+  "cases": [],
+  "schema": "cgra.cgra_bench.functional_cases.v1",
+  "note": "No upstream case has a checked-in native-input/scratchpad adapter yet; structural audit remains complete."
+}

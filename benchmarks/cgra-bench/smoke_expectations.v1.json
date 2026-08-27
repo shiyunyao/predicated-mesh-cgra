@@ -1,0 +1,15 @@
+{
+  "cases": [
+    {
+      "diagnostic_codes": ["LLVM_FRONTEND_UNSUPPORTED_LOOP_SHAPE"],
+      "id": "kernels/fir/fir_int.cpp::_Z6kernelPiS_S_::for.cond",
+      "terminal_stage": "S4_FRONTEND_LOWER"
+    },
+    {
+      "diagnostic_codes": ["LLVM_FRONTEND_UNSUPPORTED_LOOP_SHAPE"],
+      "id": "kernels/spmv/spmv.c::kernel::for.cond",
+      "terminal_stage": "S4_FRONTEND_LOWER"
+    }
+  ],
+  "schema": "cgra.cgra_bench.smoke_expectations.v1"
+}

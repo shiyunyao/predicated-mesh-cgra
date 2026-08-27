@@ -1,0 +1,83 @@
+{
+  "cases": [
+    {
+      "compile_flags": [],
+      "defines": [],
+      "enabled": true,
+      "exclusion": null,
+      "function": null,
+      "id": "kernels/fir/fir_int.cpp::smoke",
+      "include_dirs": [],
+      "kernel": "fir",
+      "language": "c++",
+      "loop_header": null,
+      "source": "kernels/fir/fir_int.cpp"
+    },
+    {
+      "compile_flags": [],
+      "defines": [],
+      "enabled": true,
+      "exclusion": null,
+      "function": null,
+      "id": "kernels/gemm/gemm_int.c::smoke",
+      "include_dirs": [],
+      "kernel": "gemm",
+      "language": "c",
+      "loop_header": null,
+      "source": "kernels/gemm/gemm_int.c"
+    },
+    {
+      "compile_flags": [],
+      "defines": [],
+      "enabled": true,
+      "exclusion": null,
+      "function": null,
+      "id": "kernels/dtw/dtw.cpp::smoke",
+      "include_dirs": [],
+      "kernel": "dtw",
+      "language": "c++",
+      "loop_header": null,
+      "source": "kernels/dtw/dtw.cpp"
+    },
+    {
+      "compile_flags": [],
+      "defines": [],
+      "enabled": true,
+      "exclusion": null,
+      "function": null,
+      "id": "kernels/relu/relu_int.cpp::smoke",
+      "include_dirs": [],
+      "kernel": "relu",
+      "language": "c++",
+      "loop_header": null,
+      "source": "kernels/relu/relu_int.cpp"
+    },
+    {
+      "compile_flags": [],
+      "defines": [],
+      "enabled": true,
+      "exclusion": null,
+      "function": null,
+      "id": "kernels/spmv/spmv.c::smoke",
+      "include_dirs": [],
+      "kernel": "spmv",
+      "language": "c",
+      "loop_header": null,
+      "source": "kernels/spmv/spmv.c"
+    },
+    {
+      "compile_flags": [],
+      "defines": [],
+      "enabled": true,
+      "exclusion": null,
+      "function": null,
+      "id": "kernels/conv/conv.c::smoke",
+      "include_dirs": [],
+      "kernel": "conv",
+      "language": "c",
+      "loop_header": null,
+      "source": "kernels/conv/conv.c"
+    }
+  ],
+  "schema": "cgra.cgra_bench.cases.v1"
+}

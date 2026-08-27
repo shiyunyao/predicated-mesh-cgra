@@ -99,8 +99,14 @@ LLVM_FRONTEND_E2E_DIR ?= build/llvm-frontend-e2e
 LLVM_FRONTEND_CLANG ?= clang-14
 LLVM_FRONTEND_OPT ?= opt-14
 LLVM_CMAKE_ARG := $(if $(LLVM_DIR),-DLLVM_DIR=$(LLVM_DIR),)
+CGRA_BENCH_CORPUS ?= third_party/CGRA-Bench
+CGRA_BENCH_CASES ?= benchmarks/cgra-bench/cases.v1.json
+CGRA_BENCH_OUT ?= build/cgra-bench/run
+CGRA_BENCH_FRONTEND_BUILD ?= build/compiler-llvm
+CGRA_BENCH_FRONTEND_BIN := $(CGRA_BENCH_FRONTEND_BUILD)/bin/cgra-llvm-loop-lower
+CGRA_BENCH_COMPILE_BIN := $(CGRA_BENCH_FRONTEND_BUILD)/bin/cgrac-compile-kernel
 
-.PHONY: help check-test lint build test regression shared-scratchpad-tests shared-scratchpad-negative-tests program program-prepare program-build program-run program-check compiler-e2e kernel-abi-e2e kernel-abi-scalar-e2e kernel-abi-base-load-e2e kernel-abi-recurrence-e2e kernel-abi-tripcount-e2e llvm-frontend-e2e llvm-frontend-c-smoke llvm-recurrence-e2e llvm-predication-e2e llvm-memory-e2e modulo-loop modulo-loop-prepare modulo-loop-check modulo-loop-tripcount-tests modulo-loop-zero-boundary-test modulo-loop-reuse-test modulo-loop-assert-tests synth-fetch-asap7 synth-memory-shape synth-area synth-timing synth-power synth-power-feasibility synth-fn-cacti clean
+.PHONY: help check-test lint build test regression shared-scratchpad-tests shared-scratchpad-negative-tests program program-prepare program-build program-run program-check compiler-e2e kernel-abi-e2e kernel-abi-scalar-e2e kernel-abi-base-load-e2e kernel-abi-recurrence-e2e kernel-abi-tripcount-e2e llvm-frontend-e2e llvm-frontend-c-smoke llvm-recurrence-e2e llvm-predication-e2e llvm-memory-e2e cgra-bench-inventory cgra-bench-smoke cgra-bench-audit cgra-bench-freeze-supported modulo-loop modulo-loop-prepare modulo-loop-check modulo-loop-tripcount-tests modulo-loop-zero-boundary-test modulo-loop-reuse-test modulo-loop-assert-tests synth-fetch-asap7 synth-memory-shape synth-area synth-timing synth-power synth-power-feasibility synth-fn-cacti clean
 
 help:
 	@echo "make test TEST=<name>  Build and run one testbench"
@@ -112,6 +118,10 @@ help:
 	@echo "make llvm-recurrence-e2e  Lower LLVM PHI recurrences through Generic DFG, Kernel ABI, and RTL"
 	@echo "make llvm-predication-e2e  Lower LLVM if-conversion predicates through Generic DFG and verifier"
 	@echo "make llvm-memory-e2e  Lower affine LLVM memory through Generic DFG, Kernel ABI, and RTL"
+	@echo "make cgra-bench-inventory  Rebuild the pinned CGRA-Bench corpus lock and case manifest"
+	@echo "make cgra-bench-smoke  Run the fixed T019 smoke corpus audit"
+	@echo "make cgra-bench-audit  Run the complete pinned CGRA-Bench kernels audit"
+	@echo "make cgra-bench-freeze-supported  Freeze L4 mapped cases from one completed full audit"
 	@echo "make modulo-loop        Replay the external modulo-loop manifest and run loop coverage"
 	@echo "make synth-area         Map 2x2/4x4 logic and report ASAP7 cell area"
 	@echo "make synth-timing       Estimate 2x2/4x4 logic timing at 100 MHz"
@@ -360,6 +370,26 @@ llvm-memory-e2e:
 	test "$$(sha256sum "$$case_dir/raw_trip1/program_manifest.json" | cut -d' ' -f1)" != "$$(sha256sum "$$case_dir/raw_trip7/program_manifest.json" | cut -d' ' -f1)"; \
 	jq -e '.dependences | length == 0' "$$case_dir/vector_trip4/frontend/02_memory_analysis.json" >/dev/null; \
 	jq -e 'any(.dependences[]; .kind == "RAW" and .distance == 1)' "$$case_dir/raw_trip4/frontend/02_memory_analysis.json" >/dev/null
+
+cgra-bench-inventory:
+	python3 tools/cgra_bench/inventory.py --corpus "$(CGRA_BENCH_CORPUS)" --out benchmarks/cgra-bench/corpus.lock.json --cases-out "$(CGRA_BENCH_CASES)"
+
+cgra-bench-smoke: cgra-bench-inventory
+	@set -eu; \
+	cmake -S compiler -B "$(CGRA_BENCH_FRONTEND_BUILD)" -DCGRA_BUILD_TESTS=OFF -DCGRA_WARNINGS_AS_ERRORS=ON $(LLVM_CMAKE_ARG); \
+	cmake --build "$(CGRA_BENCH_FRONTEND_BUILD)" --target cgra-llvm-loop-lower cgrac-compile-kernel --parallel; \
+	python3 tools/cgra_bench/run.py --corpus "$(CGRA_BENCH_CORPUS)" --cases benchmarks/cgra-bench/smoke_cases.v1.json --target target/cgra_v3.json --frontend-bin "$(CGRA_BENCH_FRONTEND_BIN)" --compile-kernel-bin "$(CGRA_BENCH_COMPILE_BIN)" --out "$(CGRA_BENCH_OUT)/smoke" --all --allow-subset; \
+	python3 tools/cgra_bench/check_baseline.py --run "$(CGRA_BENCH_OUT)/smoke" --expectations benchmarks/cgra-bench/smoke_expectations.v1.json
+
+cgra-bench-audit: cgra-bench-inventory
+	@set -eu; \
+	cmake -S compiler -B "$(CGRA_BENCH_FRONTEND_BUILD)" -DCGRA_BUILD_TESTS=OFF -DCGRA_WARNINGS_AS_ERRORS=ON $(LLVM_CMAKE_ARG); \
+	cmake --build "$(CGRA_BENCH_FRONTEND_BUILD)" --target cgra-llvm-loop-lower cgrac-compile-kernel --parallel; \
+	python3 tools/cgra_bench/run.py --corpus "$(CGRA_BENCH_CORPUS)" --cases "$(CGRA_BENCH_CASES)" --target target/cgra_v3.json --frontend-bin "$(CGRA_BENCH_FRONTEND_BIN)" --compile-kernel-bin "$(CGRA_BENCH_COMPILE_BIN)" --out "$(CGRA_BENCH_OUT)/full" --all; \
+	python3 tools/cgra_bench/check_baseline.py --run "$(CGRA_BENCH_OUT)/full"
+
+cgra-bench-freeze-supported:
+	python3 tools/cgra_bench/freeze_supported.py --run "$(CGRA_BENCH_OUT)/full" --out benchmarks/cgra-bench/known_supported.v1.json
 
 kernel-abi-scalar-e2e:
 	cmake -S compiler -B "$(COMPILER_BUILD_DIR)" -DCGRA_BUILD_TESTS=OFF -DCGRA_WARNINGS_AS_ERRORS=ON
