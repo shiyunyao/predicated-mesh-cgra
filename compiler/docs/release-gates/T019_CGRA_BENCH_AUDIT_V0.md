@@ -21,6 +21,10 @@ LLVM features before lowering, and invokes the production frontend and ABI
 compiler. Structural audit and optional functional validation are separate;
 synthetic invocations are never called functional passes. Every attempted
 source/loop has a terminal stage, category, diagnostic code, and owner.
+The runner emits all S0-S16 stage records, reserved metrics and failure
+reproducer schemas, per-loop artifact hashes, and exact toolchain version
+strings. Source and discovered-loop reconciliation must both pass; timeout is
+a hard audit failure.
 
 ## Evidence matrix
 
@@ -57,8 +61,9 @@ python3 tools/cgra_bench/run.py --corpus third_party/CGRA-Bench \
 ```
 
 This run accounted for 15 kernel directories, 34 source translation units, and
-17 candidate loops as 40 terminal results. Reconciliation passed with zero
-missing/unexpected sources and zero UNKNOWN results. The local host lacks the
+17 candidate loops as 40 terminal results. Source and loop reconciliation
+both passed with zero missing/unexpected cases, zero timeout, and zero UNKNOWN
+results. The local host lacks the
 32-bit libc headers required by some upstream units, so those units are
 explicitly classified as `BUILD/SOURCE_BUILD_FAILED`; they are not silently
 reprofiled. Hosted workflow evidence remains required for the release gate.
@@ -74,4 +79,4 @@ edited, removed, or silently excluded to improve the measured rate.
 
 **T-COMP-019: OPEN until the exact feature, merge-ref, and merged-main evidence above is filled and reconciliation reports zero UNKNOWN results.**
 
-**Next task: T-COMP-020.**
+**T-COMP-020 remains blocked until this release gate is closed.**

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import pathlib
 from typing import Any
 
@@ -15,6 +16,14 @@ def write_json(path: pathlib.Path, value: Any) -> None:
 
 def read_json(path: pathlib.Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def sha256_file(path: pathlib.Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def source_language(path: pathlib.Path) -> str:

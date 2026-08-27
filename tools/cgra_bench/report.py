@@ -19,10 +19,21 @@ except ImportError:  # pragma: no cover - direct script execution
 TIERS = {"DISCOVERED": 0, "LLVM_BUILT": 1, "FRONTEND_DFG": 2, "TARGET_LEGAL": 3, "MAPPED": 4, "RF_COMPLETE": 5, "MANIFEST_COMPLETE": 6, "FUNCTIONAL_RTL_VALIDATED": 7}
 
 
+def target_contract_summary(opcode: str, target_operations: dict[str, Any]) -> str:
+    names = {name.upper() for name in target_operations}
+    if opcode.upper() == "ICMP":
+        return "predicate-dependent" if any(name.startswith("CMP_") for name in names) else "not-declared"
+    return "declared" if opcode.upper() in names else "not-declared"
+
+
 def report(out: pathlib.Path, corpus: dict[str, Any], results: list[dict[str, Any]]) -> dict[str, Any]:
     terminal = Counter(item.get("category", "INTERNAL") for item in results)
     tiers = Counter(item.get("tier", "DISCOVERED") for item in results)
-    first_blockers = Counter(item.get("diagnostic_code", "UNCLASSIFIED_RESULT") for item in results if item.get("tier") != "MANIFEST_COMPLETE")
+    first_blockers = Counter(
+        item.get("diagnostic_code", "UNCLASSIFIED_RESULT")
+        for item in results
+        if item.get("status") not in {"PASS", "EXCLUDED"}
+    )
     features = Counter()
     feature_types = Counter()
     feature_predicates = Counter()
@@ -47,9 +58,29 @@ def report(out: pathlib.Path, corpus: dict[str, Any], results: list[dict[str, An
             target_path = pathlib.Path(environment.get("target", ""))
             if target_path.exists():
                 target_operations = read_json(target_path).get("operations", {})
-        except (OSError, ValueError, json.JSONDecodeError):
-            target_operations = {}
-    candidate_loop_count = sum(item.get("loop_header") is not None for item in results)
+        except (OSError, ValueError, json.JSONDecodeError) as error:
+            raise ValueError(f"cannot read target contract for ISA coverage: {error}") from error
+    expected_loops: set[tuple[str, str, str]] = set()
+    for inventory_path in out.glob("cases/*/loop_inventory.json"):
+        try:
+            loop_inventory = read_json(inventory_path)
+            if loop_inventory.get("schema") != "cgra.cgra_bench.loop_inventory.v1":
+                raise ValueError(f"loop inventory schema mismatch: {inventory_path}")
+            source = loop_inventory["source"]
+            expected_loops.update(
+                (source, loop["function"], loop["header"])
+                for loop in loop_inventory.get("loops", [])
+            )
+        except (OSError, KeyError, ValueError, json.JSONDecodeError) as error:
+            raise ValueError(f"invalid loop inventory {inventory_path}: {error}") from error
+    represented_loops = {
+        (item["source"], item["function"], item["loop_header"])
+        for item in results
+        if item.get("loop_header") is not None and item.get("function")
+    }
+    missing_loops = sorted("::".join(loop) for loop in expected_loops - represented_loops)
+    unexpected_loops = sorted("::".join(loop) for loop in represented_loops - expected_loops)
+    candidate_loop_count = len(expected_loops)
     represented_sources = {item.get("source") for item in results if item.get("source")}
     expected_sources = {
         item.get("path") for item in corpus.get("sources", []) if item.get("enabled", True)
@@ -68,6 +99,14 @@ def report(out: pathlib.Path, corpus: dict[str, Any], results: list[dict[str, An
         for item in results
         if isinstance(item.get("backend"), dict) and item.get("backend", {}).get("stats")
     ]
+    backend_totals: Counter[str] = Counter()
+    for stats in backend_stats:
+        backend_totals.update({key: value for key, value in stats.items() if isinstance(value, int)})
+    dfg_edge_kinds: Counter[str] = Counter()
+    dfg_distances: Counter[str] = Counter()
+    for item in results:
+        dfg_edge_kinds.update(item.get("dfg", {}).get("edge_kind_histogram", {}))
+        dfg_distances.update(item.get("dfg", {}).get("distance_histogram", {}))
     summary = {
         "schema": "cgra.cgra_bench.summary.v1",
         "denominator": {
@@ -80,28 +119,51 @@ def report(out: pathlib.Path, corpus: dict[str, Any], results: list[dict[str, An
         "reconciliation": {
             "expected_enabled_sources": len(expected_sources),
             "represented_sources": source_count,
+            "expected_candidate_loops": len(expected_loops),
+            "represented_candidate_loops": len(represented_loops),
             "excluded_sources": len(excluded_sources),
             "missing_sources": missing_sources,
             "unexpected_sources": unexpected_sources,
-            "ok": not missing_sources and not unexpected_sources,
+            "missing_loop_cases": missing_loops,
+            "unexpected_loop_cases": unexpected_loops,
+            "ok": not missing_sources and not unexpected_sources and not missing_loops and not unexpected_loops,
         },
         "tiers": dict(sorted(tiers.items())),
         "terminal_categories": dict(sorted(terminal.items())),
         "unknown_count": sum(1 for item in results if item.get("category") == "INTERNAL" or item.get("owner") == "UNKNOWN"),
+        "timeout_count": sum(1 for item in results if item.get("category") == "TIMEOUT"),
         "first_blocker_distribution": dict(sorted(first_blockers.items())),
         "all_observed_opcodes": dict(sorted(features.items())),
         "all_observed_types": dict(sorted(feature_types.items())),
         "all_observed_icmp_predicates": dict(sorted(feature_predicates.items())),
         "all_observed_feature_counts": dict(sorted(feature_counts.items())),
         "generic_opcode_histogram": dict(sorted(isa.items())),
+        "generic_edge_kind_histogram": dict(sorted(dfg_edge_kinds.items())),
+        "generic_distance_histogram": dict(sorted(dfg_distances.items(), key=lambda item: int(item[0]))),
         "backend_metrics": {
             "cases_with_stats": len(backend_stats),
             "mii": [stats.get("mii") for stats in backend_stats if stats.get("mii") is not None],
+            "resource_mii": [stats.get("resource_mii") for stats in backend_stats if stats.get("resource_mii") is not None],
+            "recurrence_mii": [stats.get("recurrence_mii") for stats in backend_stats if stats.get("recurrence_mii") is not None],
+            "recurrence_witnesses": [stats.get("mii_witness") for stats in backend_stats if stats.get("mii_witness") is not None],
             "mapped_ii": [stats.get("mapped_ii") for stats in backend_stats if stats.get("mapped_ii") is not None],
+            "ii_attempts": sum(stats.get("ii_attempts", 0) for stats in backend_stats),
+            "backtracks": sum(stats.get("backtracks", 0) for stats in backend_stats),
+            "route_search_calls": sum(stats.get("route_search_calls", 0) for stats in backend_stats),
+            "route_no_paths": sum(stats.get("route_no_paths", 0) for stats in backend_stats),
+            "route_budget_exceeded": sum(stats.get("route_budget_exceeded", 0) for stats in backend_stats),
+            "successful_placements": sum(stats.get("successful_placements", 0) for stats in backend_stats),
+            "rejected_placements": sum(stats.get("rejected_placements", 0) for stats in backend_stats),
             "node_candidate_attempts": sum(stats.get("node_candidate_attempts", 0) for stats in backend_stats),
             "route_state_expansions": sum(stats.get("route_state_expansions", 0) for stats in backend_stats),
             "completed_modulo_mappings": sum(stats.get("completed_modulo_mappings", 0) for stats in backend_stats),
             "rf_rejected": sum(stats.get("rf_rejected", 0) for stats in backend_stats),
+            "totals": dict(sorted(backend_totals.items())),
+            "per_case": [
+                {"id": item["id"], **item["backend"]["stats"]}
+                for item in results
+                if isinstance(item.get("backend"), dict) and item.get("backend", {}).get("stats")
+            ],
         },
         "kernel_rollup": {
             kernel: {
@@ -122,16 +184,28 @@ def report(out: pathlib.Path, corpus: dict[str, Any], results: list[dict[str, An
         writer = csv.writer(stream)
         writer.writerow(["metric", "value"])
         writer.writerows([("candidate_loops", candidate_loop_count), ("terminal_results", len(results)), *sorted(tiers.items()), *sorted(terminal.items())])
-    lines = ["# CGRA-Bench Audit Summary", "", f"- Source units represented: {source_count}/{len(expected_sources)}", f"- Candidate loops: {candidate_loop_count}", f"- Terminal results: {len(results)}", f"- UNKNOWN/unclassified: {summary['unknown_count']}", f"- Reconciliation: {'PASS' if summary['reconciliation']['ok'] else 'FAIL'}", "", "## Tiers", ""]
+    lines = ["# CGRA-Bench Audit Summary", "", f"- Source units represented: {source_count}/{len(expected_sources)}", f"- Candidate loops represented: {len(represented_loops)}/{candidate_loop_count}", f"- Terminal results: {len(results)}", f"- UNKNOWN/unclassified: {summary['unknown_count']}", f"- Timeouts: {summary['timeout_count']}", f"- Reconciliation: {'PASS' if summary['reconciliation']['ok'] else 'FAIL'}", "", "## Tiers", ""]
     lines.extend(f"- {key}: {value}" for key, value in sorted(tiers.items()))
     lines.extend(["", "## First blockers", ""])
     lines.extend(f"- {key}: {value}" for key, value in sorted(first_blockers.items()))
     (out / "summary.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
-    frontend_rows = [(opcode, count) for opcode, count in sorted(features.items())]
-    write_json(out / "frontend_coverage.json", {"schema": "cgra.cgra_bench.frontend_coverage.v1", "loop_count": candidate_loop_count, "opcode_histogram": dict(frontend_rows), "type_histogram": dict(sorted(feature_types.items())), "icmp_predicate_histogram": dict(sorted(feature_predicates.items())), "feature_counts": dict(sorted(feature_counts.items())), "first_blocker_distribution": dict(sorted(first_blockers.items()))})
+    frontend_details = []
+    for opcode, count in sorted(features.items()):
+        observed = [item for item in results if item.get("feature", {}).get("opcode_histogram", {}).get(opcode, 0)]
+        succeeded = [item for item in observed if TIERS.get(item.get("tier", "DISCOVERED"), 0) >= 2]
+        frontend_details.append({
+            "construct": opcode,
+            "observed_count": count,
+            "observed_loop_count": len(observed),
+            "frontend_success_loop_count": len(succeeded),
+            "blocked_loop_count": len(observed) - len(succeeded),
+            "examples": [item["id"] for item in observed[:3]],
+        })
+    frontend_rows = [(item["construct"], item["observed_count"], item["observed_loop_count"], item["frontend_success_loop_count"], item["blocked_loop_count"]) for item in frontend_details]
+    write_json(out / "frontend_coverage.json", {"schema": "cgra.cgra_bench.frontend_coverage.v1", "loop_count": candidate_loop_count, "constructs": frontend_details, "opcode_histogram": dict(sorted(features.items())), "type_histogram": dict(sorted(feature_types.items())), "icmp_predicate_histogram": dict(sorted(feature_predicates.items())), "feature_counts": dict(sorted(feature_counts.items())), "first_blocker_distribution": dict(sorted(first_blockers.items()))})
     with (out / "frontend_coverage.csv").open("w", newline="", encoding="utf-8") as stream:
         writer = csv.writer(stream)
-        writer.writerow(["llvm_construct", "observed_count"])
+        writer.writerow(["llvm_construct", "observed_count", "observed_loops", "frontend_success_loops", "blocked_loops"])
         writer.writerows(frontend_rows)
         writer.writerow([])
         writer.writerow(["first_blocker", "count"])
@@ -142,30 +216,47 @@ def report(out: pathlib.Path, corpus: dict[str, Any], results: list[dict[str, An
     (out / "frontend_coverage.md").write_text(
         "# Frontend Coverage\n\n"
         f"Candidate loops: {candidate_loop_count}\n\n"
-        + "\n".join(f"- `{opcode}`: {count}" for opcode, count in frontend_rows)
+        + "\n".join(f"- `{opcode}`: {count} observations in {observed} loops; frontend success={success}, blocked={blocked}" for opcode, count, observed, success, blocked in frontend_rows)
         + "\n\n## First blockers\n\n"
         + "\n".join(f"- `{code}`: {count}" for code, count in sorted(first_blockers.items()))
         + "\n",
         encoding="utf-8",
     )
-    isa_rows = [
-        (opcode, count, opcode.upper() in {key.upper() for key in target_operations}, sum(1 for item in results if opcode in item.get("dfg", {}).get("opcode_histogram", {})))
-        for opcode, count in sorted(isa.items())
-    ]
-    write_json(out / "isa_coverage.json", {"schema": "cgra.cgra_bench.isa_coverage.v1", "loop_count": candidate_loop_count, "generic_opcode_histogram": dict(sorted(isa.items())), "target_operations": sorted(target_operations), "operations": [{"opcode": opcode, "observed_count": count, "target_supported": supported, "case_count": case_count} for opcode, count, supported, case_count in isa_rows]})
+    isa_details = []
+    for opcode, count in sorted(isa.items()):
+        observed = [item for item in results if opcode in item.get("dfg", {}).get("opcode_histogram", {})]
+        target_legal = [item for item in observed if TIERS.get(item.get("tier", "DISCOVERED"), 0) >= 3]
+        target_blocked = [item for item in observed if item.get("category") == "TARGET_ISA"]
+        isa_details.append({
+            "opcode": opcode,
+            "observed_count": count,
+            "case_count": len(observed),
+            "target_contract": target_contract_summary(opcode, target_operations),
+            "target_legal_case_count": len(target_legal),
+            "target_blocked_case_count": len(target_blocked),
+            "examples": [item["id"] for item in observed[:3]],
+        })
+    isa_rows = [(item["opcode"], item["observed_count"], item["case_count"], item["target_contract"], item["target_legal_case_count"], item["target_blocked_case_count"]) for item in isa_details]
+    write_json(out / "isa_coverage.json", {"schema": "cgra.cgra_bench.isa_coverage.v1", "loop_count": candidate_loop_count, "generic_opcode_histogram": dict(sorted(isa.items())), "target_operations": sorted(target_operations), "operations": isa_details})
     with (out / "isa_coverage.csv").open("w", newline="", encoding="utf-8") as stream:
         writer = csv.writer(stream)
-        writer.writerow(["generic_op", "observed_count", "case_count", "target_supported"])
+        writer.writerow(["generic_op", "observed_count", "case_count", "target_contract", "target_legal_cases", "target_blocked_cases"])
         writer.writerows(isa_rows)
     (out / "isa_coverage.md").write_text(
         "# Target ISA Coverage\n\n"
-        + "\n".join(f"- `{opcode}`: {count} observations in {case_count} cases; target_supported={supported}" for opcode, count, supported, case_count in isa_rows)
+        + "\n".join(f"- `{opcode}`: {count} observations in {case_count} cases; contract={contract}, legal={legal}, blocked={blocked}" for opcode, count, case_count, contract, legal, blocked in isa_rows)
         + "\n",
         encoding="utf-8",
     )
-    gaps = [{"diagnostic_code": code, "blocked_loops": count, "category": next((item.get("category") for item in results if item.get("diagnostic_code") == code), "INTERNAL")} for code, count in first_blockers.most_common()]
+    gaps = [{
+        "diagnostic_code": code,
+        "blocked_cases": count,
+        "blocked_loops": sum(item.get("loop_header") is not None and item.get("diagnostic_code") == code for item in results),
+        "blocked_kernels": len({item.get("kernel") for item in results if item.get("diagnostic_code") == code}),
+        "category": next((item.get("category") for item in results if item.get("diagnostic_code") == code), "INTERNAL"),
+    } for code, count in first_blockers.most_common()]
     write_json(out / "gap_ranking.json", {"schema": "cgra.cgra_bench.gap_ranking.v1", "gaps": gaps})
-    (out / "gap_ranking.md").write_text("# CGRA-Bench Gap Ranking\n\n" + "\n".join(f"- `{item['diagnostic_code']}`: {item['blocked_loops']} loops ({item['category']})" for item in gaps) + "\n", encoding="utf-8")
+    (out / "gap_ranking.md").write_text("# CGRA-Bench Gap Ranking\n\n" + "\n".join(f"- `{item['diagnostic_code']}`: {item['blocked_loops']} loops / {item['blocked_cases']} terminal cases / {item['blocked_kernels']} kernels ({item['category']})" for item in gaps) + "\n", encoding="utf-8")
     return summary
 
 

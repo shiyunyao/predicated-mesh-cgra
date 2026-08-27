@@ -19,8 +19,8 @@ RULES = [
     ("target_legalization", "TARGET_ISA", "ISA"),
     ("unsupported operation", "TARGET_ISA", "ISA"),
     ("mii", "MII", "MAPPER"),
-    ("mapping", "MAPPING_INFEASIBLE", "MAPPER"),
     ("budget", "MAPPING_BUDGET", "MAPPER"),
+    ("mapping", "MAPPING_INFEASIBLE", "MAPPER"),
     ("stage", "STAGE_SCHEDULE", "SCHEDULER"),
     ("rf", "RF", "RF"),
     ("material", "MATERIALIZATION", "LOWERING"),
@@ -33,6 +33,8 @@ def classify(stage: str, message: str, returncode: int = 1) -> dict[str, str]:
     text = f"{stage} {message}".lower()
     if returncode == 124 or "timed out" in text or "timeout" in text:
         return {"category": "TIMEOUT", "owner": "HARNESS", "diagnostic_code": "STAGE_TIMEOUT"}
+    if "mapping" in text and "verif" in text:
+        return {"category": "MAPPING_VERIFY", "owner": "MAPPER", "diagnostic_code": "MAPPING_VERIFICATION_FAILED"}
     diagnostic = re.search(r"\b(?:LLVM_FRONTEND|ABI|RFA|TARGET|MAPPING|RF|MEMORY|GENERIC|MII|STAGE|MANIFEST)_[A-Z0-9_]+\b", message)
     if diagnostic:
         code = diagnostic.group(0)

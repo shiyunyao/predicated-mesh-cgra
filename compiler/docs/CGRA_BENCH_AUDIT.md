@@ -26,6 +26,9 @@ Both commands use the production `cgra-llvm-loop-lower` and
 each source and loop, preserves compiler logs and artifacts, and continues
 after a case failure. A run records the project/corpus/target hashes,
 toolchain, profile, timeout, and every terminal result in `results.jsonl`.
+Every attempted case also emits `cgra.compiler.metrics.v1`; failures are
+packaged under `reproducers/<diagnostic>/<case>/` with the exact command,
+seed, target, source, and the latest canonical LLVM/Generic DFG when present.
 
 ## Build profile
 
@@ -45,6 +48,10 @@ are assigned tiers from `DISCOVERED` through `MANIFEST_COMPLETE` (and
 `FUNCTIONAL_RTL_VALIDATED` only for a separately declared functional case).
 Synthetic invocations are marked `synthetic: true` and are structural audit
 evidence, never a benchmark functional pass.
+Integer scalar inputs use stable distinct sentinels. Externals in a memory
+address dataflow cone use non-overlapping 256-word base windows. If a safe
+deterministic assignment cannot be synthesized, the case terminates at S6
+instead of guessing an address.
 
 ## Failure taxonomy
 
@@ -55,18 +62,21 @@ The first blocking stage is classified as `BUILD`, `LLVM`, `LOOP_SELECTION`,
 `INTERNAL`. Every result includes a diagnostic code and owner. A budget limit
 is never reported as mapping infeasibility, and `UNKNOWN`/unclassified results
 are a harness failure.
+An external process timeout is also a hard audit failure; it is never treated
+as mapping infeasibility.
 
 ## Reports and reproducers
 
 Each run emits `summary.json/csv/md`, frontend and ISA coverage reports,
 `gap_ranking.json/md`, and per-case artifacts under `cases/`. The report
-reconciles enabled corpus sources against represented sources. Failures should
-be reproduced from the saved canonical LLVM, exact command, pinned target and
-compiler hashes; source semantics are never rewritten by the harness.
+reconciles enabled corpus sources and every discovered innermost loop against
+terminal results. Failures are reproduced from the saved canonical LLVM,
+exact command, pinned target and compiler hashes; source semantics are never
+rewritten by the harness. `known_supported.v1.json` is checked after smoke and
+full runs so an established L4-or-higher case cannot silently regress.
 
 To add a source override, edit `benchmarks/cgra-bench/cases.v1.json` and keep
 the source enabled or provide one of the explicit exclusion reasons recorded in
 the inventory contract. To update upstream, change the submodule and the pin in
 `tools/cgra_bench/inventory.py` in the same change, regenerate the lock, and
 record the new license/provenance in `benchmarks/cgra-bench/UPSTREAM.md`.
-

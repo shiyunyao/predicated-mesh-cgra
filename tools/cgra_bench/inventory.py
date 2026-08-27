@@ -4,28 +4,19 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import pathlib
 import subprocess
 import sys
 from typing import Any
 
 try:
-    from .schemas import source_language, write_json
+    from .schemas import sha256_file, source_language, write_json
 except ImportError:  # pragma: no cover - direct script execution
-    from schemas import source_language, write_json
+    from schemas import sha256_file, source_language, write_json
 
 
 PIN = "6729aaf225d0320e4e0d3b419e20483069a5a69b"
 SOURCE_SUFFIXES = {".c", ".cc", ".cpp", ".cxx"}
-
-
-def sha256(path: pathlib.Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def git_sha(path: pathlib.Path) -> str:
@@ -53,7 +44,7 @@ def inventory(corpus: pathlib.Path, output: pathlib.Path, cases_output: pathlib.
             "path": path.relative_to(corpus).as_posix(),
             "kernel": path.relative_to(kernels).parts[0],
             "language": source_language(path),
-            "sha256": sha256(path),
+            "sha256": sha256_file(path),
             "enabled": True,
             "exclusion": None,
         }

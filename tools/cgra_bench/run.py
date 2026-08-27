@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import pathlib
 import shutil
@@ -18,17 +17,19 @@ from typing import Any
 try:
     from .build_llvm import build
     from .classify import classify
-    from .feature_scan import scan
+    from .evidence import STAGES, complete_stage_records, write_case_evidence
     from .inventory import PIN, inventory
+    from .invocation import InvocationSynthesisError, synthesize_invocation
     from .report import report
-    from .schemas import read_json, write_json
+    from .schemas import read_json, sha256_file, write_json
 except ImportError:  # pragma: no cover - direct script execution
     from build_llvm import build
     from classify import classify
-    from feature_scan import scan
+    from evidence import STAGES, complete_stage_records, write_case_evidence
     from inventory import PIN, inventory
+    from invocation import InvocationSynthesisError, synthesize_invocation
     from report import report
-    from schemas import read_json, write_json
+    from schemas import read_json, sha256_file, write_json
 
 
 BASELINE_MAPPING_PROFILE = {
@@ -38,14 +39,14 @@ BASELINE_MAPPING_PROFILE = {
     "max_route_calls": 100000,
     "max_route_states": 10000,
 }
-
-
-def sha256(path: pathlib.Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+def tool_version(executable: str) -> str | None:
+    path = shutil.which(executable)
+    if not path:
+        return None
+    try:
+        return subprocess.check_output([path, "--version"], text=True, stderr=subprocess.STDOUT).splitlines()[0]
+    except (OSError, subprocess.CalledProcessError, IndexError):
+        return None
 
 
 def command_result(command: list[str], cwd: pathlib.Path, timeout: int) -> tuple[int, str, str, int]:
@@ -57,18 +58,13 @@ def command_result(command: list[str], cwd: pathlib.Path, timeout: int) -> tuple
         return 124, error.stdout or "", error.stderr or "", int((time.monotonic() - started) * 1000)
 
 
-def result_for_failure(case: dict[str, Any], stage: str, message: str, returncode: int = 1, diagnostic_code: str | None = None) -> dict[str, Any]:
+def result_for_failure(case: dict[str, Any], stage: str, message: str, returncode: int = 1,
+                       diagnostic_code: str | None = None,
+                       tier: str = "DISCOVERED") -> dict[str, Any]:
     failure = classify(stage, message, returncode)
     if diagnostic_code:
         failure["diagnostic_code"] = diagnostic_code
-    return {"id": case["id"], "kernel": case["kernel"], "source": case["source"], "loop_header": None, "tier": "DISCOVERED", "terminal_stage": stage, "status": "FAIL", "stages": [{"stage": stage, "status": "FAIL"}], "message": message[-4000:], **failure}
-
-
-def synthesize_invocation(dfg: dict[str, Any], trip_count: int) -> dict[str, Any]:
-    scalar_inputs = {}
-    for index, value in enumerate(sorted(dfg.get("external_values", []), key=lambda item: item["id"])):
-        scalar_inputs[value["name"]] = f"0x{0x101 + index:08x}"
-    return {"schema": "cgra.kernel_invocation.v1", "trip_count": trip_count, "scalar_inputs": scalar_inputs, "scratchpad_preload": [], "synthetic": True}
+    return {"id": case["id"], "kernel": case["kernel"], "source": case["source"], "loop_header": None, "tier": tier, "terminal_stage": stage, "status": "FAIL", "stages": [{"stage": stage, "status": "FAIL"}], "message": message[-4000:], **failure}
 
 
 def tier_from_compile(artifact_dir: pathlib.Path, frontend_ok: bool) -> tuple[str, str]:
@@ -90,22 +86,24 @@ def tier_from_compile(artifact_dir: pathlib.Path, frontend_ok: bool) -> tuple[st
         if status in {"target_legalization_failure", "target_dfg_verification_failure"}:
             return "FRONTEND_DFG", "S8_TARGET_LEGALIZE"
         if "legalization" in status:
-            return "FRONTEND_DFG", "TARGET_ISA"
+            return "FRONTEND_DFG", "S8_TARGET_LEGALIZE"
         if "mii" in status:
-            return "TARGET_LEGAL", "MII"
+            return "TARGET_LEGAL", "S9_MII_ANALYSIS"
         if "mapping" in status:
-            return "TARGET_LEGAL", "MAPPING"
+            return "TARGET_LEGAL", "S10_MODULO_MAPPING"
         if "stage" in status:
-            return "MAPPED", "STAGE_SCHEDULE"
+            return "MAPPED", "S11_STAGE_SCHEDULE"
         if "rf" in status:
-            return "MAPPED", "RF"
+            return "MAPPED", "S12_RF_ALLOCATION"
         if "material" in status:
-            return "RF_COMPLETE", "MATERIALIZATION"
-        if "lowering" in status or "manifest" in status:
-            return "RF_COMPLETE", "TARGET_LOWERING"
+            return "RF_COMPLETE", "S13_MATERIALIZATION"
+        if "lowering" in status or "control" in status:
+            return "RF_COMPLETE", "S14_TARGET_LOWERING"
+        if "manifest" in status:
+            return "RF_COMPLETE", "S15_MANIFEST_VERIFY"
     except (OSError, ValueError, json.JSONDecodeError):
         pass
-    return "FRONTEND_DFG", "BACKEND"
+    return "FRONTEND_DFG", "INTERNAL"
 
 
 def backend_observation(artifact_dir: pathlib.Path) -> dict[str, Any]:
@@ -117,10 +115,44 @@ def backend_observation(artifact_dir: pathlib.Path) -> dict[str, Any]:
     except (OSError, ValueError, json.JSONDecodeError):
         return {}
     backend = result.get("backend") or {}
+    stats = dict(backend.get("stats", {}))
+    backend_dir = artifact_dir / "backend" / "backend"
+    if not backend_dir.is_dir():
+        backend_dir = artifact_dir / "backend"
+    for filename in ("05_mii.json", "06_mapper_report.json", "09_stage_report.json", "12_rf_report.json", "15_materialization_report.json"):
+        path = backend_dir / filename
+        if not path.exists():
+            continue
+        try:
+            report = read_json(path)
+        except (OSError, ValueError, json.JSONDecodeError):
+            continue
+        report_stats = report.get("stats", {})
+        if filename == "05_mii.json":
+            stats.update({
+                "resource_mii": report.get("resource_mii"),
+                "recurrence_mii": report.get("recurrence_mii"),
+                "mii_witness": report.get("recurrence_witness"),
+            })
+        elif filename == "06_mapper_report.json":
+            stats.update({
+                "ii_attempts": report_stats.get("ii_attempts"),
+                "backtracks": report_stats.get("backtracks"),
+                "route_search_calls": report_stats.get("route_search_calls"),
+                "route_no_paths": report_stats.get("route_no_paths"),
+                "route_budget_exceeded": report_stats.get("route_budget_exceeded"),
+                "successful_placements": report_stats.get("successful_placements"),
+                "rejected_placements": report_stats.get("rejected_placements"),
+                "mapping_diagnostics": len(report.get("diagnostics", [])),
+            })
+        elif filename == "12_rf_report.json":
+            stats.update({f"rf_{key}": value for key, value in report_stats.items()})
+        else:
+            stats.update({f"{filename[:-5]}_{key}": value for key, value in report_stats.items()})
     return {
         "status": backend.get("status", result.get("status")),
         "message": backend.get("message", result.get("message", ""))[-4000:],
-        "stats": backend.get("stats", {}),
+        "stats": stats,
     }
 
 
@@ -136,41 +168,122 @@ def run_case(case: dict[str, Any], root: pathlib.Path, corpus: pathlib.Path, out
     source_result = build(source, source_out / "build", timeout, flags)
     write_json(source_out / "build.json", source_result)
     if source_result.get("status") != "LLVM_BUILT":
-        return [result_for_failure(case, "S1_SOURCE_BUILD", source_result.get("message", "source build failed"), diagnostic_code=source_result.get("diagnostic_code"))]
+        canonicalization_failed = source_result.get("status") == "LLVM_CANONICALIZE_FAILED"
+        stage = "S2_LLVM_CANONICALIZE" if canonicalization_failed else "S1_SOURCE_BUILD"
+        result = result_for_failure(
+            case,
+            stage,
+            source_result.get("message", "source build failed"),
+            diagnostic_code=source_result.get("diagnostic_code"),
+            tier="LLVM_BUILT" if canonicalization_failed else "DISCOVERED",
+        )
+        commands = source_result.get("commands", {})
+        command_key = "canonicalize" if canonicalization_failed else "compile"
+        result.update({
+            "artifact_directory": source_out.relative_to(out).as_posix(),
+            "source_artifact_directory": source_out.relative_to(out).as_posix(),
+            "command": commands.get(command_key, []),
+            "duration_ms": {
+                "llvm_build" if canonicalization_failed else "source_build": source_result.get("duration_ms")
+            },
+        })
+        return [result]
     canonical = pathlib.Path(source_result["ir"])
-    feature = scan(canonical)
-    write_json(source_out / "llvm_feature_inventory.json", feature)
     rc, stdout, stderr, duration = command_result([str(frontend_bin), str(canonical), "--list-loops", "--json"], root, timeout)
     if rc != 0:
-        return [result_for_failure(case, "S3_LOOP_SELECTION", stderr or stdout, rc)]
+        result = result_for_failure(case, "S3_LOOP_SELECTION", stderr or stdout, rc, tier="LLVM_BUILT")
+        result.update({"artifact_directory": source_out.relative_to(out).as_posix(), "source_artifact_directory": source_out.relative_to(out).as_posix(), "command": [str(frontend_bin), str(canonical), "--list-loops", "--json"], "duration_ms": {"llvm_build": source_result.get("duration_ms"), "loop_selection": duration}})
+        return [result]
     try:
         loops = json.loads(stdout)["loops"]
     except (ValueError, KeyError, json.JSONDecodeError) as error:
-        return [result_for_failure(case, "S3_LOOP_SELECTION", f"invalid loop inventory: {error}")]
+        result = result_for_failure(case, "S3_LOOP_SELECTION", f"invalid loop inventory: {error}", tier="LLVM_BUILT")
+        result.update({"artifact_directory": source_out.relative_to(out).as_posix(), "source_artifact_directory": source_out.relative_to(out).as_posix(), "command": [str(frontend_bin), str(canonical), "--list-loops", "--json"], "duration_ms": {"llvm_build": source_result.get("duration_ms"), "loop_selection": duration}})
+        return [result]
+    write_json(source_out / "llvm_feature_inventory.json", {
+        "schema": "cgra.cgra_bench.llvm_feature_inventory.v1",
+        "source": case["source"],
+        "loops": [
+            {
+                "function": loop["function"],
+                "header": loop["header"],
+                "features": loop.get("features", {}),
+            }
+            for loop in loops
+        ],
+    })
     write_json(source_out / "loop_inventory.json", {"schema": "cgra.cgra_bench.loop_inventory.v1", "source": case["source"], "loops": loops})
     if not loops:
-        return [result_for_failure(case, "S3_LOOP_SELECTION", "no innermost loop found", diagnostic_code="NO_INNERMOST_LOOP")]
+        result = result_for_failure(case, "S3_LOOP_SELECTION", "no innermost loop found", diagnostic_code="NO_INNERMOST_LOOP", tier="LLVM_BUILT")
+        result.update({"artifact_directory": source_out.relative_to(out).as_posix(), "source_artifact_directory": source_out.relative_to(out).as_posix(), "command": [str(frontend_bin), str(canonical), "--list-loops", "--json"], "duration_ms": {"llvm_build": source_result.get("duration_ms"), "loop_selection": duration}})
+        return [result]
     results = []
     for loop in loops:
         loop_case = dict(case)
-        loop_case["id"] = f"{case['id']}::{loop['function']}::{loop['header']}"
+        loop_case["id"] = f"{case['source']}::{loop['function']}::{loop['header']}"
         loop_out = source_out / "loops" / f"{loop['function']}__{loop['header']}"
         frontend_out = loop_out / "frontend"
         frontend_out.mkdir(parents=True, exist_ok=True)
         dfg_path = frontend_out / "generic_dfg.json"
-        rc, stdout, stderr, lower_duration = command_result([str(frontend_bin), str(canonical), "--function", loop["function"], "--loop-header", loop["header"], "--artifact-dir", str(frontend_out), "-o", str(dfg_path)], root, timeout)
-        base = {"id": loop_case["id"], "kernel": case["kernel"], "source": case["source"], "function": loop["function"], "loop_header": loop["header"], "feature": feature, "loop": loop, "duration_ms": {"loop_selection": duration, "frontend": lower_duration}, "synthetic_invocation": True, "status": "FAIL", "stages": [{"stage": "S0_CORPUS_DISCOVERY", "status": "PASS"}, {"stage": "S1_SOURCE_BUILD", "status": "PASS"}, {"stage": "S2_LLVM_CANONICALIZE", "status": "PASS"}, {"stage": "S3_LOOP_SELECTION", "status": "PASS"}]}
+        lower_command = [str(frontend_bin), str(canonical), "--function", loop["function"], "--loop-header", loop["header"], "--artifact-dir", str(frontend_out), "-o", str(dfg_path)]
+        rc, stdout, stderr, lower_duration = command_result(lower_command, root, timeout)
+        base = {
+            "id": loop_case["id"], "kernel": case["kernel"], "source": case["source"],
+            "function": loop["function"], "loop_header": loop["header"],
+            "feature": loop.get("features", {}), "loop": loop,
+            "duration_ms": {"llvm_build": source_result.get("duration_ms"), "loop_selection": duration, "frontend": lower_duration},
+            "synthetic_invocation": True, "status": "FAIL",
+            "artifact_directory": loop_out.relative_to(out).as_posix(),
+            "source_artifact_directory": source_out.relative_to(out).as_posix(),
+            "command": lower_command,
+            "stages": [{"stage": "S0_CORPUS_DISCOVERY", "status": "PASS"}, {"stage": "S1_SOURCE_BUILD", "status": "PASS"}, {"stage": "S2_LLVM_CANONICALIZE", "status": "PASS"}, {"stage": "S3_LOOP_SELECTION", "status": "PASS"}],
+        }
         if rc != 0 or not dfg_path.exists():
             failure = classify("S4_FRONTEND_LOWER", stderr or stdout, rc)
-            results.append({**base, "tier": "LLVM_BUILT", "terminal_stage": "S4_FRONTEND_LOWER", "stages": [*base["stages"], {"stage": "S4_FRONTEND_LOWER", "status": "FAIL"}], "message": (stderr or stdout)[-4000:], **failure})
+            results.append({**base, "tier": "LLVM_BUILT", "terminal_stage": "S4_FRONTEND_LOWER", "stages": [*base["stages"], {"stage": "S4_FRONTEND_LOWER", "status": "FAIL"}], "message": (stderr or stdout)[-4000:], "stdout": stdout[-4000:], "stderr": stderr[-4000:], **failure})
             continue
         try:
             dfg = read_json(dfg_path)
         except (OSError, ValueError, json.JSONDecodeError) as error:
-            results.append({**base, "tier": "LLVM_BUILT", "terminal_stage": "S5_GENERIC_VERIFY", "stages": [*base["stages"], {"stage": "S4_FRONTEND_LOWER", "status": "PASS"}, {"stage": "S5_GENERIC_VERIFY", "status": "FAIL"}], "message": str(error), **classify("S5_GENERIC_VERIFY", str(error))})
+            results.append({**base, "tier": "LLVM_BUILT", "terminal_stage": "S5_GENERIC_VERIFY", "stages": [*base["stages"], {"stage": "S4_FRONTEND_LOWER", "status": "PASS"}, {"stage": "S5_GENERIC_VERIFY", "status": "FAIL"}], "message": str(error), "stdout": stdout[-4000:], "stderr": stderr[-4000:], **classify("S5_GENERIC_VERIFY", str(error))})
             continue
-        base["dfg"] = {"node_count": len(dfg.get("nodes", [])), "edge_count": len(dfg.get("edges", [])), "external_values": len(dfg.get("external_values", [])), "liveouts": len(dfg.get("live_outs", [])), "opcode_histogram": {opcode: sum(node.get("opcode") == opcode for node in dfg.get("nodes", [])) for opcode in sorted({node.get("opcode") for node in dfg.get("nodes", [])})}}
-        invocation = synthesize_invocation(dfg, int(loop.get("static_trip_count") or 4))
+        memory_analysis = {}
+        memory_analysis_path = frontend_out / "02_memory_analysis.json"
+        if memory_analysis_path.exists():
+            try:
+                memory_analysis = read_json(memory_analysis_path)
+            except (OSError, ValueError, json.JSONDecodeError) as error:
+                results.append({**base, "tier": "FRONTEND_DFG", "terminal_stage": "S5_GENERIC_VERIFY", "message": str(error), **classify("S5_GENERIC_VERIFY", str(error))})
+                continue
+        edge_kinds: dict[str, int] = {}
+        distances: dict[str, int] = {}
+        for edge in dfg.get("edges", []):
+            kind = edge.get("kind", "unknown")
+            edge_kinds[kind] = edge_kinds.get(kind, 0) + 1
+            distance = str(edge.get("distance", 0))
+            distances[distance] = distances.get(distance, 0) + 1
+        base["dfg"] = {
+            "node_count": len(dfg.get("nodes", [])), "edge_count": len(dfg.get("edges", [])),
+            "external_values": len(dfg.get("external_values", [])), "liveouts": len(dfg.get("live_outs", [])),
+            "opcode_histogram": {opcode: sum(node.get("opcode") == opcode for node in dfg.get("nodes", [])) for opcode in sorted({node.get("opcode") for node in dfg.get("nodes", [])})},
+            "edge_kind_histogram": dict(sorted(edge_kinds.items())),
+            "distance_histogram": dict(sorted(distances.items(), key=lambda item: int(item[0]))),
+            "recurrence_edges": sum(edge.get("distance", 0) > 0 and edge.get("kind") in {"data", "predicate"} for edge in dfg.get("edges", [])),
+            "memory_edges": sum(edge.get("kind") == "memory" for edge in dfg.get("edges", [])),
+            "max_recurrence_distance": max((edge.get("distance", 0) for edge in dfg.get("edges", []) if edge.get("kind") in {"data", "predicate"}), default=0),
+            "max_memory_distance": max((edge.get("distance", 0) for edge in dfg.get("edges", []) if edge.get("kind") == "memory"), default=0),
+        }
+        try:
+            target_spec = read_json(target)
+            invocation = synthesize_invocation(
+                dfg,
+                int(loop.get("static_trip_count") or 4),
+                memory_analysis,
+                int(target_spec.get("memory", {}).get("depth", 0)) or None,
+            )
+        except InvocationSynthesisError as error:
+            results.append({**base, "tier": "FRONTEND_DFG", "terminal_stage": "S6_INVOCATION_SYNTHESIS", "message": str(error), "stdout": "", "stderr": "", **classify("S6_INVOCATION_SYNTHESIS", str(error))})
+            continue
         write_json(loop_out / "invocation.json", invocation)
         abi_out = loop_out / "abi"
         manifest = abi_out / "program_manifest.json"
@@ -199,11 +312,16 @@ def run_case(case: dict[str, Any], root: pathlib.Path, corpus: pathlib.Path, out
             str(BASELINE_MAPPING_PROFILE["max_route_states"]),
         ]
         rc, stdout, stderr, compile_duration = command_result(compile_command, root, timeout)
+        base["command"] = compile_command
         tier, stage = tier_from_compile(abi_out, True)
         backend = backend_observation(abi_out)
         if rc != 0:
-            failure = classify(stage, stderr or stdout, rc)
-            results.append({**base, "tier": tier, "terminal_stage": stage, "stages": [*base["stages"], {"stage": "S4_FRONTEND_LOWER", "status": "PASS"}, {"stage": "S5_GENERIC_VERIFY", "status": "PASS"}, {"stage": stage, "status": "FAIL"}], "message": (stderr or stdout)[-4000:], "duration_ms": {**base["duration_ms"], "abi_backend": compile_duration}, "backend": backend, **failure})
+            classification_message = " ".join(
+                part for part in [str(backend.get("status", "")), backend.get("message", ""), stderr or stdout]
+                if part
+            )
+            failure = classify(stage, classification_message, rc)
+            results.append({**base, "tier": tier, "terminal_stage": stage, "stages": [*base["stages"], {"stage": "S4_FRONTEND_LOWER", "status": "PASS"}, {"stage": "S5_GENERIC_VERIFY", "status": "PASS"}, {"stage": stage, "status": "FAIL"}], "message": (stderr or stdout)[-4000:], "stdout": stdout[-4000:], "stderr": stderr[-4000:], "duration_ms": {**base["duration_ms"], "abi_backend": compile_duration}, "backend": backend, **failure})
         else:
             results.append({**base, "tier": tier, "terminal_stage": "S15_MANIFEST_VERIFY", "status": "PASS", "stages": [*base["stages"], {"stage": "S4_FRONTEND_LOWER", "status": "PASS"}, {"stage": "S5_GENERIC_VERIFY", "status": "PASS"}, {"stage": "S7_ABI_BIND", "status": "PASS"}, {"stage": "S8_TARGET_LEGALIZE", "status": "PASS"}, {"stage": "S15_MANIFEST_VERIFY", "status": "PASS"}], "diagnostic_code": "SUCCESS", "category": "MANIFEST", "owner": "LOWERING", "message": stdout[-2000:], "duration_ms": {**base["duration_ms"], "abi_backend": compile_duration}, "backend": backend, "artifacts": [str(path) for path in abi_out.rglob("*") if path.is_file()]})
     return results
@@ -262,7 +380,12 @@ def main() -> int:
         for case in cases:
             if not case.get("enabled", True) and not case.get("exclusion"):
                 raise ValueError(f"disabled case has no exclusion reason: {case.get('id', '<unknown>')}")
-        out.mkdir(parents=True, exist_ok=True)
+        if out.exists():
+            owned_output_root = (root / "build" / "cgra-bench").resolve()
+            if not out.is_relative_to(owned_output_root):
+                raise ValueError(f"refusing to replace audit output outside {owned_output_root}: {out}")
+            shutil.rmtree(out)
+        out.mkdir(parents=True)
         report_corpus = lock
         if args.allow_subset:
             report_corpus = dict(lock)
@@ -274,12 +397,17 @@ def main() -> int:
         write_json(out / "environment.json", {
             "schema": "cgra.cgra_bench.environment.v1",
             "project_sha": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip(),
+            "project_dirty": bool(subprocess.check_output(["git", "status", "--porcelain"], cwd=root, text=True)),
             "corpus_sha": lock["commit"],
             "target": str(target),
-            "target_sha256": sha256(target),
+            "target_sha256": sha256_file(target),
             "clang": shutil.which("clang-14"),
+            "clang_version": tool_version("clang-14"),
             "clangxx": shutil.which("clang++-14"),
+            "clangxx_version": tool_version("clang++-14"),
             "opt": shutil.which("opt-14"),
+            "opt_version": tool_version("opt-14"),
+            "cmake_version": tool_version("cmake"),
             "host": platform.platform(),
             "timestamp_utc": datetime.now(timezone.utc).isoformat(),
             "profile": {"name": "baseline", "timeout_seconds": args.timeout, "mapping": BASELINE_MAPPING_PROFILE},
@@ -289,10 +417,27 @@ def main() -> int:
             try:
                 results.extend(run_case(case, root, corpus, out, target, frontend_bin, compile_bin, args.timeout))
             except Exception as error:  # every case must have a terminal result
-                results.append(result_for_failure(case, "INTERNAL", f"unclassified harness exception: {error}"))
+                result = result_for_failure(case, "INTERNAL", f"unclassified harness exception: {error}")
+                case_dir = out / "cases" / case["id"].replace("/", "_").replace("::", "__")
+                result.update({
+                    "artifact_directory": case_dir.relative_to(out).as_posix(),
+                    "source_artifact_directory": case_dir.relative_to(out).as_posix(),
+                    "command": [],
+                })
+                results.append(result)
+        for result in results:
+            result["audit_profile"] = {
+                "name": "baseline",
+                "timeout_seconds": args.timeout,
+                "mapping": BASELINE_MAPPING_PROFILE,
+            }
+            write_case_evidence(out, corpus, target, result, BASELINE_MAPPING_PROFILE)
+            complete_stage_records(result)
+            if [stage["stage"] for stage in result["stages"]] != STAGES:
+                raise ValueError(f"incomplete stage record for {result['id']}")
         (out / "results.jsonl").write_text("".join(json.dumps(item, sort_keys=True) + "\n" for item in results), encoding="utf-8")
         summary = report(out, report_corpus, results)
-        if summary["unknown_count"] or not summary["reconciliation"]["ok"]:
+        if summary["unknown_count"] or summary["timeout_count"] or not summary["reconciliation"]["ok"]:
             return 1
         print(json.dumps(summary, indent=2, sort_keys=True))
         return 0

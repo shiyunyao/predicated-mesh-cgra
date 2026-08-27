@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import pathlib
 import platform
@@ -15,9 +14,9 @@ import time
 from typing import Any
 
 try:
-    from .schemas import write_json
+    from .schemas import sha256_file, write_json
 except ImportError:  # pragma: no cover - direct script execution
-    from schemas import write_json
+    from schemas import sha256_file, write_json
 
 
 def run(command: list[str], cwd: pathlib.Path, timeout: int, log: pathlib.Path) -> subprocess.CompletedProcess[str]:
@@ -38,22 +37,20 @@ def run(command: list[str], cwd: pathlib.Path, timeout: int, log: pathlib.Path) 
     return result
 
 
-def sha256(path: pathlib.Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
 def build(source: pathlib.Path, output: pathlib.Path, timeout: int, extra_flags: list[str] | None = None) -> dict[str, Any]:
+    started = time.monotonic()
+
+    def finish(result: dict[str, Any]) -> dict[str, Any]:
+        result["duration_ms"] = int((time.monotonic() - started) * 1000)
+        return result
+
     output.mkdir(parents=True, exist_ok=True)
     source = source.resolve()
     compiler = shutil.which("clang++-14" if source.suffix.lower() in {".cc", ".cpp", ".cxx"} else "clang-14")
     opt = shutil.which("opt-14")
     llvm_dis = shutil.which("llvm-dis-14")
     if not compiler or not opt or not llvm_dis:
-        return {"status": "SOURCE_BUILD_FAILED", "diagnostic_code": "TOOLCHAIN_MISSING", "message": "clang-14/clang++-14, opt-14, and llvm-dis-14 are required"}
+        return finish({"status": "SOURCE_BUILD_FAILED", "diagnostic_code": "TOOLCHAIN_MISSING", "message": "clang-14/clang++-14, opt-14, and llvm-dis-14 are required"})
     flags = list(extra_flags or [])
     raw_bc = output / "source.raw.bc"
     raw_ll = output / "source.raw.ll"
@@ -72,29 +69,35 @@ def build(source: pathlib.Path, output: pathlib.Path, timeout: int, extra_flags:
     try:
         compiled = run(compile_command, source.parent, timeout, output / "source-build.log")
     except subprocess.TimeoutExpired:
-        return {"status": "SOURCE_BUILD_FAILED", "diagnostic_code": "SOURCE_BUILD_TIMEOUT", "message": "source compilation timed out", "commands": commands}
+        return finish({"status": "SOURCE_BUILD_FAILED", "diagnostic_code": "SOURCE_BUILD_TIMEOUT", "message": "source compilation timed out", "commands": commands})
     if compiled.returncode != 0:
-        return {"status": "SOURCE_BUILD_FAILED", "diagnostic_code": "SOURCE_BUILD_FAILED", "message": compiled.stderr[-4000:], "commands": commands}
-    disassembled = run(raw_disassemble_command, source.parent, timeout, output / "raw-disassemble.log")
+        return finish({"status": "SOURCE_BUILD_FAILED", "diagnostic_code": "SOURCE_BUILD_FAILED", "message": compiled.stderr[-4000:], "commands": commands})
+    try:
+        disassembled = run(raw_disassemble_command, source.parent, timeout, output / "raw-disassemble.log")
+    except subprocess.TimeoutExpired:
+        return finish({"status": "LLVM_CANONICALIZE_FAILED", "diagnostic_code": "RAW_IR_DISASSEMBLY_TIMEOUT", "message": "raw LLVM disassembly timed out", "commands": commands})
     if disassembled.returncode != 0:
-        return {"status": "LLVM_CANONICALIZE_FAILED", "diagnostic_code": "RAW_IR_DISASSEMBLY_FAILED", "message": disassembled.stderr[-4000:], "commands": commands}
+        return finish({"status": "LLVM_CANONICALIZE_FAILED", "diagnostic_code": "RAW_IR_DISASSEMBLY_FAILED", "message": disassembled.stderr[-4000:], "commands": commands})
     try:
         canonicalized = run(canonical_command, source.parent, timeout, output / "canonicalize.log")
     except subprocess.TimeoutExpired:
-        return {"status": "LLVM_CANONICALIZE_FAILED", "diagnostic_code": "LLVM_CANONICALIZE_TIMEOUT", "message": "LLVM canonicalization timed out", "commands": commands}
+        return finish({"status": "LLVM_CANONICALIZE_FAILED", "diagnostic_code": "LLVM_CANONICALIZE_TIMEOUT", "message": "LLVM canonicalization timed out", "commands": commands})
     if canonicalized.returncode != 0:
-        return {"status": "LLVM_CANONICALIZE_FAILED", "diagnostic_code": "LLVM_CANONICALIZE_FAILED", "message": canonicalized.stderr[-4000:], "commands": commands}
-    disassembled = run(canonical_disassemble_command, source.parent, timeout, output / "canonical-disassemble.log")
+        return finish({"status": "LLVM_CANONICALIZE_FAILED", "diagnostic_code": "LLVM_CANONICALIZE_FAILED", "message": canonicalized.stderr[-4000:], "commands": commands})
+    try:
+        disassembled = run(canonical_disassemble_command, source.parent, timeout, output / "canonical-disassemble.log")
+    except subprocess.TimeoutExpired:
+        return finish({"status": "LLVM_CANONICALIZE_FAILED", "diagnostic_code": "CANONICAL_IR_DISASSEMBLY_TIMEOUT", "message": "canonical LLVM disassembly timed out", "commands": commands})
     if disassembled.returncode != 0:
-        return {"status": "LLVM_CANONICALIZE_FAILED", "diagnostic_code": "CANONICAL_IR_DISASSEMBLY_FAILED", "message": disassembled.stderr[-4000:], "commands": commands}
-    return {
+        return finish({"status": "LLVM_CANONICALIZE_FAILED", "diagnostic_code": "CANONICAL_IR_DISASSEMBLY_FAILED", "message": disassembled.stderr[-4000:], "commands": commands})
+    return finish({
         "status": "LLVM_BUILT",
         "source": str(source),
         "raw_bitcode": str(raw_bc),
         "raw_ir": str(raw_ll),
         "bitcode": str(canonical_bc),
         "ir": str(canonical_ll),
-        "source_sha256": sha256(source),
+        "source_sha256": sha256_file(source),
         "data_layout": next((line.split(' = ', 1)[1].strip('"') for line in canonical_ll.read_text(encoding="utf-8").splitlines() if line.startswith("target datalayout = ")), None),
         "triple": next((line.split(' = ', 1)[1].strip('"') for line in canonical_ll.read_text(encoding="utf-8").splitlines() if line.startswith("target triple = ")), None),
         "compiler": compiler,
@@ -102,7 +105,7 @@ def build(source: pathlib.Path, output: pathlib.Path, timeout: int, extra_flags:
         "profile": {"optimization": "O0", "canonicalization": ["mem2reg", "loop-simplify", "lcssa", "simplifycfg"], "m32": True},
         "host": platform.platform(),
         "commands": commands,
-    }
+    })
 
 
 def main() -> int:
