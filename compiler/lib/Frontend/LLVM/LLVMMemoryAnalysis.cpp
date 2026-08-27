@@ -92,6 +92,14 @@ struct CollectedAddress {
   std::vector<std::pair<const llvm::Value*, std::int64_t>> terms;
 };
 
+struct PointerRoot {
+  const llvm::Value* base = nullptr;
+  const llvm::PHINode* phi = nullptr;
+  const llvm::PHINode* mergePhi = nullptr;
+  const llvm::GetElementPtrInst* backedge = nullptr;
+  std::int64_t stepBytes = 0;
+};
+
 std::optional<CollectedAddress> collectAddress(const llvm::Value& address,
                                                const llvm::DataLayout& dataLayout,
                                                std::string& error) {
@@ -134,6 +142,82 @@ std::optional<CollectedAddress> collectAddress(const llvm::Value& address,
     if (scale != 0)
       result.terms.emplace_back(value, scale);
   return result;
+}
+
+std::optional<PointerRoot> resolvePointerRoot(const llvm::Value& root, const llvm::Loop& loop,
+                                              const llvm::DataLayout& dataLayout,
+                                              std::string& error) {
+  const auto* phi = llvm::dyn_cast<llvm::PHINode>(&root);
+  if (!phi) {
+    const auto* base = llvm::getUnderlyingObject(&root);
+    if (!base || !base->getType()->isPointerTy() ||
+        (llvm::isa<llvm::Instruction>(base) &&
+         loop.contains(llvm::cast<llvm::Instruction>(base))) ||
+        llvm::isa<llvm::PHINode>(base) || llvm::isa<llvm::SelectInst>(base) ||
+        llvm::isa<llvm::LoadInst>(base)) {
+      error = "memory address must have one loop-invariant pointer root";
+      return std::nullopt;
+    }
+    return PointerRoot{base, nullptr, nullptr, nullptr, 0};
+  }
+
+  const auto* preheader = loop.getLoopPreheader();
+  const auto* latch = loop.getLoopLatch();
+  if (phi->getParent() != loop.getHeader() || !preheader || !latch ||
+      phi->getNumIncomingValues() != 2) {
+    error = "pointer PHI must be a canonical selected-loop recurrence";
+    return std::nullopt;
+  }
+  const int initialIndex = phi->getBasicBlockIndex(preheader);
+  const int backedgeIndex = phi->getBasicBlockIndex(latch);
+  if (initialIndex < 0 || backedgeIndex < 0) {
+    error = "pointer PHI must have one preheader and one latch incoming value";
+    return std::nullopt;
+  }
+  const auto* initial = phi->getIncomingValue(static_cast<unsigned>(initialIndex))->stripPointerCasts();
+  const auto* initialBase = llvm::getUnderlyingObject(initial);
+  if (!initialBase || initialBase != initial || !initialBase->getType()->isPointerTy() ||
+      (llvm::isa<llvm::Instruction>(initialBase) &&
+       loop.contains(llvm::cast<llvm::Instruction>(initialBase)))) {
+    error = "pointer recurrence initial value must be one loop-external pointer root";
+    return std::nullopt;
+  }
+  const auto* latchValue =
+      phi->getIncomingValue(static_cast<unsigned>(backedgeIndex))->stripPointerCasts();
+  const auto* mergePhi = llvm::dyn_cast<llvm::PHINode>(latchValue);
+  const auto* backedge = llvm::dyn_cast<llvm::GetElementPtrInst>(latchValue);
+  if (mergePhi) {
+    if (!loop.contains(mergePhi) || mergePhi->getNumIncomingValues() != 2) {
+      error = "conditional pointer recurrence must have one two-way merge PHI";
+      return std::nullopt;
+    }
+    for (const auto& incoming : mergePhi->incoming_values()) {
+      const auto* value = incoming.get()->stripPointerCasts();
+      if (value == phi)
+        continue;
+      const auto* candidate = llvm::dyn_cast<llvm::GetElementPtrInst>(value);
+      if (candidate && candidate->getPointerOperand()->stripPointerCasts() == phi && !backedge) {
+        backedge = candidate;
+        continue;
+      }
+      error = "conditional pointer recurrence must select the prior pointer or one GEP update";
+      return std::nullopt;
+    }
+  }
+  if (!backedge || !loop.contains(backedge) ||
+      backedge->getPointerOperand()->stripPointerCasts() != phi) {
+    error = "pointer recurrence latch value must be a direct or selected constant-step GEP";
+    return std::nullopt;
+  }
+  std::string collectionError;
+  const auto update = collectAddress(*backedge, dataLayout, collectionError);
+  if (!update || update->base != phi || !update->terms.empty() || update->constantBytes == 0) {
+    error = collectionError.empty()
+                ? "pointer recurrence GEP must have one non-zero constant byte step"
+                : std::move(collectionError);
+    return std::nullopt;
+  }
+  return PointerRoot{initialBase, phi, mergePhi, backedge, update->constantBytes};
 }
 
 std::optional<AffineValue> affineValue(const llvm::Value& value, const llvm::Loop& loop,
@@ -208,13 +292,17 @@ std::optional<LLVMMemoryAccessDescriptor> analyzeAccess(const llvm::Instruction&
                  "T018 V0 supports only the default LLVM address space");
     return std::nullopt;
   }
-  const auto* base = llvm::getUnderlyingObject(address);
-  if (!base || !base->getType()->isPointerTy() ||
-      (llvm::isa<llvm::Instruction>(base) && loop.contains(llvm::cast<llvm::Instruction>(base))) ||
-      llvm::isa<llvm::PHINode>(base) || llvm::isa<llvm::SelectInst>(base) ||
-      llvm::isa<llvm::LoadInst>(base)) {
-    error = fail(LLVMMemoryAnalysisStatus::UnsupportedPointerBase,
-                 "memory address must have one loop-invariant pointer root");
+  std::string collectionError;
+  const auto collected = collectAddress(*address, dataLayout, collectionError);
+  if (!collected) {
+    error = fail(LLVMMemoryAnalysisStatus::UnsupportedNonAffineAddress,
+                 std::move(collectionError));
+    return std::nullopt;
+  }
+  std::string rootError;
+  const auto pointerRoot = resolvePointerRoot(*collected->base, loop, dataLayout, rootError);
+  if (!pointerRoot) {
+    error = fail(LLVMMemoryAnalysisStatus::UnsupportedPointerBase, std::move(rootError));
     return std::nullopt;
   }
 
@@ -222,23 +310,29 @@ std::optional<LLVMMemoryAccessDescriptor> analyzeAccess(const llvm::Instruction&
   descriptor.kind = load ? LLVMMemoryAccessKind::Load : LLVMMemoryAccessKind::Store;
   descriptor.instruction = &instruction;
   descriptor.address = address;
-  descriptor.base = base;
+  descriptor.base = pointerRoot->base;
+  descriptor.addressRoot = collected->base;
+  descriptor.pointerPhi = pointerRoot->phi;
+  descriptor.pointerMergePhi = pointerRoot->mergePhi;
+  descriptor.pointerBackedge = pointerRoot->backedge;
+  descriptor.pointerStepBytes = pointerRoot->stepBytes;
   descriptor.accessWidthBits = accessWidthBits;
   descriptor.exactAffine = true;
-
-  const auto* gep = llvm::dyn_cast<llvm::GetElementPtrInst>(address);
-  if (!gep)
-    return descriptor;
-
-  std::string collectionError;
-  const auto collected = collectAddress(*address, dataLayout, collectionError);
-  if (!collected || collected->base != base) {
+  const std::int64_t addressUnitBytes = accessWidthBits < 32 ? 1 : 4;
+  if (pointerRoot->stepBytes % addressUnitBytes != 0) {
     error = fail(LLVMMemoryAnalysisStatus::UnsupportedNonAffineAddress,
-                 collectionError.empty() ? "GEP chain has no stable underlying base"
-                                         : std::move(collectionError));
+                 "pointer recurrence step is not a whole Generic address unit");
     return std::nullopt;
   }
-  const std::int64_t addressUnitBytes = accessWidthBits < 32 ? 1 : 4;
+  descriptor.pointerStepWords = pointerRoot->stepBytes / addressUnitBytes;
+  descriptor.iterationStrideBytes = pointerRoot->stepBytes;
+  descriptor.iterationStrideWords = descriptor.pointerStepWords;
+  if (pointerRoot->mergePhi) {
+    descriptor.addressMode = LLVMAddressMode::Dynamic;
+    descriptor.exactAffine = false;
+    descriptor.iterationStrideBytes = 0;
+    descriptor.iterationStrideWords = 0;
+  }
   if (collected->constantBytes % addressUnitBytes != 0) {
     error = fail(LLVMMemoryAnalysisStatus::UnsupportedNonAffineAddress,
                  "GEP byte offset is not aligned to the Generic address unit");
@@ -258,7 +352,8 @@ std::optional<LLVMMemoryAccessDescriptor> analyzeAccess(const llvm::Instruction&
 
   descriptor.constantOffsetWords = descriptor.gepConstantOffsetWords;
   descriptor.constantOffsetBytes = descriptor.gepConstantOffsetBytes;
-  descriptor.addressMode = LLVMAddressMode::ExactAffine;
+  if (!pointerRoot->mergePhi)
+    descriptor.addressMode = LLVMAddressMode::ExactAffine;
   std::vector<std::string> invariantTerms;
   for (const auto& [index, scaleBytes] : collected->terms) {
     if (scaleBytes % addressUnitBytes != 0) {

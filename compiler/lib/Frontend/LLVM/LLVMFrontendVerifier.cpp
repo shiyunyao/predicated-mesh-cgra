@@ -600,6 +600,20 @@ std::uint32_t correspondingLLVMOperand(const LLVMFrontendResult& result,
                                        std::uint32_t genericOperand) {
   if (llvm::isa<llvm::StoreInst>(instruction) && genericOperand < 2)
     return 1U - genericOperand;
+  if (const auto* phi = llvm::dyn_cast<llvm::PHINode>(&instruction);
+      phi && (genericOperand == 1 || genericOperand == 2)) {
+    for (const auto& region : result.provenance.ifConversions) {
+      for (const auto& select : region.selects) {
+        if (select.phiValue != phi)
+          continue;
+        const auto* provider = genericOperand == 1 ? select.trueProvider : select.falseProvider;
+        if (provider)
+          for (unsigned index = 0; index < phi->getNumIncomingValues(); ++index)
+            if (phi->getIncomingValue(index) == provider)
+              return index;
+      }
+    }
+  }
   const auto* compare = llvm::dyn_cast<llvm::ICmpInst>(&instruction);
   if (!compare || genericOperand >= compare->getNumOperands())
     return genericOperand;
@@ -987,7 +1001,8 @@ void verifyIfDataflow(const llvm::Module& module, const Selection& selection,
     for (const auto* user : recurrence.phiValue->users()) {
       const auto* instruction = llvm::dyn_cast<llvm::Instruction>(user);
       if (!instruction || !selection.loop->contains(instruction) || slice.contains(instruction) ||
-          instruction->isTerminator() || ignored(*instruction))
+          instruction->isTerminator() || llvm::isa<llvm::PHINode>(instruction) ||
+          ignored(*instruction))
         continue;
       if (llvm::isa<llvm::GetElementPtrInst>(instruction)) {
         bool matched = false;
@@ -1007,7 +1022,8 @@ void verifyIfDataflow(const llvm::Module& module, const Selection& selection,
         }
         if (!matched)
           report.add("LLVM_FRONTEND_RECURRENCE_EDGE_VERIFY_FAILED",
-                     "recurrence PHI GEP use is missing its Generic address edge");
+                     "recurrence PHI GEP use is missing its Generic address edge for " +
+                         instruction->getName().str());
         continue;
       }
       const auto destination = std::ranges::find_if(result.provenance.nodes, [&](const auto& item) {
@@ -1030,7 +1046,9 @@ void verifyIfDataflow(const llvm::Module& module, const Selection& selection,
             !info || !info->boundary ||
             !boundaryMatches(result, *result.dfg, recurrence, *info->boundary))
           report.add("LLVM_FRONTEND_RECURRENCE_EDGE_VERIFY_FAILED",
-                     "recurrence PHI data use is missing its Generic edge");
+                     "recurrence PHI data use is missing its Generic edge for " +
+                         instruction->getName().str() + " operand " +
+                         std::to_string(operand));
       }
     }
   }
@@ -1134,6 +1152,12 @@ struct VerifiedMemoryAccess {
   const llvm::Instruction* instruction = nullptr;
   const llvm::Value* address = nullptr;
   const llvm::Value* base = nullptr;
+  const llvm::Value* addressRoot = nullptr;
+  const llvm::PHINode* pointerPhi = nullptr;
+  const llvm::PHINode* pointerMergePhi = nullptr;
+  const llvm::GetElementPtrInst* pointerBackedge = nullptr;
+  std::int64_t pointerStepBytes = 0;
+  std::int64_t pointerStepWords = 0;
   const llvm::Value* dynamicIndex = nullptr;
   std::vector<AddressTerm> dynamicTerms;
   LLVMAddressMode addressMode = LLVMAddressMode::ExactAffine;
@@ -1191,6 +1215,14 @@ struct VerifiedCollectedAddress {
   std::vector<std::pair<const llvm::Value*, std::int64_t>> terms;
 };
 
+struct VerifiedPointerRoot {
+  const llvm::Value* base = nullptr;
+  const llvm::PHINode* phi = nullptr;
+  const llvm::PHINode* mergePhi = nullptr;
+  const llvm::GetElementPtrInst* backedge = nullptr;
+  std::int64_t stepBytes = 0;
+};
+
 std::optional<VerifiedCollectedAddress>
 verifiedCollectAddress(const llvm::Value& address, const llvm::DataLayout& dataLayout) {
   std::vector<const llvm::GetElementPtrInst*> chain;
@@ -1222,6 +1254,64 @@ verifiedCollectAddress(const llvm::Value& address, const llvm::DataLayout& dataL
     if (scale != 0)
       result.terms.emplace_back(value, scale);
   return result;
+}
+
+std::optional<VerifiedPointerRoot>
+verifiedPointerRoot(const llvm::Value& root, const llvm::Loop& loop,
+                    const llvm::DataLayout& dataLayout) {
+  const auto* phi = llvm::dyn_cast<llvm::PHINode>(&root);
+  if (!phi) {
+    const auto* base = llvm::getUnderlyingObject(&root);
+    if (!base || !base->getType()->isPointerTy() ||
+        (llvm::isa<llvm::Instruction>(base) &&
+         loop.contains(llvm::cast<llvm::Instruction>(base))) ||
+        llvm::isa<llvm::PHINode>(base) || llvm::isa<llvm::SelectInst>(base) ||
+        llvm::isa<llvm::LoadInst>(base))
+      return std::nullopt;
+    return VerifiedPointerRoot{base, nullptr, nullptr, nullptr, 0};
+  }
+  const auto* preheader = loop.getLoopPreheader();
+  const auto* latch = loop.getLoopLatch();
+  if (phi->getParent() != loop.getHeader() || !preheader || !latch ||
+      phi->getNumIncomingValues() != 2)
+    return std::nullopt;
+  const int initialIndex = phi->getBasicBlockIndex(preheader);
+  const int backedgeIndex = phi->getBasicBlockIndex(latch);
+  if (initialIndex < 0 || backedgeIndex < 0)
+    return std::nullopt;
+  const auto* initial =
+      phi->getIncomingValue(static_cast<unsigned>(initialIndex))->stripPointerCasts();
+  const auto* initialBase = llvm::getUnderlyingObject(initial);
+  const auto* latchValue =
+      phi->getIncomingValue(static_cast<unsigned>(backedgeIndex))->stripPointerCasts();
+  const auto* mergePhi = llvm::dyn_cast<llvm::PHINode>(latchValue);
+  const auto* backedge = llvm::dyn_cast<llvm::GetElementPtrInst>(latchValue);
+  if (mergePhi) {
+    if (!loop.contains(mergePhi) || mergePhi->getNumIncomingValues() != 2)
+      return std::nullopt;
+    for (const auto& incoming : mergePhi->incoming_values()) {
+      const auto* value = incoming.get()->stripPointerCasts();
+      if (value == phi)
+        continue;
+      const auto* candidate = llvm::dyn_cast<llvm::GetElementPtrInst>(value);
+      if (candidate && candidate->getPointerOperand()->stripPointerCasts() == phi && !backedge) {
+        backedge = candidate;
+        continue;
+      }
+      return std::nullopt;
+    }
+  }
+  if (!initialBase || initialBase != initial || !initialBase->getType()->isPointerTy() ||
+      (llvm::isa<llvm::Instruction>(initialBase) &&
+       loop.contains(llvm::cast<llvm::Instruction>(initialBase))) ||
+      !backedge || !loop.contains(backedge) ||
+      backedge->getPointerOperand()->stripPointerCasts() != phi)
+    return std::nullopt;
+  const auto update = verifiedCollectAddress(*backedge, dataLayout);
+  if (!update || update->base != phi || !update->terms.empty() ||
+      update->constantBytes == 0)
+    return std::nullopt;
+  return VerifiedPointerRoot{initialBase, phi, mergePhi, backedge, update->constantBytes};
 }
 
 const llvm::Value* verifiedPointerOperand(const llvm::Instruction& instruction) {
@@ -1352,13 +1442,11 @@ VerifiedMemoryExpectations recomputeMemoryExpectations(const Selection& selectio
 
       const auto* address = verifiedPointerOperand(instruction);
       const auto* pointerType = llvm::dyn_cast<llvm::PointerType>(address->getType());
-      const auto* base = llvm::getUnderlyingObject(address);
-      if (!pointerType || pointerType->getAddressSpace() != 0 || !base ||
-          !base->getType()->isPointerTy() ||
-          (llvm::isa<llvm::Instruction>(base) &&
-           selection.loop->contains(llvm::cast<llvm::Instruction>(base))) ||
-          llvm::isa<llvm::PHINode>(base) || llvm::isa<llvm::SelectInst>(base) ||
-          llvm::isa<llvm::LoadInst>(base)) {
+      const auto collected = verifiedCollectAddress(*address, dataLayout);
+      const auto root = collected
+                            ? verifiedPointerRoot(*collected->base, *selection.loop, dataLayout)
+                            : std::nullopt;
+      if (!pointerType || pointerType->getAddressSpace() != 0 || !collected || !root) {
         result.error = "LLVM memory access has no verified loop-invariant pointer root";
         return result;
       }
@@ -1368,16 +1456,28 @@ VerifiedMemoryExpectations recomputeMemoryExpectations(const Selection& selectio
       access.kind = load ? VerifiedMemoryAccessKind::Load : VerifiedMemoryAccessKind::Store;
       access.instruction = &instruction;
       access.address = address;
-      access.base = base;
+      access.base = root->base;
+      access.addressRoot = collected->base;
+      access.pointerPhi = root->phi;
+      access.pointerMergePhi = root->mergePhi;
+      access.pointerBackedge = root->backedge;
+      access.pointerStepBytes = root->stepBytes;
       access.accessWidthBits = accessWidthBits;
 
-      if (llvm::isa<llvm::GetElementPtrInst>(address)) {
-        const auto collected = verifiedCollectAddress(*address, dataLayout);
+      {
         const std::int64_t addressUnitBytes = accessWidthBits < 32 ? 1 : 4;
-        if (!collected || collected->base != base ||
-            collected->constantBytes % addressUnitBytes != 0) {
+        if (collected->constantBytes % addressUnitBytes != 0 ||
+            root->stepBytes % addressUnitBytes != 0) {
           result.error = "LLVM GEP is not aligned to the verified Generic address unit";
           return result;
+        }
+        access.pointerStepWords = root->stepBytes / addressUnitBytes;
+        access.iterationStrideBytes = root->stepBytes;
+        access.iterationStrideWords = access.pointerStepWords;
+        if (root->mergePhi) {
+          access.addressMode = LLVMAddressMode::Dynamic;
+          access.iterationStrideBytes = 0;
+          access.iterationStrideWords = 0;
         }
         access.gepConstantOffsetWords = collected->constantBytes / addressUnitBytes;
         access.constantOffsetBytes = collected->constantBytes;
@@ -1386,7 +1486,8 @@ VerifiedMemoryExpectations recomputeMemoryExpectations(const Selection& selectio
           return result;
         }
         access.constantOffsetWords = access.gepConstantOffsetWords;
-        access.addressMode = LLVMAddressMode::ExactAffine;
+        if (!root->mergePhi)
+          access.addressMode = LLVMAddressMode::ExactAffine;
         std::vector<std::string> invariantTerms;
         for (const auto& [index, scaleBytes] : collected->terms) {
           if (scaleBytes % addressUnitBytes != 0 ||
@@ -1561,7 +1662,7 @@ bool gepAddressGraphMatches(const LLVMFrontendResult& result,
                             const VerifiedMemoryAccess& descriptor, ir::NodeId addressNode) {
   if (!result.dfg->containsNode(addressNode) ||
       result.dfg->node(addressNode).opcode != ir::Opcode::Add ||
-      !providerMatches(result, descriptor.base, addressNode, 0))
+      !providerMatches(result, descriptor.addressRoot, addressNode, 0))
     return false;
   const auto addressType = result.dfg->node(addressNode).resultType;
   if (descriptor.dynamicTerms.empty())
@@ -1643,7 +1744,7 @@ void verifyMemoryDataflow(const Selection& selection, const LLVMFrontendResult& 
           !providerMatches(result, gep, actual->memoryNode, 0))
         report.add("LLVM_FRONTEND_ADDRESS_SEMANTICS_MISMATCH",
                    "Generic address graph does not implement the LLVM GEP word offset");
-    } else if (!providerMatches(result, descriptor.base, actual->memoryNode, 0)) {
+    } else if (!providerMatches(result, descriptor.addressRoot, actual->memoryNode, 0)) {
       report.add("LLVM_FRONTEND_ADDRESS_SEMANTICS_MISMATCH",
                  "direct memory address does not use the canonical pointer base");
     }
@@ -1969,14 +2070,16 @@ LLVMFrontendVerificationReport verifyFrontendResult(const llvm::Module& module,
                  "recurrence edge must have distance one and a boundary");
       continue;
     }
+    const auto llvmOperand = correspondingLLVMOperand(
+        result, *destination->instruction, info.dstOperand);
     const auto* recurrence =
-        info.dstOperand < destination->instruction->getNumOperands()
+        llvmOperand < destination->instruction->getNumOperands()
             ? recurrenceForEdge(result, source->instruction,
-                                destination->instruction->getOperand(info.dstOperand))
+                                destination->instruction->getOperand(llvmOperand))
             : nullptr;
     if (!recurrence || !recurrence->phiValue ||
-        info.dstOperand >= destination->instruction->getNumOperands() ||
-        destination->instruction->getOperand(info.dstOperand) != recurrence->phiValue ||
+        llvmOperand >= destination->instruction->getNumOperands() ||
+        destination->instruction->getOperand(llvmOperand) != recurrence->phiValue ||
         !boundaryMatches(result, *result.dfg, *recurrence, *info.boundary)) {
       report.add("LLVM_FRONTEND_RECURRENCE_EDGE_VERIFY_FAILED",
                  "distance-one edge does not match a canonical LLVM PHI use and boundary");
@@ -2000,15 +2103,19 @@ LLVMFrontendVerificationReport verifyFrontendResult(const llvm::Module& module,
       const auto& edge = result.dfg->edge(use.edge);
       const auto* source = nodeProvenance(result, edge.src);
       const auto* destination = nodeProvenance(result, edge.dst);
+      const auto* data = std::get_if<ir::DataEdgeInfo>(&edge.info);
+      const auto llvmOperand = data && destination && destination->instruction
+                                   ? correspondingLLVMOperand(
+                                         result, *destination->instruction, data->dstOperand)
+                                   : 0U;
       if (edge.kind() != ir::Edge::Kind::Data || edge.distance != 1 ||
           edge.dst != use.destination || !source || !destination ||
           source->instruction != recurrence.backedge ||
-          std::get<ir::DataEdgeInfo>(edge.info).dstOperand != use.operand ||
-          !destination->instruction ||
-          destination->instruction->getOperand(use.operand) != recurrence.phiValue ||
-          !std::get<ir::DataEdgeInfo>(edge.info).boundary ||
-          !boundaryMatches(result, *result.dfg, recurrence,
-                           *std::get<ir::DataEdgeInfo>(edge.info).boundary)) {
+          !data || data->dstOperand != use.operand || !destination->instruction ||
+          llvmOperand >= destination->instruction->getNumOperands() ||
+          destination->instruction->getOperand(llvmOperand) != recurrence.phiValue ||
+          !data->boundary ||
+          !boundaryMatches(result, *result.dfg, recurrence, *data->boundary)) {
         report.add("LLVM_FRONTEND_RECURRENCE_EDGE_VERIFY_FAILED",
                    "recurrence descriptor edge identity is inconsistent");
       }
@@ -2026,9 +2133,11 @@ LLVMFrontendVerificationReport verifyFrontendResult(const llvm::Module& module,
       const auto* source = nodeProvenance(result, edge.src);
       if (!destination || !source || !destination->instruction || !source->instruction)
         continue;
+      const auto llvmOperand =
+          correspondingLLVMOperand(result, *destination->instruction, info.dstOperand);
       if (source->instruction == recurrence.backedge &&
-          info.dstOperand < destination->instruction->getNumOperands() &&
-          destination->instruction->getOperand(info.dstOperand) == recurrence.phiValue) {
+          llvmOperand < destination->instruction->getNumOperands() &&
+          destination->instruction->getOperand(llvmOperand) == recurrence.phiValue) {
         sawEdge = true;
         break;
       }
@@ -2041,6 +2150,7 @@ LLVMFrontendVerificationReport verifyFrontendResult(const llvm::Module& module,
       const auto* instruction = llvm::dyn_cast<llvm::Instruction>(user);
       if (!instruction || !selection->loop->contains(instruction) || slice.contains(instruction) ||
           instruction->isTerminator() || llvm::isa<llvm::ICmpInst>(instruction) ||
+          llvm::isa<llvm::PHINode>(instruction) ||
           ignored(*instruction))
         continue;
       const LLVMFrontendNodeProvenance* destination = nullptr;
@@ -2060,13 +2170,23 @@ LLVMFrontendVerificationReport verifyFrontendResult(const llvm::Module& module,
       for (unsigned operand = 0; operand < instruction->getNumOperands(); ++operand) {
         if (instruction->getOperand(operand) != recurrence.phiValue)
           continue;
+        std::optional<std::uint32_t> genericOperand;
+        for (std::uint32_t candidate = 0;
+             candidate < result.dfg->node(destination->node).operandTypes.size(); ++candidate)
+          if (correspondingLLVMOperand(result, *instruction, candidate) == operand) {
+            genericOperand = candidate;
+            break;
+          }
+        if (!genericOperand)
+          continue;
         for (const auto& edge : result.dfg->edges()) {
           if (edge.distance != 1 || edge.kind() != ir::Edge::Kind::Data ||
               edge.dst != destination->node)
             continue;
           const auto& info = std::get<ir::DataEdgeInfo>(edge.info);
           const auto* source = nodeProvenance(result, edge.src);
-          if (source && source->instruction == recurrence.backedge && info.dstOperand == operand &&
+          if (source && source->instruction == recurrence.backedge &&
+              info.dstOperand == *genericOperand &&
               info.boundary && boundaryMatches(result, *result.dfg, recurrence, *info.boundary)) {
             found = true;
             break;
@@ -2074,7 +2194,8 @@ LLVMFrontendVerificationReport verifyFrontendResult(const llvm::Module& module,
         }
         if (!found)
           report.add("LLVM_FRONTEND_RECURRENCE_EDGE_VERIFY_FAILED",
-                     "recurrence PHI data use is missing its Generic edge");
+                     "recurrence PHI data use is missing its Generic edge for " +
+                         instruction->getName().str() + " operand " + std::to_string(operand));
       }
     }
   }

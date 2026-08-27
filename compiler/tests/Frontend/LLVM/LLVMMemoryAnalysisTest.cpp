@@ -185,6 +185,50 @@ exit:
 }
 )IR";
 
+const char* kPointerInduction = R"IR(
+target datalayout = "e-p:64:64"
+define void @pointer_induction(i32* %A) {
+entry:
+  br label %loop
+loop:
+  %pointer = phi i32* [ %A, %entry ], [ %next.pointer, %loop ]
+  %i = phi i32 [ 0, %entry ], [ %inc, %loop ]
+  %value = load i32, i32* %pointer, align 4
+  %next.pointer = getelementptr i32, i32* %pointer, i32 1
+  %inc = add i32 %i, 1
+  %done = icmp ult i32 %inc, 4
+  br i1 %done, label %loop, label %exit
+exit:
+  ret void
+}
+)IR";
+
+const char* kConditionalPointerInduction = R"IR(
+target datalayout = "e-p:64:64"
+define void @conditional_pointer_induction(i32* %A, i32 %limit) {
+entry:
+  br label %loop
+loop:
+  %pointer = phi i32* [ %A, %entry ], [ %next.pointer, %merge ]
+  %i = phi i32 [ 0, %entry ], [ %inc, %merge ]
+  %value = load i32, i32* %pointer, align 4
+  %advance = icmp ult i32 %i, %limit
+  br i1 %advance, label %update, label %keep
+update:
+  %advanced = getelementptr i32, i32* %pointer, i32 1
+  br label %merge
+keep:
+  br label %merge
+merge:
+  %next.pointer = phi i32* [ %advanced, %update ], [ %pointer, %keep ]
+  %inc = add i32 %i, 1
+  %done = icmp ult i32 %inc, 4
+  br i1 %done, label %loop, label %exit
+exit:
+  ret void
+}
+)IR";
+
 const char* kVectorAddNoAlias = R"IR(
 target datalayout = "e-p:64:64"
 define void @vector_add(i32* noalias %A, i32* noalias %B, i32* noalias %C) {
@@ -729,6 +773,27 @@ void runSemanticCases() {
              countMemoryEdge(*loadOnly.dfg, cgra::ir::MemoryDepKind::WAR, 0) == 0 &&
              countMemoryEdge(*loadOnly.dfg, cgra::ir::MemoryDepKind::WAW, 0) == 0,
          "Load-only loop has no memory ordering edge");
+
+  const auto pointerInduction = lower(kPointerInduction, "pointer_induction", context);
+  expect(pointerInduction.ok(),
+         "canonical pointer induction must lower as an address recurrence: " +
+             pointerInduction.message);
+  expect(countOpcode(*pointerInduction.dfg, cgra::ir::Opcode::Load) == 1 &&
+             countOpcode(*pointerInduction.dfg, cgra::ir::Opcode::Add) == 1,
+         "pointer induction must contain one Load and one address update Add");
+  expect(pointerInduction.provenance.recurrences.size() == 1 &&
+             pointerInduction.provenance.recurrences.front().type == "i64" &&
+             pointerInduction.provenance.recurrences.front().uses.size() == 2,
+         "pointer PHI uses must be represented by distance-one recurrence edges");
+
+  const auto conditionalPointer =
+      lower(kConditionalPointerInduction, "conditional_pointer_induction", context);
+  expect(conditionalPointer.ok(),
+         "conditional pointer induction must lower as Select recurrence: " +
+             conditionalPointer.message);
+  expect(countOpcode(*conditionalPointer.dfg, cgra::ir::Opcode::Select) == 1 &&
+             countOpcode(*conditionalPointer.dfg, cgra::ir::Opcode::Load) == 1,
+         "conditional pointer induction must retain one address Select and one Load");
 
   const auto vectorAdd = lower(kVectorAddNoAlias, "vector_add", context);
   expect(vectorAdd.ok(), "noalias vector add must lower: " + vectorAdd.message);

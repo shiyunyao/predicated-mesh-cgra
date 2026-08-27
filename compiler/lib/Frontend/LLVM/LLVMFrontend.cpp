@@ -76,6 +76,8 @@ struct BranchRegion {
 };
 
 bool ignoredInstruction(const llvm::Instruction& instruction);
+std::optional<ir::ValueType> addressValueType(const llvm::Module& module,
+                                              const llvm::Value& address);
 
 constexpr std::size_t SmallPureHelperInstructionLimit = 32;
 
@@ -924,7 +926,7 @@ struct IfLoweringState {
   LLVMFrontendProvenance provenance;
 };
 
-bool discoverIfRecurrences(IfLoweringState& state) {
+bool discoverIfRecurrences(IfLoweringState& state, const llvm::Module& module) {
   auto* preheader = state.selection.loop->getLoopPreheader();
   auto* latch = state.selection.loop->getLoopLatch();
   if (!preheader || !latch)
@@ -943,8 +945,13 @@ bool discoverIfRecurrences(IfLoweringState& state) {
     const bool conditionalSelectBackedge =
         backedgePhi && state.region.branch && backedgePhi->getParent() == state.region.mergeBlock &&
         backedgePhi->getNumIncomingValues() == 2;
+    const bool pointerRecurrence = phi->getType()->isPointerTy() &&
+                                   llvm::isa_and_nonnull<llvm::GetElementPtrInst>(backedge);
+    const bool conditionalPointerRecurrence =
+        phi->getType()->isPointerTy() && conditionalSelectBackedge;
     if (!backedge || !state.selection.loop->contains(backedge) ||
-        (!conditionalSelectBackedge && !supportedDataInstruction(*backedge)))
+        (!conditionalSelectBackedge && !pointerRecurrence &&
+         !supportedDataInstruction(*backedge)))
       continue;
     bool dataUse = false;
     for (const auto* user : phi->users()) {
@@ -958,7 +965,9 @@ bool discoverIfRecurrences(IfLoweringState& state) {
     }
     if (!dataUse)
       continue;
-    const auto type = valueType(*phi);
+    const auto type = pointerRecurrence || conditionalPointerRecurrence
+                          ? addressValueType(module, *phi)
+                          : valueType(*phi);
     if (!type)
       continue;
     LLVMRecurrenceProvenance descriptor;
@@ -1197,7 +1206,7 @@ LLVMFrontendResult lowerStructuredLoop(llvm::Module& module, const LLVMFrontendO
     state.region = *discoveredRegion;
   collectTerminationSlice(state);
 
-  discoverIfRecurrences(state);
+  discoverIfRecurrences(state, module);
   promoteIfRecurrenceProducerClosure(state);
 
   const auto memoryAnalysis =
@@ -1307,11 +1316,13 @@ LLVMFrontendResult lowerStructuredLoop(llvm::Module& module, const LLVMFrontendO
                        LLVMFrontendDiagnosticCode::LLVM_FRONTEND_UNSUPPORTED_CONTROL_MERGE,
                        "merge PHI must have exactly true and false incoming values", &selection,
                        phi);
-      const auto type = valueType(*phi);
+      const auto type = phi->getType()->isPointerTy() ? addressValueType(module, *phi)
+                                                      : valueType(*phi);
       if (!type)
         return failure(LLVMFrontendStatus::UnsupportedLLVMType,
                        LLVMFrontendDiagnosticCode::LLVM_FRONTEND_UNSUPPORTED_TYPE,
-                       "control merge PHI must have a supported integer type", &selection, phi);
+                       "control merge PHI must have a supported scalar or address type",
+                       &selection, phi);
       const auto select =
           builder.addNode(ir::Opcode::Select, {ir::ValueType::predicate(), *type, *type}, *type);
       state.selects.emplace(phi, select);
@@ -1338,11 +1349,33 @@ LLVMFrontendResult lowerStructuredLoop(llvm::Module& module, const LLVMFrontendO
   };
 
   std::unordered_set<const llvm::GetElementPtrInst*> addressChainGEPs;
+  struct PointerRecurrenceUpdate {
+    ir::ValueType type;
+    std::int64_t step = 0;
+  };
+  std::unordered_map<const llvm::GetElementPtrInst*, PointerRecurrenceUpdate>
+      pointerRecurrenceUpdates;
   for (const auto& access : memoryAnalysis.accesses) {
     const llvm::Value* cursor = access.address;
     while (const auto* gep = llvm::dyn_cast_or_null<llvm::GetElementPtrInst>(cursor)) {
       addressChainGEPs.insert(gep);
       cursor = gep->getPointerOperand()->stripPointerCasts();
+    }
+    if (access.pointerBackedge) {
+      const auto type = addressValueType(module, *access.pointerPhi);
+      if (!type)
+        return failure(LLVMFrontendStatus::UnsupportedPointerBase,
+                       LLVMFrontendDiagnosticCode::LLVM_FRONTEND_UNSUPPORTED_POINTER_BASE,
+                       "pointer recurrence width is outside the Generic address contract",
+                       &selection, access.pointerPhi);
+      const auto [iterator, inserted] = pointerRecurrenceUpdates.emplace(
+          access.pointerBackedge, PointerRecurrenceUpdate{*type, access.pointerStepWords});
+      if (!inserted &&
+          (iterator->second.type != *type || iterator->second.step != access.pointerStepWords))
+        return failure(LLVMFrontendStatus::UnsupportedNonAffineAddress,
+                       LLVMFrontendDiagnosticCode::LLVM_FRONTEND_UNSUPPORTED_NON_AFFINE_ADDRESS,
+                       "pointer recurrence is used with incompatible Generic address units",
+                       &selection, access.pointerBackedge);
     }
   }
 
@@ -1353,6 +1386,14 @@ LLVMFrontendResult lowerStructuredLoop(llvm::Module& module, const LLVMFrontendO
       if (llvm::isa<llvm::StoreInst>(instruction))
         continue;
       if (const auto* gep = llvm::dyn_cast<llvm::GetElementPtrInst>(&instruction)) {
+        if (const auto update = pointerRecurrenceUpdates.find(gep);
+            update != pointerRecurrenceUpdates.end()) {
+          state.nodes.emplace(
+              gep, builder.addNode(ir::Opcode::Add,
+                                   {update->second.type, update->second.type},
+                                   update->second.type));
+          continue;
+        }
         const auto access = std::ranges::find_if(
             memoryAnalysis.accesses, [&](const auto& item) { return item.address == gep; });
         if (access == memoryAnalysis.accesses.end()) {
@@ -1533,7 +1574,9 @@ LLVMFrontendResult lowerStructuredLoop(llvm::Module& module, const LLVMFrontendO
       if (!source)
         return std::nullopt;
       ir::RecurrenceBoundary boundary;
-      const auto type = valueType(*descriptor.initial);
+      const auto type = descriptor.initial->getType()->isPointerTy()
+                            ? addressValueType(module, *descriptor.initial)
+                            : valueType(*descriptor.initial);
       if (!type)
         return std::nullopt;
       if (const auto* constant = llvm::dyn_cast<llvm::Constant>(descriptor.initial);
@@ -1611,6 +1654,14 @@ LLVMFrontendResult lowerStructuredLoop(llvm::Module& module, const LLVMFrontendO
       if (llvm::isa<llvm::StoreInst>(instruction))
         continue;
       if (const auto* gep = llvm::dyn_cast<llvm::GetElementPtrInst>(&instruction)) {
+        if (const auto update = pointerRecurrenceUpdates.find(gep);
+            update != pointerRecurrenceUpdates.end()) {
+          provider(*gep->getPointerOperand(), destination->second, 0, false);
+          builder.bindConstant(
+              destination->second, 1,
+              getAddressConstant(state, builder, update->second.type, update->second.step));
+          continue;
+        }
         const auto access = std::ranges::find_if(
             memoryAnalysis.accesses, [&](const auto& item) { return item.address == gep; });
         if (access == memoryAnalysis.accesses.end())
@@ -1618,13 +1669,17 @@ LLVMFrontendResult lowerStructuredLoop(llvm::Module& module, const LLVMFrontendO
                          LLVMFrontendDiagnosticCode::LLVM_FRONTEND_UNSUPPORTED_NON_AFFINE_ADDRESS,
                          "GEP address descriptor is missing", &selection, gep);
         const auto addressNodes = state.gepAddressNodes.at(gep);
-        const auto* base = llvm::getUnderlyingObject(access->base);
-        if (!base || !base->getType()->isPointerTy())
+        if (!access->base || !access->addressRoot || !access->base->getType()->isPointerTy())
           return failure(LLVMFrontendStatus::UnsupportedPointerBase,
                          LLVMFrontendDiagnosticCode::LLVM_FRONTEND_UNSUPPORTED_POINTER_BASE,
                          "GEP has no loop-invariant pointer root", &selection, gep);
-        builder.bindExternal(addressNodes.address, 0,
-                             getIfExternal(state, builder, *base, addressNodes.type));
+        if (llvm::isa<llvm::PHINode>(access->addressRoot)) {
+          provider(*access->addressRoot, addressNodes.address, 0, false);
+        } else {
+          builder.bindExternal(addressNodes.address, 0,
+                               getIfExternal(state, builder, *access->base,
+                                             addressNodes.type));
+        }
         if (access->dynamicTerms.empty()) {
           builder.bindConstant(addressNodes.address, 1,
                                getAddressConstant(state, builder, addressNodes.type,

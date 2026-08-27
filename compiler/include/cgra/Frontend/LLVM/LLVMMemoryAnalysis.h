@@ -10,9 +10,11 @@
 
 namespace llvm {
 class DominatorTree;
+class GetElementPtrInst;
 class Instruction;
 class Loop;
 class LoopInfo;
+class PHINode;
 class Value;
 } // namespace llvm
 
@@ -53,6 +55,12 @@ struct LLVMMemoryAccessDescriptor {
   const llvm::Instruction* instruction = nullptr;
   const llvm::Value* address = nullptr;
   const llvm::Value* base = nullptr;
+  const llvm::Value* addressRoot = nullptr;
+  const llvm::PHINode* pointerPhi = nullptr;
+  const llvm::PHINode* pointerMergePhi = nullptr;
+  const llvm::GetElementPtrInst* pointerBackedge = nullptr;
+  std::int64_t pointerStepBytes = 0;
+  std::int64_t pointerStepWords = 0;
   const llvm::Value* dynamicIndex = nullptr;
   std::vector<LLVMAddressTerm> dynamicTerms;
   LLVMAddressMode addressMode = LLVMAddressMode::ExactAffine;
