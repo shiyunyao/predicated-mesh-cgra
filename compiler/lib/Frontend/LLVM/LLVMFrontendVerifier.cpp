@@ -21,6 +21,7 @@
 #include <llvm/IR/Instructions.h>
 #include <llvm/IR/IntrinsicInst.h>
 #include <llvm/IR/Module.h>
+#include <llvm/Support/raw_ostream.h>
 
 #include <nlohmann/json.hpp>
 
@@ -940,7 +941,7 @@ void verifyIfDataflow(const Selection& selection, const LLVMFrontendResult& resu
 }
 
 enum class VerifiedMemoryAccessKind { Load, Store };
-enum class VerifiedMemoryDependenceMode { ExactAffine, Conservative };
+enum class VerifiedMemoryDependenceMode { ExactAffine, Conservative, DynamicConservative };
 
 struct VerifiedMemoryAccess {
   std::uint32_t id = 0;
@@ -949,6 +950,10 @@ struct VerifiedMemoryAccess {
   const llvm::Value* address = nullptr;
   const llvm::Value* base = nullptr;
   const llvm::Value* dynamicIndex = nullptr;
+  LLVMAddressMode addressMode = LLVMAddressMode::ExactAffine;
+  std::string invariantExpression;
+  std::int64_t constantOffsetBytes = 0;
+  std::int64_t iterationStrideBytes = 0;
   std::int64_t dynamicScaleWords = 0;
   std::int64_t gepConstantOffsetWords = 0;
   std::int64_t constantOffsetWords = 0;
@@ -975,6 +980,8 @@ struct VerifiedMemoryExpectations {
 struct VerifiedAffineValue {
   std::int64_t offset = 0;
   std::int64_t stride = 0;
+  LLVMAddressMode mode = LLVMAddressMode::ExactAffine;
+  std::string invariantExpression;
 };
 
 bool verifiedFitsAddressWord(std::int64_t value) {
@@ -1002,15 +1009,30 @@ std::optional<VerifiedAffineValue> verifiedAffineValue(const llvm::Value& value,
                                                        llvm::ScalarEvolution& scalarEvolution) {
   const auto* expression = scalarEvolution.getSCEV(const_cast<llvm::Value*>(&value));
   if (const auto constant = verifiedSignedConstant(expression))
-    return VerifiedAffineValue{*constant, 0};
+    return VerifiedAffineValue{*constant, 0, LLVMAddressMode::ExactAffine, {}};
+  if (scalarEvolution.isLoopInvariant(expression, &loop)) {
+    std::string text;
+    llvm::raw_string_ostream stream(text);
+    expression->print(stream);
+    stream.flush();
+    return VerifiedAffineValue{0, 0, LLVMAddressMode::SymbolicAffine, std::move(text)};
+  }
   const auto* recurrence = llvm::dyn_cast<llvm::SCEVAddRecExpr>(expression);
-  if (!recurrence || recurrence->getLoop() != &loop || !recurrence->isAffine())
-    return std::nullopt;
-  const auto start = verifiedSignedConstant(recurrence->getStart());
-  const auto step = verifiedSignedConstant(recurrence->getStepRecurrence(scalarEvolution));
-  if (!start || !step)
-    return std::nullopt;
-  return VerifiedAffineValue{*start, *step};
+  if (recurrence && recurrence->getLoop() == &loop && recurrence->isAffine()) {
+    const auto step = verifiedSignedConstant(recurrence->getStepRecurrence(scalarEvolution));
+    if (!step)
+      return VerifiedAffineValue{0, 0, LLVMAddressMode::Dynamic, {}};
+    if (const auto start = verifiedSignedConstant(recurrence->getStart()))
+      return VerifiedAffineValue{*start, *step, LLVMAddressMode::ExactAffine, {}};
+    if (scalarEvolution.isLoopInvariant(recurrence->getStart(), &loop)) {
+      std::string text;
+      llvm::raw_string_ostream stream(text);
+      recurrence->getStart()->print(stream);
+      stream.flush();
+      return VerifiedAffineValue{0, *step, LLVMAddressMode::SymbolicAffine, std::move(text)};
+    }
+  }
+  return VerifiedAffineValue{0, 0, LLVMAddressMode::Dynamic, {}};
 }
 
 bool verifiedInstructionBefore(const llvm::Instruction& lhs, const llvm::Instruction& rhs,
@@ -1115,6 +1137,7 @@ VerifiedMemoryExpectations recomputeMemoryExpectations(const Selection& selectio
           return result;
         }
         access.gepConstantOffsetWords = constantOffset.getSExtValue() / 4;
+        access.constantOffsetBytes = constantOffset.getSExtValue();
         if (!verifiedFitsAddressWord(access.gepConstantOffsetWords)) {
           result.error = "LLVM GEP constant word offset exceeds the verified i32 address domain";
           return result;
@@ -1141,9 +1164,14 @@ VerifiedMemoryExpectations recomputeMemoryExpectations(const Selection& selectio
             return result;
           }
           access.dynamicIndex = index;
+          access.addressMode = affine->mode;
+          access.invariantExpression = affine->invariantExpression;
           access.dynamicScaleWords = scaleWords;
           access.constantOffsetWords = derivedOffset;
           access.iterationStrideWords = derivedStride;
+          access.constantOffsetBytes = constantOffset.getSExtValue() +
+                                       affine->offset * scaleBytes.getSExtValue();
+          access.iterationStrideBytes = affine->stride * scaleBytes.getSExtValue();
         }
       }
       result.accesses.push_back(access);
@@ -1152,7 +1180,10 @@ VerifiedMemoryExpectations recomputeMemoryExpectations(const Selection& selectio
 
   std::set<std::tuple<std::uint32_t, std::uint32_t, ir::MemoryDepKind, std::uint32_t>> seen;
   for (const auto& access : result.accesses)
-    if (verifiedIsStore(access) && access.iterationStrideWords == 0)
+    if (verifiedIsStore(access) && access.addressMode == LLVMAddressMode::Dynamic)
+      addVerifiedDependence(result, seen, access.id, access.id, ir::MemoryDepKind::WAW, 1,
+                            VerifiedMemoryDependenceMode::DynamicConservative);
+    else if (verifiedIsStore(access) && access.iterationStrideWords == 0)
       addVerifiedDependence(result, seen, access.id, access.id, ir::MemoryDepKind::WAW, 1,
                             VerifiedMemoryDependenceMode::ExactAffine);
 
@@ -1163,8 +1194,11 @@ VerifiedMemoryExpectations recomputeMemoryExpectations(const Selection& selectio
       if (!verifiedIsStore(*lhs) && !verifiedIsStore(*rhs))
         continue;
 
-      const bool exact = lhs->base == rhs->base && lhs->accessWidthBits == rhs->accessWidthBits &&
-                         lhs->iterationStrideWords == rhs->iterationStrideWords;
+      const bool exact = lhs->addressMode != LLVMAddressMode::Dynamic &&
+                         rhs->addressMode != LLVMAddressMode::Dynamic && lhs->base == rhs->base &&
+                         lhs->accessWidthBits == rhs->accessWidthBits &&
+                         lhs->iterationStrideWords == rhs->iterationStrideWords &&
+                         lhs->invariantExpression == rhs->invariantExpression;
       if (!exact && aliasAnalysis.alias(llvm::MemoryLocation::get(lhs->instruction),
                                         llvm::MemoryLocation::get(rhs->instruction)) ==
                         llvm::AliasResult::NoAlias)
@@ -1203,17 +1237,29 @@ VerifiedMemoryExpectations recomputeMemoryExpectations(const Selection& selectio
         continue;
       }
 
+      const auto conservativeMode =
+          lhs->addressMode == LLVMAddressMode::Dynamic || rhs->addressMode == LLVMAddressMode::Dynamic
+              ? VerifiedMemoryDependenceMode::DynamicConservative
+              : VerifiedMemoryDependenceMode::Conservative;
       addVerifiedDependence(result, seen, lhs->id, rhs->id, verifiedDependenceKind(*lhs, *rhs), 0,
-                            VerifiedMemoryDependenceMode::Conservative);
+                            conservativeMode);
       addVerifiedDependence(result, seen, rhs->id, lhs->id, verifiedDependenceKind(*rhs, *lhs), 1,
-                            VerifiedMemoryDependenceMode::Conservative);
+                            conservativeMode);
     }
   }
   return result;
 }
 
 std::string_view verifiedModeName(VerifiedMemoryDependenceMode mode) {
-  return mode == VerifiedMemoryDependenceMode::ExactAffine ? "exact_affine" : "conservative";
+  switch (mode) {
+  case VerifiedMemoryDependenceMode::ExactAffine:
+    return "exact_affine";
+  case VerifiedMemoryDependenceMode::Conservative:
+    return "conservative";
+  case VerifiedMemoryDependenceMode::DynamicConservative:
+    return "dynamic_conservative";
+  }
+  return "dynamic_conservative";
 }
 
 const LLVMMemoryAccessProvenance* memoryAccessProvenance(const LLVMFrontendResult& result,
@@ -1294,6 +1340,10 @@ void verifyMemoryDataflow(const Selection& selection, const LLVMFrontendResult& 
     }
     accesses.emplace(descriptor.id, actual);
     if (actual->id != descriptor.id || actual->baseValue != descriptor.base ||
+        actual->addressMode != toString(descriptor.addressMode) ||
+        actual->invariantExpression != descriptor.invariantExpression ||
+        actual->offsetBytes != descriptor.constantOffsetBytes ||
+        actual->strideBytes != descriptor.iterationStrideBytes ||
         actual->offsetWords != descriptor.constantOffsetWords ||
         actual->strideWords != descriptor.iterationStrideWords ||
         actual->accessWidthBits != descriptor.accessWidthBits ||

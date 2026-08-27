@@ -549,6 +549,44 @@ exit:
 }
 )IR";
 
+const char* kSymbolicAffine = R"IR(
+target datalayout = "e-p:64:64"
+define void @symbolic_affine(i32* %A, i32 %outer) {
+entry:
+  %row = mul i32 %outer, 64
+  br label %loop
+loop:
+  %i = phi i32 [ 0, %entry ], [ %inc, %loop ]
+  %index = add i32 %row, %i
+  %addr = getelementptr i32, i32* %A, i32 %index
+  %value = load i32, i32* %addr, align 4
+  %inc = add i32 %i, 1
+  %done = icmp ult i32 %inc, 4
+  br i1 %done, label %loop, label %exit
+exit:
+  ret void
+}
+)IR";
+
+const char* kDynamicLoadedIndexStore = R"IR(
+target datalayout = "e-p:64:64"
+define void @dynamic_loaded_index(i32* noalias %indices, i32* noalias %A) {
+entry:
+  br label %loop
+loop:
+  %i = phi i32 [ 0, %entry ], [ %inc, %loop ]
+  %index.addr = getelementptr i32, i32* %indices, i32 %i
+  %index = load i32, i32* %index.addr, align 4
+  %addr = getelementptr i32, i32* %A, i32 %index
+  store i32 %i, i32* %addr, align 4
+  %inc = add i32 %i, 1
+  %done = icmp ult i32 %inc, 4
+  br i1 %done, label %loop, label %exit
+exit:
+  ret void
+}
+)IR";
+
 const char* kDynamicMemoryLiveOut = R"IR(
 target datalayout = "e-p:64:64"
 define i32 @memory_liveout(i32* %A) {
@@ -763,6 +801,22 @@ void runSemanticCases() {
              implicit.provenance.memoryAccesses.front().strideWords == 2 &&
              countOpcode(*implicit.dfg, cgra::ir::Opcode::Mul) == 1,
          "implicit GEP scale two and offset one must be real Generic address dataflow");
+
+  const auto symbolic = lower(kSymbolicAffine, "symbolic_affine", context);
+  expect(symbolic.ok(), "selected-loop invariant offset must lower: " + symbolic.message);
+  expect(symbolic.provenance.memoryAccesses.size() == 1 &&
+             symbolic.provenance.memoryAccesses.front().addressMode == "symbolic_affine" &&
+             symbolic.provenance.memoryAccesses.front().strideBytes == 4,
+         "outer-loop/function-entry terms must remain symbolic with an exact selected-loop stride");
+
+  const auto dynamic = lower(kDynamicLoadedIndexStore, "dynamic_loaded_index", context);
+  expect(dynamic.ok(), "loaded-index address dataflow must lower conservatively: " + dynamic.message);
+  expect(std::ranges::any_of(dynamic.provenance.memoryAccesses, [](const auto& access) {
+           return access.kind == "store" && access.addressMode == "dynamic";
+         }),
+         "indirect Store must retain dynamic address provenance");
+  expect(countMemoryEdge(*dynamic.dfg, cgra::ir::MemoryDepKind::WAW, 1) == 1,
+         "dynamic Store must conservatively order successive iterations");
 }
 
 void runNegativeCases() {
@@ -792,10 +846,9 @@ void runNegativeCases() {
          "GEP word offsets wider than Generic i32 must be rejected before narrowing");
 
   const auto nonAffine = lower(kNonAffineLoad, "non_affine", context);
-  expect(!nonAffine.ok() &&
-             nonAffine.status ==
-                 cgra::frontend::llvm_frontend::LLVMFrontendStatus::UnsupportedNonAffineAddress,
-         "non-affine GEP index must be rejected");
+  expect(nonAffine.ok() && nonAffine.provenance.memoryAccesses.size() == 1 &&
+             nonAffine.provenance.memoryAccesses.front().addressMode == "dynamic",
+         "runtime-stride GEP must lower as dynamic address dataflow");
 
   const auto memoryLiveOut = lower(kDynamicMemoryLiveOut, "memory_liveout", context);
   expect(!memoryLiveOut.ok() && memoryLiveOut.status ==

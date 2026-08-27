@@ -242,6 +242,10 @@ struct LLVMMemoryAccessProvenance {
   std::uint32_t id = 0;
   std::string kind;
   std::string base;
+  std::string addressMode;
+  std::string invariantExpression;
+  std::int64_t offsetBytes = 0;
+  std::int64_t strideBytes = 0;
   std::int64_t offsetWords = 0;
   std::int64_t strideWords = 0;
   std::uint32_t accessWidthBits = 0;

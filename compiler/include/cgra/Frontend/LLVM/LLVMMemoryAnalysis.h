@@ -35,7 +35,10 @@ std::string_view toString(LLVMMemoryAnalysisStatus status) noexcept;
 enum class LLVMMemoryAccessKind { Load, Store };
 std::string_view toString(LLVMMemoryAccessKind kind) noexcept;
 
-enum class LLVMMemoryDependenceMode { ExactAffine, Conservative };
+enum class LLVMAddressMode { ExactAffine, SymbolicAffine, Dynamic };
+std::string_view toString(LLVMAddressMode mode) noexcept;
+
+enum class LLVMMemoryDependenceMode { ExactAffine, Conservative, DynamicConservative };
 std::string_view toString(LLVMMemoryDependenceMode mode) noexcept;
 
 struct LLVMMemoryAccessDescriptor {
@@ -45,6 +48,12 @@ struct LLVMMemoryAccessDescriptor {
   const llvm::Value* address = nullptr;
   const llvm::Value* base = nullptr;
   const llvm::Value* dynamicIndex = nullptr;
+  LLVMAddressMode addressMode = LLVMAddressMode::ExactAffine;
+  std::string invariantExpression;
+  std::int64_t dynamicScaleBytes = 0;
+  std::int64_t gepConstantOffsetBytes = 0;
+  std::int64_t constantOffsetBytes = 0;
+  std::int64_t iterationStrideBytes = 0;
   std::int64_t dynamicScaleWords = 0;
   std::int64_t gepConstantOffsetWords = 0;
   std::int64_t constantOffsetWords = 0;

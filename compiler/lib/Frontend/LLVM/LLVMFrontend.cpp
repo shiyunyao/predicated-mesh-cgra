@@ -1494,6 +1494,8 @@ LLVMFrontendResult lowerStructuredLoop(llvm::Module& module, const LLVMFrontendO
     const auto addressNode = state.nodes.find(access.address);
     state.provenance.memoryAccesses.push_back(
         {access.id, std::string(toString(access.kind)), valueSummary(*access.base),
+         std::string(toString(access.addressMode)), access.invariantExpression,
+         access.constantOffsetBytes, access.iterationStrideBytes,
          access.constantOffsetWords, access.iterationStrideWords, access.accessWidthBits,
          memoryNode, addressNode == state.nodes.end() ? memoryNode : addressNode->second,
          access.instruction, access.base});
@@ -2209,6 +2211,11 @@ std::string LLVMFrontendResult::toJson() const {
     root["provenance"]["memory_accesses"].push_back({{"id", access.id},
                                                      {"kind", access.kind},
                                                      {"base", access.base},
+                                                     {"address_mode", access.addressMode},
+                                                     {"invariant_expression",
+                                                      access.invariantExpression},
+                                                     {"offset_bytes", access.offsetBytes},
+                                                     {"stride_bytes", access.strideBytes},
                                                      {"offset_words", access.offsetWords},
                                                      {"stride_words", access.strideWords},
                                                      {"access_width_bits", access.accessWidthBits},

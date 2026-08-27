@@ -16,6 +16,7 @@
 #include <llvm/IR/Function.h>
 #include <llvm/IR/Instructions.h>
 #include <llvm/IR/Module.h>
+#include <llvm/Support/raw_ostream.h>
 
 #include <algorithm>
 #include <limits>
@@ -66,6 +67,8 @@ std::optional<std::int64_t> signedConstant(const llvm::SCEV* value) {
 struct AffineValue {
   std::int64_t offset = 0;
   std::int64_t stride = 0;
+  LLVMAddressMode mode = LLVMAddressMode::ExactAffine;
+  std::string invariantExpression;
 };
 
 bool fitsAddressWord(std::int64_t value) {
@@ -77,15 +80,30 @@ std::optional<AffineValue> affineValue(const llvm::Value& value, const llvm::Loo
                                        llvm::ScalarEvolution& scalarEvolution) {
   const auto* expression = scalarEvolution.getSCEV(const_cast<llvm::Value*>(&value));
   if (const auto constant = signedConstant(expression))
-    return AffineValue{*constant, 0};
+    return AffineValue{*constant, 0, LLVMAddressMode::ExactAffine, {}};
+  if (scalarEvolution.isLoopInvariant(expression, &loop)) {
+    std::string text;
+    llvm::raw_string_ostream stream(text);
+    expression->print(stream);
+    stream.flush();
+    return AffineValue{0, 0, LLVMAddressMode::SymbolicAffine, std::move(text)};
+  }
   const auto* recurrence = llvm::dyn_cast<llvm::SCEVAddRecExpr>(expression);
-  if (!recurrence || recurrence->getLoop() != &loop || !recurrence->isAffine())
-    return std::nullopt;
-  const auto start = signedConstant(recurrence->getStart());
-  const auto step = signedConstant(recurrence->getStepRecurrence(scalarEvolution));
-  if (!start || !step)
-    return std::nullopt;
-  return AffineValue{*start, *step};
+  if (recurrence && recurrence->getLoop() == &loop && recurrence->isAffine()) {
+    const auto step = signedConstant(recurrence->getStepRecurrence(scalarEvolution));
+    if (!step)
+      return AffineValue{0, 0, LLVMAddressMode::Dynamic, {}};
+    if (const auto start = signedConstant(recurrence->getStart()))
+      return AffineValue{*start, *step, LLVMAddressMode::ExactAffine, {}};
+    if (scalarEvolution.isLoopInvariant(recurrence->getStart(), &loop)) {
+      std::string text;
+      llvm::raw_string_ostream stream(text);
+      recurrence->getStart()->print(stream);
+      stream.flush();
+      return AffineValue{0, *step, LLVMAddressMode::SymbolicAffine, std::move(text)};
+    }
+  }
+  return AffineValue{0, 0, LLVMAddressMode::Dynamic, {}};
 }
 
 std::optional<LLVMMemoryAccessDescriptor> analyzeAccess(const llvm::Instruction& instruction,
@@ -156,12 +174,14 @@ std::optional<LLVMMemoryAccessDescriptor> analyzeAccess(const llvm::Instruction&
     return std::nullopt;
   }
   descriptor.gepConstantOffsetWords = constantOffset.getSExtValue() / 4;
+  descriptor.gepConstantOffsetBytes = constantOffset.getSExtValue();
   if (!fitsAddressWord(descriptor.gepConstantOffsetWords)) {
     error = fail(LLVMMemoryAnalysisStatus::UnsupportedNonAffineAddress,
                  "GEP constant word offset is not representable by Generic i32 address arithmetic");
     return std::nullopt;
   }
   descriptor.constantOffsetWords = descriptor.gepConstantOffsetWords;
+  descriptor.constantOffsetBytes = descriptor.gepConstantOffsetBytes;
   if (variableOffsets.size() > 1) {
     error = fail(LLVMMemoryAnalysisStatus::UnsupportedNonAffineAddress,
                  "T018 V0 accepts one affine dynamic GEP index");
@@ -177,17 +197,15 @@ std::optional<LLVMMemoryAccessDescriptor> analyzeAccess(const llvm::Instruction&
     return std::nullopt;
   }
   const auto scaleWords = scaleBytesValue.getSExtValue() / 4;
+  descriptor.dynamicScaleBytes = scaleBytesValue.getSExtValue();
   if (!fitsAddressWord(scaleWords)) {
     error = fail(LLVMMemoryAnalysisStatus::UnsupportedNonAffineAddress,
                  "dynamic GEP word scale is not representable by Generic i32 address arithmetic");
     return std::nullopt;
   }
   const auto affine = affineValue(*index, loop, scalarEvolution);
-  if (!affine) {
-    error = fail(LLVMMemoryAnalysisStatus::UnsupportedNonAffineAddress,
-                 "dynamic GEP index is not an exact affine loop expression");
+  if (!affine)
     return std::nullopt;
-  }
   if (!fitsAddressWord(affine->offset) || !fitsAddressWord(affine->stride)) {
     error = fail(LLVMMemoryAnalysisStatus::UnsupportedNonAffineAddress,
                  "affine GEP index exceeds the Generic i32 address domain");
@@ -201,9 +219,15 @@ std::optional<LLVMMemoryAccessDescriptor> analyzeAccess(const llvm::Instruction&
     return std::nullopt;
   }
   descriptor.dynamicIndex = index;
+  descriptor.addressMode = affine->mode;
+  descriptor.invariantExpression = affine->invariantExpression;
   descriptor.dynamicScaleWords = scaleWords;
   descriptor.constantOffsetWords = derivedOffset;
   descriptor.iterationStrideWords = derivedStride;
+  descriptor.constantOffsetBytes = descriptor.gepConstantOffsetBytes + affine->offset *
+                                                                        descriptor.dynamicScaleBytes;
+  descriptor.iterationStrideBytes = affine->stride * descriptor.dynamicScaleBytes;
+  descriptor.exactAffine = affine->mode != LLVMAddressMode::Dynamic;
   return descriptor;
 }
 
@@ -262,8 +286,28 @@ std::string_view toString(LLVMMemoryAccessKind kind) noexcept {
   return kind == LLVMMemoryAccessKind::Load ? "load" : "store";
 }
 
+std::string_view toString(LLVMAddressMode mode) noexcept {
+  switch (mode) {
+  case LLVMAddressMode::ExactAffine:
+    return "exact_affine";
+  case LLVMAddressMode::SymbolicAffine:
+    return "symbolic_affine";
+  case LLVMAddressMode::Dynamic:
+    return "dynamic";
+  }
+  return "dynamic";
+}
+
 std::string_view toString(LLVMMemoryDependenceMode mode) noexcept {
-  return mode == LLVMMemoryDependenceMode::ExactAffine ? "exact_affine" : "conservative";
+  switch (mode) {
+  case LLVMMemoryDependenceMode::ExactAffine:
+    return "exact_affine";
+  case LLVMMemoryDependenceMode::Conservative:
+    return "conservative";
+  case LLVMMemoryDependenceMode::DynamicConservative:
+    return "dynamic_conservative";
+  }
+  return "dynamic_conservative";
 }
 
 LLVMMemoryAnalysisResult analyzeMemoryDependences(const llvm::Loop& loop,
@@ -300,7 +344,11 @@ LLVMMemoryAnalysisResult analyzeMemoryDependences(const llvm::Loop& loop,
 
   std::set<DependenceKey> seen;
   for (const auto& access : result.accesses) {
-    if (isStore(access) && access.iterationStrideWords == 0)
+    if (isStore(access) && access.addressMode == LLVMAddressMode::Dynamic)
+      addDependence(result, seen, access.id, access.id, ir::MemoryDepKind::WAW, 1,
+                    LLVMMemoryDependenceMode::DynamicConservative,
+                    "dynamic Store may revisit an address in the next iteration");
+    else if (isStore(access) && access.iterationStrideWords == 0)
       addDependence(result, seen, access.id, access.id, ir::MemoryDepKind::WAW, 1,
                     LLVMMemoryDependenceMode::ExactAffine,
                     "invariant Store repeats the same logical word");
@@ -315,7 +363,8 @@ LLVMMemoryAnalysisResult analyzeMemoryDependences(const llvm::Loop& loop,
 
       const bool exact = lhs->exactAffine && rhs->exactAffine && lhs->base == rhs->base &&
                          lhs->accessWidthBits == rhs->accessWidthBits &&
-                         lhs->iterationStrideWords == rhs->iterationStrideWords;
+                         lhs->iterationStrideWords == rhs->iterationStrideWords &&
+                         lhs->invariantExpression == rhs->invariantExpression;
       if (!exact && aliasAnalysis.alias(llvm::MemoryLocation::get(lhs->instruction),
                                         llvm::MemoryLocation::get(rhs->instruction)) ==
                         llvm::AliasResult::NoAlias)
@@ -355,11 +404,15 @@ LLVMMemoryAnalysisResult analyzeMemoryDependences(const llvm::Loop& loop,
         continue;
       }
 
+      const auto conservativeMode =
+          lhs->addressMode == LLVMAddressMode::Dynamic || rhs->addressMode == LLVMAddressMode::Dynamic
+              ? LLVMMemoryDependenceMode::DynamicConservative
+              : LLVMMemoryDependenceMode::Conservative;
       addDependence(result, seen, lhs->id, rhs->id, dependenceKind(*lhs, *rhs), 0,
-                    LLVMMemoryDependenceMode::Conservative,
+                    conservativeMode,
                     "MayAlias program order within one iteration");
       addDependence(result, seen, rhs->id, lhs->id, dependenceKind(*rhs, *lhs), 1,
-                    LLVMMemoryDependenceMode::Conservative,
+                    conservativeMode,
                     "MayAlias reverse order across iterations");
     }
   }
