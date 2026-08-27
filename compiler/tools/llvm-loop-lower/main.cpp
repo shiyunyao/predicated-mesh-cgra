@@ -6,8 +6,13 @@
 #include "cgra/IR/DFGSerialization.h"
 #include "cgra/IR/DFGVerifier.h"
 
+#include <llvm/ADT/SmallVector.h>
+#include <llvm/Analysis/AssumptionCache.h>
 #include <llvm/Analysis/LoopInfo.h>
+#include <llvm/Analysis/ScalarEvolution.h>
+#include <llvm/Analysis/TargetLibraryInfo.h>
 #include <llvm/IR/Dominators.h>
+#include <llvm/IR/Instructions.h>
 #include <llvm/IR/LLVMContext.h>
 #include <llvm/IR/Module.h>
 #include <llvm/IRReader/IRReader.h>
@@ -21,9 +26,11 @@
 #include <fstream>
 #include <functional>
 #include <iostream>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -32,7 +39,7 @@ void usage(const char* name) {
             << " input.ll|input.bc --function name [--loop-header block]"
                " --artifact-dir dir -o generic_dfg.json\n"
                "       [--invocation invocation.json]\n"
-            << name << " input.ll|input.bc [--function name] --list-loops\n";
+            << name << " input.ll|input.bc [--function name] --list-loops [--json]\n";
 }
 
 std::string blockName(const llvm::Function& function, const llvm::BasicBlock& block) {
@@ -45,6 +52,93 @@ std::string blockName(const llvm::Function& function, const llvm::BasicBlock& bl
     ++ordinal;
   }
   return "bb." + std::to_string(ordinal);
+}
+
+std::optional<std::uint64_t> staticTripCount(llvm::Function& function, llvm::Loop& loop,
+                                             llvm::DominatorTree& dominatorTree,
+                                             llvm::LoopInfo& loopInfo) {
+  llvm::TargetLibraryInfoImpl libraryInfoImpl;
+  llvm::TargetLibraryInfo libraryInfo(libraryInfoImpl);
+  llvm::AssumptionCache assumptions(function);
+  llvm::ScalarEvolution scalarEvolution(function, libraryInfo, assumptions, dominatorTree,
+                                        loopInfo);
+  const auto count = scalarEvolution.getSmallConstantTripCount(&loop);
+  if (count == 0)
+    return std::nullopt;
+  return count;
+}
+
+nlohmann::json loopFeatures(const llvm::Loop& loop) {
+  nlohmann::json result = {{"opcode_histogram", nlohmann::json::object()},
+                           {"type_histogram", nlohmann::json::object()},
+                           {"icmp_predicate_histogram", nlohmann::json::object()},
+                           {"counts",
+                            {{"phis", 0},
+                             {"branches", 0},
+                             {"internal_conditional_branches", 0},
+                             {"loads", 0},
+                             {"stores", 0},
+                             {"geps", 0},
+                             {"calls_or_intrinsics", 0},
+                             {"atomics_or_fences", 0},
+                             {"volatile", 0},
+                             {"pointer_phis", 0},
+                             {"selects", 0}}}};
+  const auto increment = [&](nlohmann::json& value) {
+    value = value.is_number_unsigned() ? value.get<std::uint64_t>() + 1 : 1;
+  };
+  const auto countType = [&](const llvm::Type* type) {
+    std::string text;
+    llvm::raw_string_ostream stream(text);
+    type->print(stream);
+    auto& count = result["type_histogram"][stream.str()];
+    count = count.is_number_unsigned() ? count.get<std::uint64_t>() + 1 : 1;
+  };
+  for (const auto* block : loop.blocks()) {
+    for (const auto& instruction : *block) {
+      auto& opcodeCount = result["opcode_histogram"][instruction.getOpcodeName()];
+      opcodeCount = opcodeCount.is_number_unsigned() ? opcodeCount.get<std::uint64_t>() + 1 : 1;
+      countType(instruction.getType());
+      for (const auto& operand : instruction.operands())
+        countType(operand->getType());
+      if (const auto* phi = llvm::dyn_cast<llvm::PHINode>(&instruction)) {
+        increment(result["counts"]["phis"]);
+        if (phi->getType()->isPointerTy())
+          increment(result["counts"]["pointer_phis"]);
+      }
+      if (const auto* branch = llvm::dyn_cast<llvm::BranchInst>(&instruction)) {
+        increment(result["counts"]["branches"]);
+        if (branch->isConditional() && loop.contains(branch->getSuccessor(0)) &&
+            loop.contains(branch->getSuccessor(1)))
+          increment(result["counts"]["internal_conditional_branches"]);
+      }
+      if (llvm::isa<llvm::LoadInst>(instruction))
+        increment(result["counts"]["loads"]);
+      if (llvm::isa<llvm::StoreInst>(instruction))
+        increment(result["counts"]["stores"]);
+      if (llvm::isa<llvm::GetElementPtrInst>(instruction))
+        increment(result["counts"]["geps"]);
+      if (llvm::isa<llvm::CallBase>(instruction))
+        increment(result["counts"]["calls_or_intrinsics"]);
+      if (llvm::isa<llvm::AtomicRMWInst>(instruction) ||
+          llvm::isa<llvm::AtomicCmpXchgInst>(instruction) ||
+          llvm::isa<llvm::FenceInst>(instruction))
+        increment(result["counts"]["atomics_or_fences"]);
+      if ((llvm::isa<llvm::LoadInst>(instruction) &&
+           llvm::cast<llvm::LoadInst>(instruction).isVolatile()) ||
+          (llvm::isa<llvm::StoreInst>(instruction) &&
+           llvm::cast<llvm::StoreInst>(instruction).isVolatile()))
+        increment(result["counts"]["volatile"]);
+      if (llvm::isa<llvm::SelectInst>(instruction))
+        increment(result["counts"]["selects"]);
+      if (const auto* compare = llvm::dyn_cast<llvm::ICmpInst>(&instruction)) {
+        const auto predicate = llvm::CmpInst::getPredicateName(compare->getPredicate());
+        auto& predicateCount = result["icmp_predicate_histogram"][predicate.str()];
+        increment(predicateCount);
+      }
+    }
+  }
+  return result;
 }
 
 void writeArtifact(const std::filesystem::path& path, const std::string& text) {
@@ -84,6 +178,7 @@ int main(int argc, char** argv) {
     std::filesystem::path invocationPath;
     cgra::frontend::llvm_frontend::LLVMFrontendOptions options;
     bool listLoops = false;
+    bool listLoopsJson = false;
     for (int index = 2; index < argc; ++index) {
       const std::string argument = argv[index];
       auto next = [&]() -> std::string {
@@ -103,6 +198,8 @@ int main(int argc, char** argv) {
         outputPath = next();
       else if (argument == "--list-loops")
         listLoops = true;
+      else if (argument == "--json")
+        listLoopsJson = true;
       else {
         usage(argv[0]);
         return 2;
@@ -119,15 +216,33 @@ int main(int argc, char** argv) {
       return 1;
     }
     if (listLoops) {
-      auto printFunction = [](llvm::Function& function) {
+      nlohmann::json loopsJson = {{"schema", "cgra.llvm_loop_inventory.v1"},
+                                  {"loops", nlohmann::json::array()}};
+      auto printFunction = [&](llvm::Function& function) {
         llvm::DominatorTree dominatorTree(function);
         llvm::LoopInfo loopInfo(dominatorTree);
         std::function<void(llvm::Loop*)> visit = [&](llvm::Loop* loop) {
           if (loop->isInnermost()) {
-            std::cout << function.getName().str()
-                      << " header=" << blockName(function, *loop->getHeader())
-                      << " blocks=" << loop->getBlocks().size() << " depth=" << loop->getLoopDepth()
-                      << '\n';
+            llvm::SmallVector<llvm::BasicBlock*, 8> exits;
+            llvm::SmallVector<llvm::BasicBlock*, 8> latches;
+            loop->getExitBlocks(exits);
+            loop->getLoopLatches(latches);
+            const auto staticCount = staticTripCount(function, *loop, dominatorTree, loopInfo);
+            nlohmann::json entry = {{"function", function.getName().str()},
+                                    {"header", blockName(function, *loop->getHeader())},
+                                    {"depth", loop->getLoopDepth()},
+                                    {"block_count", loop->getBlocks().size()},
+                                    {"latch_count", latches.size()},
+                                    {"exit_count", exits.size()},
+                                    {"features", loopFeatures(*loop)},
+                                    {"static_trip_count", staticCount ? nlohmann::json(*staticCount)
+                                                                      : nlohmann::json(nullptr)}};
+            loopsJson["loops"].push_back(std::move(entry));
+            if (!listLoopsJson)
+              std::cout << function.getName().str()
+                        << " header=" << blockName(function, *loop->getHeader())
+                        << " blocks=" << loop->getBlocks().size()
+                        << " depth=" << loop->getLoopDepth() << '\n';
             return;
           }
           for (auto* child : *loop)
@@ -145,6 +260,8 @@ int main(int argc, char** argv) {
       } else {
         throw std::invalid_argument("function not found: " + options.functionName);
       }
+      if (listLoopsJson)
+        std::cout << loopsJson.dump(2) << '\n';
       return 0;
     }
     if (!artifactDirectory.empty()) {

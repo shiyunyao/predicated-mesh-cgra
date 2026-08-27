@@ -1,0 +1,5 @@
+{
+  "cases": [],
+  "schema": "cgra.cgra_bench.known_supported.v1",
+  "note": "Populated after the first full audit with cases reaching L4 MAPPED or higher."
+}

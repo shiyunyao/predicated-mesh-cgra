@@ -1,0 +1,304 @@
+{
+  "commit": "6729aaf225d0320e4e0d3b419e20483069a5a69b",
+  "denominator": {
+    "candidate_loops": null,
+    "kernel_directories": 15,
+    "source_translation_units": 34
+  },
+  "kernel_directories": [
+    "adpcm_coder",
+    "adpcm_decoder",
+    "bicg",
+    "blowfish",
+    "conv",
+    "dtw",
+    "fft",
+    "fir",
+    "gemm",
+    "histogram",
+    "latnrm",
+    "mvt",
+    "relu",
+    "spmv",
+    "susan"
+  ],
+  "license": "BSD-3-Clause",
+  "nested_submodules": false,
+  "repository": "https://github.com/tancheng/CGRA-Bench",
+  "schema": "cgra.cgra_bench.corpus.v1",
+  "scope": "kernels/",
+  "sources": [
+    {
+      "enabled": true,
+      "exclusion": null,
+      "kernel": "adpcm_coder",
+      "language": "c",
+      "path": "kernels/adpcm_coder/adpcm.c",
+      "sha256": "7183c280e0798471fc9324c093a2c6923edbe3dc72d6ab6bbb49054627dc9df6"
+    },
+    {
+      "enabled": true,
+      "exclusion": null,
+      "kernel": "adpcm_coder",
+      "language": "c",
+      "path": "kernels/adpcm_coder/rawcaudio.c",
+      "sha256": "114538059777cdf8ede235b9857cb5109f5774497e470310db11ec6a83e9f5e3"
+    },
+    {
+      "enabled": true,
+      "exclusion": null,
+      "kernel": "adpcm_decoder",
+      "language": "c",
+      "path": "kernels/adpcm_decoder/adpcm.c",
+      "sha256": "9df7bee8d93ae1eb21556fbc297d9952f5a92549bfb407ad20f7343299523ed2"
+    },
+    {
+      "enabled": true,
+      "exclusion": null,
+      "kernel": "adpcm_decoder",
+      "language": "c",
+      "path": "kernels/adpcm_decoder/rawcaudio.c",
+      "sha256": "114538059777cdf8ede235b9857cb5109f5774497e470310db11ec6a83e9f5e3"
+    },
+    {
+      "enabled": true,
+      "exclusion": null,
+      "kernel": "bicg",
+      "language": "c",
+      "path": "kernels/bicg/bicg.c",
+      "sha256": "5050222696d11d113cec45c2154441989ec084d8121db5f13fec47c55c0547e3"
+    },
+    {
+      "enabled": true,
+      "exclusion": null,
+      "kernel": "bicg",
+      "language": "c",
+      "path": "kernels/bicg/bicg_int.c",
+      "sha256": "6bcd74cd6ba86302f18a7af900d7c4bab32822ae21b34905bda44197e5915cca"
+    },
+    {
+      "enabled": true,
+      "exclusion": null,
+      "kernel": "blowfish",
+      "language": "c++",
+      "path": "kernels/blowfish/asm/bx86unix.cpp",
+      "sha256": "b8e61ab0e7a5d40ed9d78fe17452da48d132d7ba4a9399cdba2fc79c80e07d0e"
+    },
+    {
+      "enabled": true,
+      "exclusion": null,
+      "kernel": "blowfish",
+      "language": "c",
+      "path": "kernels/blowfish/bf.c",
+      "sha256": "9f8fb1be972283ff5b00a9c6e68a4ef7a4c384647a1e9b29d2fbdbced98187d3"
+    },
+    {
+      "enabled": true,
+      "exclusion": null,
+      "kernel": "blowfish",
+      "language": "c",
+      "path": "kernels/blowfish/bf_cbc.c",
+      "sha256": "6adb7b2881a1703e3c403595a5fafdae05be9d8ac5666e19ac5bd310b1128158"
+    },
+    {
+      "enabled": true,
+      "exclusion": null,
+      "kernel": "blowfish",
+      "language": "c",
+      "path": "kernels/blowfish/bf_cfb64.c",
+      "sha256": "41cd5098e2c33246cdecb981edaa7555240a6677ef5b14851be78230ba9b2b14"
+    },
+    {
+      "enabled": true,
+      "exclusion": null,
+      "kernel": "blowfish",
+      "language": "c",
+      "path": "kernels/blowfish/bf_ecb.c",
+      "sha256": "ee8a26743db8ca33a8906ec9e54831a7e5668102be6bef577919a0e26467d75a"
+    },
+    {
+      "enabled": true,
+      "exclusion": null,
+      "kernel": "blowfish",
+      "language": "c",
+      "path": "kernels/blowfish/bf_enc.c",
+      "sha256": "fd8eaf14e38c4e5de43483e8f506e3e1b6702e85de11ee6d92587dfcb16020e0"
+    },
+    {
+      "enabled": true,
+      "exclusion": null,
+      "kernel": "blowfish",
+      "language": "c",
+      "path": "kernels/blowfish/bf_encrypt.c",
+      "sha256": "8f881f6e3f85bf01d59f9741de131c451c8f1984225639d798814e46c546958f"
+    },
+    {
+      "enabled": true,
+      "exclusion": null,
+      "kernel": "blowfish",
+      "language": "c",
+      "path": "kernels/blowfish/bf_ofb64.c",
+      "sha256": "0a7a393829235af922141f28cdcc11bdd44dee3d5c5c9659e4d0123dac8d721d"
+    },
+    {
+      "enabled": true,
+      "exclusion": null,
+      "kernel": "blowfish",
+      "language": "c",
+      "path": "kernels/blowfish/bf_skey.c",
+      "sha256": "f5f7c14440aedb5bca8a22a18e574f55ddd0b98239a5b73485fae70c4d1cf7e9"
+    },
+    {
+      "enabled": true,
+      "exclusion": null,
+      "kernel": "blowfish",
+      "language": "c",
+      "path": "kernels/blowfish/bf_test.c",
+      "sha256": "d07adbc31b4032227567aa614fd1f147d6c92aed56bcf7646d20d3946a22abc1"
+    },
+    {
+      "enabled": true,
+      "exclusion": null,
+      "kernel": "blowfish",
+      "language": "c",
+      "path": "kernels/blowfish/bfspeed.c",
+      "sha256": "8c60ed4c1b134a82bd03f574e090cc980efcbe0801810c5308c84cee02229ed6"
+    },
+    {
+      "enabled": true,
+      "exclusion": null,
+      "kernel": "blowfish",
+      "language": "c",
+      "path": "kernels/blowfish/bftest.c",
+      "sha256": "85a5f47dd48c7ebbaec503ef899ff66cbdccf654a5f98f0348b293c17adda5fe"
+    },
+    {
+      "enabled": true,
+      "exclusion": null,
+      "kernel": "conv",
+      "language": "c",
+      "path": "kernels/conv/conv.c",
+      "sha256": "bd6d060cb2dc19e5c425565d46596d9dc6e2bd36289de210c159ff92726af202"
+    },
+    {
+      "enabled": true,
+      "exclusion": null,
+      "kernel": "dtw",
+      "language": "c++",
+      "path": "kernels/dtw/dtw.cpp",
+      "sha256": "1693838767a710946ca9bdd01c66533be10ae8244c5312e58ec42734aa91baee"
+    },
+    {
+      "enabled": true,
+      "exclusion": null,
+      "kernel": "fft",
+      "language": "c",
+      "path": "kernels/fft/fft.c",
+      "sha256": "2a26716bf4ac0edfa107eeb2f14422facb6e35aa2ec2af3b477cd132c25266c2"
+    },
+    {
+      "enabled": true,
+      "exclusion": null,
+      "kernel": "fft",
+      "language": "c",
+      "path": "kernels/fft/fft_int.c",
+      "sha256": "b96eda235d2bcfd7a6ef65d9880f4fc16571055867e02dce1331e9f89ed0c8b3"
+    },
+    {
+      "enabled": true,
+      "exclusion": null,
+      "kernel": "fir",
+      "language": "c++",
+      "path": "kernels/fir/fir.cpp",
+      "sha256": "0bce13dadcc4830586321116fd1574fa4985e1a8907c78f13812f697feb6ee9f"
+    },
+    {
+      "enabled": true,
+      "exclusion": null,
+      "kernel": "fir",
+      "language": "c++",
+      "path": "kernels/fir/fir_int.cpp",
+      "sha256": "156711b7c44c3fbc7558957475570ea110bd0b850ff0f41c737311884b4bf285"
+    },
+    {
+      "enabled": true,
+      "exclusion": null,
+      "kernel": "gemm",
+      "language": "c",
+      "path": "kernels/gemm/gemm.c",
+      "sha256": "a7ea8ba7ac4d4f645528f022902badd731b6844f4a1df6fcc4b0852194744cc2"
+    },
+    {
+      "enabled": true,
+      "exclusion": null,
+      "kernel": "gemm",
+      "language": "c",
+      "path": "kernels/gemm/gemm_int.c",
+      "sha256": "86c9047af4f035540f497d9a0a980625c64eb55d484b3562cd9c79ca81c14231"
+    },
+    {
+      "enabled": true,
+      "exclusion": null,
+      "kernel": "histogram",
+      "language": "c++",
+      "path": "kernels/histogram/histogram.cpp",
+      "sha256": "68f9c54f4dc93ed27cde9badb9a1357ded44221ff0b6957c4a026be7389b3475"
+    },
+    {
+      "enabled": true,
+      "exclusion": null,
+      "kernel": "histogram",
+      "language": "c++",
+      "path": "kernels/histogram/histogram_int.cpp",
+      "sha256": "ec1018c11993dc627932be57f57dd3f8cdce81e93160dd60f0c641217f2b02e6"
+    },
+    {
+      "enabled": true,
+      "exclusion": null,
+      "kernel": "latnrm",
+      "language": "c",
+      "path": "kernels/latnrm/latnrm.c",
+      "sha256": "8d535a968f2981b07db957a79f7f3e5fe53c09ba28d57fe7a9d9e18c1313921c"
+    },
+    {
+      "enabled": true,
+      "exclusion": null,
+      "kernel": "mvt",
+      "language": "c",
+      "path": "kernels/mvt/mvt.c",
+      "sha256": "11be8e5bbd88665304789178b8bae301b19d6df676839da0eae67ff436505241"
+    },
+    {
+      "enabled": true,
+      "exclusion": null,
+      "kernel": "relu",
+      "language": "c",
+      "path": "kernels/relu/relu.c",
+      "sha256": "9f28b514c36382745b19820fa02fef9c26a776cbcaf4ddf9b59253195ceaf76f"
+    },
+    {
+      "enabled": true,
+      "exclusion": null,
+      "kernel": "relu",
+      "language": "c++",
+      "path": "kernels/relu/relu_int.cpp",
+      "sha256": "4b1fc3cd250c3bffc02c8741ff1f17eae14c594381c0f0e8dffc2586764e66ca"
+    },
+    {
+      "enabled": true,
+      "exclusion": null,
+      "kernel": "spmv",
+      "language": "c",
+      "path": "kernels/spmv/spmv.c",
+      "sha256": "5b6cd7193bb9b0fd91d46e788103bee7bcdbbc03325b73c8f9fb2b3a93e49daf"
+    },
+    {
+      "enabled": true,
+      "exclusion": null,
+      "kernel": "susan",
+      "language": "c",
+      "path": "kernels/susan/susan.c",
+      "sha256": "02cd07f1e24a8b402f7dc1378e1754fee2303ac41de28f2f5232de84ec9f5e5d"
+    }
+  ]
+}
