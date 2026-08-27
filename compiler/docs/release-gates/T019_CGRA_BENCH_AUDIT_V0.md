@@ -121,12 +121,12 @@ benchmark blocked by an unsupported operation, timeout, budget, or backend
 resource limit remains accounted for and is ranked for T020. No benchmark is
 edited, removed, or silently excluded to improve the measured rate.
 
-`known_supported.v1.json` was generated from feature audit run `33053874185`
-via `tools/cgra_bench/freeze_supported.py`. The hosted run found zero loops at
-L4, so its recorded baseline is empty. The functional adapter framework is
-present, but the checked-in functional case manifest is empty because the same
-audit found zero upstream L6 cases for which native input, Golden, and RTL
-observations could be compared honestly.
+`known_supported.v1.json` was generated from the post-merge main audit run
+`33060026049` via `tools/cgra_bench/freeze_supported.py`. The hosted run found
+zero loops at L4, so its recorded baseline is empty. The functional adapter
+framework is present, but the checked-in functional case manifest is empty
+because the same audit found zero upstream L6 cases for which native input,
+Golden, and RTL observations could be compared honestly.
 
 ## T020 input baseline
 
