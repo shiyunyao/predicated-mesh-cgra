@@ -61,7 +61,7 @@ def result_for_failure(case: dict[str, Any], stage: str, message: str, returncod
     failure = classify(stage, message, returncode)
     if diagnostic_code:
         failure["diagnostic_code"] = diagnostic_code
-    return {"id": case["id"], "kernel": case["kernel"], "source": case["source"], "loop_header": None, "tier": "DISCOVERED", "terminal_stage": stage, "message": message[-4000:], **failure}
+    return {"id": case["id"], "kernel": case["kernel"], "source": case["source"], "loop_header": None, "tier": "DISCOVERED", "terminal_stage": stage, "status": "FAIL", "stages": [{"stage": stage, "status": "FAIL"}], "message": message[-4000:], **failure}
 
 
 def synthesize_invocation(dfg: dict[str, Any], trip_count: int) -> dict[str, Any]:
@@ -76,13 +76,19 @@ def tier_from_compile(artifact_dir: pathlib.Path, frontend_ok: bool) -> tuple[st
         return "DISCOVERED", "FRONTEND"
     result_path = artifact_dir / "kernel_compile_result.json"
     if not result_path.exists():
-        return "FRONTEND_DFG", "FRONTEND_DFG"
+        return "FRONTEND_DFG", "S7_ABI_BIND"
     try:
         result = read_json(result_path)
         backend = result.get("backend") or {}
         status = backend.get("status", result.get("status", ""))
         if status == "success":
             return "MANIFEST_COMPLETE", "SUCCESS"
+        if status == "invalid_invocation":
+            return "FRONTEND_DFG", "S7_ABI_BIND"
+        if status in {"invalid_source_dfg", "generic_dfg_verification_failure"}:
+            return "FRONTEND_DFG", "S5_GENERIC_VERIFY"
+        if status in {"target_legalization_failure", "target_dfg_verification_failure"}:
+            return "FRONTEND_DFG", "S8_TARGET_LEGALIZE"
         if "legalization" in status:
             return "FRONTEND_DFG", "TARGET_ISA"
         if "mii" in status:
@@ -120,7 +126,7 @@ def backend_observation(artifact_dir: pathlib.Path) -> dict[str, Any]:
 
 def run_case(case: dict[str, Any], root: pathlib.Path, corpus: pathlib.Path, out: pathlib.Path, target: pathlib.Path, frontend_bin: pathlib.Path, compile_bin: pathlib.Path, timeout: int) -> list[dict[str, Any]]:
     if not case.get("enabled", True):
-        return [{"id": case["id"], "kernel": case["kernel"], "source": case["source"], "loop_header": None, "tier": "DISCOVERED", "terminal_stage": "S0_CORPUS_DISCOVERY", "category": "CORPUS", "owner": "HARNESS", "diagnostic_code": "EXPLICIT_EXCLUSION", "message": case.get("exclusion", "explicitly excluded"), "excluded": True}]
+        return [{"id": case["id"], "kernel": case["kernel"], "source": case["source"], "loop_header": None, "tier": "DISCOVERED", "terminal_stage": "S0_CORPUS_DISCOVERY", "status": "EXCLUDED", "stages": [{"stage": "S0_CORPUS_DISCOVERY", "status": "EXCLUDED"}], "category": "CORPUS", "owner": "HARNESS", "diagnostic_code": "EXPLICIT_EXCLUSION", "message": case.get("exclusion", "explicitly excluded"), "excluded": True}]
     source = corpus / case["source"]
     source_out = out / "cases" / case["id"].replace("/", "_").replace("::", "__")
     source_out.mkdir(parents=True, exist_ok=True)
@@ -153,15 +159,15 @@ def run_case(case: dict[str, Any], root: pathlib.Path, corpus: pathlib.Path, out
         frontend_out.mkdir(parents=True, exist_ok=True)
         dfg_path = frontend_out / "generic_dfg.json"
         rc, stdout, stderr, lower_duration = command_result([str(frontend_bin), str(canonical), "--function", loop["function"], "--loop-header", loop["header"], "--artifact-dir", str(frontend_out), "-o", str(dfg_path)], root, timeout)
-        base = {"id": loop_case["id"], "kernel": case["kernel"], "source": case["source"], "function": loop["function"], "loop_header": loop["header"], "feature": feature, "loop": loop, "duration_ms": {"loop_selection": duration, "frontend": lower_duration}, "synthetic_invocation": True}
+        base = {"id": loop_case["id"], "kernel": case["kernel"], "source": case["source"], "function": loop["function"], "loop_header": loop["header"], "feature": feature, "loop": loop, "duration_ms": {"loop_selection": duration, "frontend": lower_duration}, "synthetic_invocation": True, "status": "FAIL", "stages": [{"stage": "S0_CORPUS_DISCOVERY", "status": "PASS"}, {"stage": "S1_SOURCE_BUILD", "status": "PASS"}, {"stage": "S2_LLVM_CANONICALIZE", "status": "PASS"}, {"stage": "S3_LOOP_SELECTION", "status": "PASS"}]}
         if rc != 0 or not dfg_path.exists():
             failure = classify("S4_FRONTEND_LOWER", stderr or stdout, rc)
-            results.append({**base, "tier": "LLVM_BUILT", "terminal_stage": "S4_FRONTEND_LOWER", "message": (stderr or stdout)[-4000:], **failure})
+            results.append({**base, "tier": "LLVM_BUILT", "terminal_stage": "S4_FRONTEND_LOWER", "stages": [*base["stages"], {"stage": "S4_FRONTEND_LOWER", "status": "FAIL"}], "message": (stderr or stdout)[-4000:], **failure})
             continue
         try:
             dfg = read_json(dfg_path)
         except (OSError, ValueError, json.JSONDecodeError) as error:
-            results.append({**base, "tier": "LLVM_BUILT", "terminal_stage": "S5_GENERIC_VERIFY", "message": str(error), **classify("S5_GENERIC_VERIFY", str(error))})
+            results.append({**base, "tier": "LLVM_BUILT", "terminal_stage": "S5_GENERIC_VERIFY", "stages": [*base["stages"], {"stage": "S4_FRONTEND_LOWER", "status": "PASS"}, {"stage": "S5_GENERIC_VERIFY", "status": "FAIL"}], "message": str(error), **classify("S5_GENERIC_VERIFY", str(error))})
             continue
         base["dfg"] = {"node_count": len(dfg.get("nodes", [])), "edge_count": len(dfg.get("edges", [])), "external_values": len(dfg.get("external_values", [])), "liveouts": len(dfg.get("live_outs", [])), "opcode_histogram": {opcode: sum(node.get("opcode") == opcode for node in dfg.get("nodes", [])) for opcode in sorted({node.get("opcode") for node in dfg.get("nodes", [])})}}
         invocation = synthesize_invocation(dfg, int(loop.get("static_trip_count") or 4))
@@ -197,9 +203,9 @@ def run_case(case: dict[str, Any], root: pathlib.Path, corpus: pathlib.Path, out
         backend = backend_observation(abi_out)
         if rc != 0:
             failure = classify(stage, stderr or stdout, rc)
-            results.append({**base, "tier": tier, "terminal_stage": stage, "message": (stderr or stdout)[-4000:], "duration_ms": {**base["duration_ms"], "abi_backend": compile_duration}, "backend": backend, **failure})
+            results.append({**base, "tier": tier, "terminal_stage": stage, "stages": [*base["stages"], {"stage": "S4_FRONTEND_LOWER", "status": "PASS"}, {"stage": "S5_GENERIC_VERIFY", "status": "PASS"}, {"stage": stage, "status": "FAIL"}], "message": (stderr or stdout)[-4000:], "duration_ms": {**base["duration_ms"], "abi_backend": compile_duration}, "backend": backend, **failure})
         else:
-            results.append({**base, "tier": tier, "terminal_stage": "S15_MANIFEST_VERIFY", "diagnostic_code": "SUCCESS", "category": "MANIFEST", "owner": "LOWERING", "message": stdout[-2000:], "duration_ms": {**base["duration_ms"], "abi_backend": compile_duration}, "backend": backend, "artifacts": [str(path) for path in abi_out.rglob("*") if path.is_file()]})
+            results.append({**base, "tier": tier, "terminal_stage": "S15_MANIFEST_VERIFY", "status": "PASS", "stages": [*base["stages"], {"stage": "S4_FRONTEND_LOWER", "status": "PASS"}, {"stage": "S5_GENERIC_VERIFY", "status": "PASS"}, {"stage": "S7_ABI_BIND", "status": "PASS"}, {"stage": "S8_TARGET_LEGALIZE", "status": "PASS"}, {"stage": "S15_MANIFEST_VERIFY", "status": "PASS"}], "diagnostic_code": "SUCCESS", "category": "MANIFEST", "owner": "LOWERING", "message": stdout[-2000:], "duration_ms": {**base["duration_ms"], "abi_backend": compile_duration}, "backend": backend, "artifacts": [str(path) for path in abi_out.rglob("*") if path.is_file()]})
     return results
 
 
