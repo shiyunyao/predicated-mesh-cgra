@@ -7,6 +7,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -152,6 +153,7 @@ struct LLVMFrontendMetadata {
   bool requiresTripCount = true;
   std::optional<std::uint64_t> staticTripCount;
   std::string loopShape;
+  bool loopEntryCanonicalized = false;
 };
 
 struct LLVMLinearLoopProvenance {
@@ -278,6 +280,7 @@ struct LLVMFrontendResult {
   std::optional<LLVMFrontendMetadata> metadata;
   LLVMFrontendProvenance provenance;
   std::vector<LLVMFrontendDiagnostic> diagnostics;
+  std::shared_ptr<llvm::Module> normalizedModule;
 
   bool ok() const noexcept { return status == LLVMFrontendStatus::Success && dfg.has_value(); }
   std::string toJson() const;

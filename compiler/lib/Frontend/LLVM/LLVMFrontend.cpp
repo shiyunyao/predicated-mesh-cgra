@@ -17,6 +17,8 @@
 #include <llvm/IR/IntrinsicInst.h>
 #include <llvm/IR/Module.h>
 #include <llvm/Support/raw_ostream.h>
+#include <llvm/Transforms/Utils/Cloning.h>
+#include <llvm/Transforms/Utils/LoopUtils.h>
 
 #include <nlohmann/json.hpp>
 
@@ -44,6 +46,7 @@ struct LoopSelection {
   llvm::BasicBlock* preheader = nullptr;
   llvm::BranchInst* branch = nullptr;
   std::optional<LinearLoopRegionDescriptor> linearRegion;
+  bool loopEntryCanonicalized = false;
   std::unique_ptr<llvm::DominatorTree> dominatorTree;
   std::unique_ptr<llvm::LoopInfo> loopInfo;
 };
@@ -315,6 +318,39 @@ std::optional<LoopSelection> selectLoop(llvm::Module& module, const LLVMFrontend
   selection.dominatorTree = std::move(dominatorTree);
   selection.loopInfo = std::move(loopInfo);
   return selection;
+}
+
+bool canonicalizeLoopEntry(LoopSelection& selection, LLVMFrontendResult& error) {
+  if (selection.preheader)
+    return true;
+
+  for (auto* block : selection.loop->blocks()) {
+    if (block == selection.block)
+      continue;
+    for (auto* predecessor : llvm::predecessors(block)) {
+      if (!selection.loop->contains(predecessor)) {
+        error = failure(
+            LLVMFrontendStatus::UnsupportedLoopShape,
+            LLVMFrontendDiagnosticCode::LLVM_FRONTEND_LINEAR_LOOP_NON_LINEAR_CFG,
+            "selected natural loop has an outside side entry that cannot be canonicalized",
+            &selection);
+        return false;
+      }
+    }
+  }
+
+  auto* preheader = llvm::InsertPreheaderForLoop(selection.loop, selection.dominatorTree.get(),
+                                                  selection.loopInfo.get(), nullptr, true);
+  if (!preheader) {
+    error = failure(LLVMFrontendStatus::UnsupportedLoopShape,
+                    LLVMFrontendDiagnosticCode::LLVM_FRONTEND_LINEAR_LOOP_NO_PREHEADER,
+                    "LLVM could not construct a semantics-preserving selected-loop preheader",
+                    &selection);
+    return false;
+  }
+  selection.preheader = preheader;
+  selection.loopEntryCanonicalized = true;
+  return true;
 }
 
 bool shapeIsValid(const LoopSelection& selection, LLVMFrontendResult& error) {
@@ -1527,6 +1563,7 @@ LLVMFrontendResult lowerStructuredLoop(llvm::Module& module, const LLVMFrontendO
   metadata.requiresTripCount = true;
   metadata.staticTripCount = inferStaticTripCount(selection);
   metadata.loopShape = selection.linearRegion ? "linear_multiblock" : "structured";
+  metadata.loopEntryCanonicalized = selection.loopEntryCanonicalized;
   result.metadata = std::move(metadata);
   if (selection.linearRegion) {
     const auto& region = *selection.linearRegion;
@@ -1584,6 +1621,8 @@ LLVMFrontendResult lowerSelectedLoop(llvm::Module& module, const LLVMFrontendOpt
   LLVMFrontendResult error;
   auto selected = selectLoop(module, options, error);
   if (!selected)
+    return error;
+  if (!canonicalizeLoopEntry(*selected, error))
     return error;
   bool hasInternalBranch = false;
   bool hasDirectSelect = false;
@@ -2087,7 +2126,9 @@ std::string LLVMFrontendResult::toJson() const {
     root["metadata"] = {
         {"function", metadata->functionName}, {"loop_header", metadata->loopHeader},
         {"loop_depth", metadata->loopDepth},  {"loop_block_count", metadata->loopBlockCount},
-        {"loop_shape", metadata->loopShape},  {"requires_trip_count", metadata->requiresTripCount}};
+        {"loop_shape", metadata->loopShape},
+        {"loop_entry_canonicalized", metadata->loopEntryCanonicalized},
+        {"requires_trip_count", metadata->requiresTripCount}};
     if (metadata->staticTripCount)
       root["metadata"]["static_trip_count"] = *metadata->staticTripCount;
     else
@@ -2194,7 +2235,11 @@ std::string LLVMFrontendResult::toJson() const {
 LLVMFrontendResult lowerInnermostLoop(const llvm::Module& module,
                                       const LLVMFrontendOptions& options) {
   try {
-    return lowerSelectedLoop(const_cast<llvm::Module&>(module), options);
+    auto normalized = std::shared_ptr<llvm::Module>(llvm::CloneModule(module).release());
+    auto result = lowerSelectedLoop(*normalized, options);
+    if (result.ok())
+      result.normalizedModule = std::move(normalized);
+    return result;
   } catch (const std::exception& error) {
     return failure(LLVMFrontendStatus::InternalError,
                    LLVMFrontendDiagnosticCode::LLVM_FRONTEND_INTERNAL_ERROR, error.what());

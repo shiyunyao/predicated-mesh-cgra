@@ -836,10 +836,11 @@ entry:
 alternate:
   br label %header
 header:
-  %iv = phi i32 [ 0, %entry ], [ 0, %alternate ], [ %next, %body ]
+  %iv = phi i32 [ 0, %entry ], [ 7, %alternate ], [ %next, %body ]
   %done = icmp ult i32 %iv, 4
   br i1 %done, label %body, label %exit
 body:
+  %data = add i32 %iv, 2
   %next = add i32 %iv, 1
   br label %header
 exit:
@@ -1126,7 +1127,26 @@ void testLinearMultiBlockLowering() {
 
   expect(linearAnalysisStatus(kLinearNoPreheader, "linear_no_preheader") ==
              cgra::frontend::llvm_frontend::LinearLoopStatus::NoPreheader,
-         "linear analyzer must reject a loop without one canonical preheader");
+         "source linear analyzer must identify a missing canonical preheader");
+  {
+    llvm::LLVMContext context;
+    auto module = parse(kLinearNoPreheader, context);
+    const auto originalBlocks = module->getFunction("linear_no_preheader")->size();
+    cgra::frontend::llvm_frontend::LLVMFrontendOptions options;
+    options.functionName = "linear_no_preheader";
+    const auto result = cgra::frontend::llvm_frontend::lowerInnermostLoop(*module, options);
+    expect(result.ok(), "selected-loop entry canonicalization must lower a safe natural loop");
+    expect(result.normalizedModule != nullptr,
+           "entry-canonicalized lowering must retain its normalized analysis module");
+    expect(result.metadata && result.metadata->loopEntryCanonicalized,
+           "frontend metadata must disclose selected-loop entry canonicalization");
+    expect(module->getFunction("linear_no_preheader")->size() == originalBlocks,
+           "frontend must not modify the caller's LLVM module in place");
+    expect(result.dfg->externalValues().size() == 1,
+           "synthetic-preheader PHI must become one selected-loop live-in");
+    expect(cgra::frontend::llvm_frontend::verifyFrontendResult(*module, options, result).ok(),
+           "independent verifier must validate the normalized loop-entry environment");
+  }
   expect(linearAnalysisStatus(kLinearSwitchTerminator, "linear_switch") !=
              cgra::frontend::llvm_frontend::LinearLoopStatus::Success,
          "linear analyzer must reject switch termination");

@@ -1544,12 +1544,33 @@ LLVMFrontendVerificationReport verifyFrontendResult(const llvm::Module& module,
     report.add("LLVM_FRONTEND_RESULT_NOT_SUCCESS", "frontend result is not successful");
     return report;
   }
-  const auto selection = select(module, options, report);
+  const auto originalSelection = select(module, options, report);
+  if (!originalSelection)
+    return report;
+  const bool originalNeedsCanonicalEntry = originalSelection->loop->getLoopPreheader() == nullptr;
+  if (!result.metadata ||
+      result.metadata->loopEntryCanonicalized != originalNeedsCanonicalEntry) {
+    report.add("LLVM_FRONTEND_LOOP_ENTRY_VERIFY_FAILED",
+               "loop-entry canonicalization metadata does not match the original LLVM CFG");
+  }
+  if (originalNeedsCanonicalEntry && !result.normalizedModule) {
+    report.add("LLVM_FRONTEND_LOOP_ENTRY_VERIFY_FAILED",
+               "entry canonicalization did not retain the normalized LLVM module");
+    return report;
+  }
+  const llvm::Module& verificationModule =
+      result.normalizedModule ? *result.normalizedModule : module;
+  const auto selection = select(verificationModule, options, report);
   if (!selection)
     return report;
+  if (originalNeedsCanonicalEntry && !selection->loop->getLoopPreheader()) {
+    report.add("LLVM_FRONTEND_LOOP_ENTRY_VERIFY_FAILED",
+               "normalized selected loop still has no unique preheader");
+    return report;
+  }
   if (!result.provenance.ifConversions.empty() || !result.provenance.memoryAccesses.empty() ||
       result.provenance.linearLoop)
-    return verifyIfConvertedResult(module, options, result);
+    return verifyIfConvertedResult(verificationModule, options, result);
   if (!selection->branch || selection->loop->getBlocks().size() != 1) {
     report.add("LLVM_FRONTEND_LOOP_SHAPE_MISMATCH", "selected loop shape changed after lowering");
     return report;

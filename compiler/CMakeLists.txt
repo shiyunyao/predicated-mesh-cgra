@@ -18,7 +18,7 @@ endif()
 find_package(LLVM 14 REQUIRED CONFIG)
 message(STATUS "Using LLVM ${LLVM_PACKAGE_VERSION} for cgra_llvm_frontend")
 separate_arguments(LLVM_DEFINITIONS_LIST NATIVE_COMMAND "${LLVM_DEFINITIONS}")
-llvm_map_components_to_libnames(CGRA_LLVM_LIBS Core Analysis IRReader Support)
+llvm_map_components_to_libnames(CGRA_LLVM_LIBS Core Analysis IRReader Support TransformUtils)
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(CompilerWarnings)

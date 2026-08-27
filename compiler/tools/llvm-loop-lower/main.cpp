@@ -294,6 +294,11 @@ int main(int argc, char** argv) {
                   << '\n';
       return 1;
     }
+    if (!artifactDirectory.empty() && result.metadata &&
+        result.metadata->loopEntryCanonicalized && result.normalizedModule) {
+      writeArtifact(artifactDirectory / "00_canonical_input.ll",
+                    moduleText(*result.normalizedModule));
+    }
     const auto verification =
         cgra::frontend::llvm_frontend::verifyFrontendResult(*module, options, result);
     if (!artifactDirectory.empty()) {
