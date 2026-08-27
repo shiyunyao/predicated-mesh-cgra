@@ -5,6 +5,7 @@
 - Required base: `49f1d5e3d26b9acdc7a7b47fffca3de566836bf1`
 - Implementation commit: `e3598dcccc48e8205b2d603950b15dac4589c12f`
 - Review and release-gate hardening commit: `ce0fd4bb569355ad478012c781824b8698cef644`
+- Audited code candidate: `2ea91b631e3c12b94d02ad70146bf0b18eb404ed`
 - CGRA-Bench commit: `6729aaf225d0320e4e0d3b419e20483069a5a69b`
 - Target: `target/cgra_v3.json`
 - Release decision: **STOP - T020 remains open**
@@ -65,11 +66,11 @@ The semantic corpus covers:
 
 ## Local verification
 
-At review hardening commit `ce0fd4bb569355ad478012c781824b8698cef644`:
+At audited code candidate `2ea91b631e3c12b94d02ad70146bf0b18eb404ed`:
 
 - compiler build: PASS;
 - CTest: 23/23 PASS;
-- CGRA-Bench harness tests: 45/45 PASS;
+- CGRA-Bench harness tests: 46/46 PASS;
 - canonical multi-block C frontend smoke: PASS;
 - supplemental RF-feasible multi-block Golden/RTL reachability: PASS.
 
@@ -144,18 +145,53 @@ These counts total 101 with the five successes. The 25 no-preheader cases have
 multiple outside predecessors and therefore do not satisfy the frozen
 `CanonicalLinearLoopV0` contract. The other blockers are explicitly outside T020.
 
-This replay establishes `L2 = 5`, below the mandatory `L2 >= 10` gate. It does not
-establish `L4 >= 8` or five mapped kernel directories. The audit report now emits
+Exact-candidate hosted full-audit run `33097187003`, attempt 2, established:
+
+- 15 kernel directories, 34 source translation units, 101 candidate loops, and
+  108 terminal results;
+- source and loop reconciliation PASS;
+- `UNKNOWN = 0` and `TIMEOUT = 0`;
+- 58 structurally identified linear multi-block candidates;
+- five candidates at `L2 FRONTEND_DFG` or higher;
+- zero candidates at `L4 MAPPED` or higher;
+- zero kernel directories with a mapped loop;
+- zero remaining shape rejections among the 58 proven linear candidates.
+
+All five target-legal cases terminated with
+`RFA_FIXED_REGISTER_SELF_OVERLAP`. They collectively produced 211,547 completed
+modulo mappings that were rejected by the frozen RF contract. The workflow's
+corpus run and reconciliation steps passed; the run failed only at the explicit
+T020 `10 / 8 / 5` outcome gate.
+
+The first attempt of the same exact SHA hit five external 120-second timeouts. The
+successful structured completion on attempt 2 demonstrates that these were hosted
+runtime sensitivity, not proof of infeasibility. The second attempt is the formal
+outcome evidence; the first remains a reproducibility warning for future mapping
+quality work.
+
+This audit establishes `L2 = 5`, below `L2 >= 10`, `L4 = 0`, below `L4 >= 8`,
+and zero mapped kernel directories, below the required five. The report emits
 machine-readable cumulative T020 outcomes, and the hosted full-audit workflow
 enforces all three thresholds plus zero shape rejection among proven linear
-candidates. The expected result for the current candidate is therefore a failed
-T020 outcome gate, not a release pass.
+candidates. The result is therefore a failed T020 outcome gate, not a release
+pass.
 
 ## Hosted release evidence
 
-No exact-feature hosted release seal, PR merge-ref, or post-merge-main evidence is
-recorded because the mandatory outcome gate is already known to fail. Creating a
-merge-ready PR or merging this branch would contradict the task's STOP rule.
+For audited code candidate `2ea91b631e3c12b94d02ad70146bf0b18eb404ed`:
+
+| Gate | Run | Result |
+| --- | --- | --- |
+| compiler-fast | `33097187009` | PASS |
+| hardware-regression | `33097187075` | PASS |
+| CGRA-Bench full audit, attempt 2 | `33097187003` | corpus/reconciliation PASS; T020 outcome FAIL |
+
+Hardware regression retained T013 through T018 and passed the canonical
+multi-block frontend smoke plus supplemental RF-feasible Golden/RTL reachability.
+
+No merge-ready PR, merge-ref, or post-merge-main evidence exists because the
+mandatory outcome and exact canonical E2E gates failed. Creating a merge-ready PR
+or merging this branch would contradict the task's STOP rule.
 
 ## Decision
 
