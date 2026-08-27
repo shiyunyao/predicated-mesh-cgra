@@ -76,6 +76,66 @@ bool fitsAddressWord(std::int64_t value) {
          value <= std::numeric_limits<std::int32_t>::max();
 }
 
+bool addScaled(std::int64_t& accumulator, std::int64_t value, std::int64_t scale) {
+  std::int64_t product = 0;
+  std::int64_t sum = 0;
+  if (__builtin_mul_overflow(value, scale, &product) ||
+      __builtin_add_overflow(accumulator, product, &sum))
+    return false;
+  accumulator = sum;
+  return true;
+}
+
+struct CollectedAddress {
+  const llvm::Value* base = nullptr;
+  std::int64_t constantBytes = 0;
+  std::vector<std::pair<const llvm::Value*, std::int64_t>> terms;
+};
+
+std::optional<CollectedAddress> collectAddress(const llvm::Value& address,
+                                               const llvm::DataLayout& dataLayout,
+                                               std::string& error) {
+  std::vector<const llvm::GetElementPtrInst*> chain;
+  const llvm::Value* cursor = &address;
+  while (const auto* gep = llvm::dyn_cast<llvm::GetElementPtrInst>(cursor)) {
+    chain.push_back(gep);
+    cursor = gep->getPointerOperand()->stripPointerCasts();
+  }
+  if (chain.empty())
+    return CollectedAddress{cursor, 0, {}};
+  std::ranges::reverse(chain);
+
+  CollectedAddress result;
+  result.base = cursor;
+  llvm::MapVector<const llvm::Value*, std::int64_t> combinedTerms;
+  for (const auto* gep : chain) {
+    const auto bitWidth = dataLayout.getIndexTypeSizeInBits(gep->getType());
+    llvm::MapVector<llvm::Value*, llvm::APInt> offsets;
+    llvm::APInt constant(bitWidth, 0, true);
+    if (!gep->collectOffset(dataLayout, bitWidth, offsets, constant) ||
+        constant.getMinSignedBits() > 64 || !addScaled(result.constantBytes, 1,
+                                                       constant.getSExtValue())) {
+      error = "GEP chain byte offset is not representable as signed 64-bit";
+      return std::nullopt;
+    }
+    for (const auto& [value, scale] : offsets) {
+      if (scale.getMinSignedBits() > 64) {
+        error = "GEP chain scale is not representable as signed 64-bit";
+        return std::nullopt;
+      }
+      auto& combined = combinedTerms[value];
+      if (!addScaled(combined, 1, scale.getSExtValue())) {
+        error = "combined GEP chain scale overflows signed 64-bit";
+        return std::nullopt;
+      }
+    }
+  }
+  for (const auto& [value, scale] : combinedTerms)
+    if (scale != 0)
+      result.terms.emplace_back(value, scale);
+  return result;
+}
+
 std::optional<AffineValue> affineValue(const llvm::Value& value, const llvm::Loop& loop,
                                        llvm::ScalarEvolution& scalarEvolution) {
   const auto* expression = scalarEvolution.getSCEV(const_cast<llvm::Value*>(&value));
@@ -170,19 +230,22 @@ std::optional<LLVMMemoryAccessDescriptor> analyzeAccess(const llvm::Instruction&
   if (!gep)
     return descriptor;
 
-  const auto bitWidth = dataLayout.getIndexTypeSizeInBits(gep->getType());
-  llvm::MapVector<llvm::Value*, llvm::APInt> variableOffsets;
-  llvm::APInt constantOffset(bitWidth, 0, true);
+  std::string collectionError;
+  const auto collected = collectAddress(*address, dataLayout, collectionError);
+  if (!collected || collected->base != base) {
+    error = fail(LLVMMemoryAnalysisStatus::UnsupportedNonAffineAddress,
+                 collectionError.empty() ? "GEP chain has no stable underlying base"
+                                         : std::move(collectionError));
+    return std::nullopt;
+  }
   const std::int64_t addressUnitBytes = accessWidthBits < 32 ? 1 : 4;
-  if (!gep->collectOffset(dataLayout, bitWidth, variableOffsets, constantOffset) ||
-      constantOffset.getMinSignedBits() > 64 ||
-      constantOffset.getSExtValue() % addressUnitBytes != 0) {
+  if (collected->constantBytes % addressUnitBytes != 0) {
     error = fail(LLVMMemoryAnalysisStatus::UnsupportedNonAffineAddress,
                  "GEP byte offset is not aligned to the Generic address unit");
     return std::nullopt;
   }
-  descriptor.gepConstantOffsetWords = constantOffset.getSExtValue() / addressUnitBytes;
-  descriptor.gepConstantOffsetBytes = constantOffset.getSExtValue();
+  descriptor.gepConstantOffsetWords = collected->constantBytes / addressUnitBytes;
+  descriptor.gepConstantOffsetBytes = collected->constantBytes;
   if (!fitsAddressWord(descriptor.gepConstantOffsetWords)) {
     error = fail(LLVMMemoryAnalysisStatus::UnsupportedNonAffineAddress,
                  "GEP constant word offset is not representable by Generic i32 address arithmetic");
@@ -190,53 +253,58 @@ std::optional<LLVMMemoryAccessDescriptor> analyzeAccess(const llvm::Instruction&
   }
   descriptor.constantOffsetWords = descriptor.gepConstantOffsetWords;
   descriptor.constantOffsetBytes = descriptor.gepConstantOffsetBytes;
-  if (variableOffsets.size() > 1) {
-    error = fail(LLVMMemoryAnalysisStatus::UnsupportedNonAffineAddress,
-                 "T018 V0 accepts one affine dynamic GEP index");
-    return std::nullopt;
-  }
-  if (variableOffsets.empty())
+  if (collected->terms.empty())
     return descriptor;
 
-  const auto& [index, scaleBytesValue] = variableOffsets.front();
-  if (scaleBytesValue.getMinSignedBits() > 64 ||
-      scaleBytesValue.getSExtValue() % addressUnitBytes != 0) {
-    error = fail(LLVMMemoryAnalysisStatus::UnsupportedNonAffineAddress,
-                 "dynamic GEP scale is not a whole scratchpad word");
-    return std::nullopt;
+  descriptor.constantOffsetWords = descriptor.gepConstantOffsetWords;
+  descriptor.constantOffsetBytes = descriptor.gepConstantOffsetBytes;
+  descriptor.addressMode = LLVMAddressMode::ExactAffine;
+  std::vector<std::string> invariantTerms;
+  for (const auto& [index, scaleBytes] : collected->terms) {
+    if (scaleBytes % addressUnitBytes != 0) {
+      error = fail(LLVMMemoryAnalysisStatus::UnsupportedNonAffineAddress,
+                   "dynamic GEP scale is not a whole Generic address unit");
+      return std::nullopt;
+    }
+    const auto scaleWords = scaleBytes / addressUnitBytes;
+    if (!fitsAddressWord(scaleWords)) {
+      error = fail(
+          LLVMMemoryAnalysisStatus::UnsupportedNonAffineAddress,
+          "dynamic GEP scale is not representable by Generic address arithmetic");
+      return std::nullopt;
+    }
+    descriptor.dynamicTerms.push_back({index, scaleBytes, scaleWords});
+    const auto affine = affineValue(*index, loop, scalarEvolution);
+    if (!affine || !fitsAddressWord(affine->offset) || !fitsAddressWord(affine->stride) ||
+        !addScaled(descriptor.constantOffsetWords, affine ? affine->offset : 0, scaleWords) ||
+        !addScaled(descriptor.iterationStrideWords, affine ? affine->stride : 0, scaleWords) ||
+        !addScaled(descriptor.constantOffsetBytes, affine ? affine->offset : 0, scaleBytes) ||
+        !addScaled(descriptor.iterationStrideBytes, affine ? affine->stride : 0, scaleBytes)) {
+      error = fail(LLVMMemoryAnalysisStatus::UnsupportedNonAffineAddress,
+                   "GEP affine term exceeds the signed Generic address domain");
+      return std::nullopt;
+    }
+    if (affine->mode == LLVMAddressMode::Dynamic)
+      descriptor.addressMode = LLVMAddressMode::Dynamic;
+    else if (affine->mode == LLVMAddressMode::SymbolicAffine &&
+             descriptor.addressMode != LLVMAddressMode::Dynamic) {
+      descriptor.addressMode = LLVMAddressMode::SymbolicAffine;
+      invariantTerms.push_back(std::to_string(scaleBytes) + "*(" +
+                               affine->invariantExpression + ")");
+    }
   }
-  const auto scaleWords = scaleBytesValue.getSExtValue() / addressUnitBytes;
-  descriptor.dynamicScaleBytes = scaleBytesValue.getSExtValue();
-  if (!fitsAddressWord(scaleWords)) {
-    error = fail(LLVMMemoryAnalysisStatus::UnsupportedNonAffineAddress,
-                 "dynamic GEP word scale is not representable by Generic i32 address arithmetic");
-    return std::nullopt;
+  if (descriptor.dynamicTerms.size() == 1) {
+    descriptor.dynamicIndex = descriptor.dynamicTerms.front().value;
+    descriptor.dynamicScaleBytes = descriptor.dynamicTerms.front().scaleBytes;
+    descriptor.dynamicScaleWords = descriptor.dynamicTerms.front().scaleWords;
   }
-  const auto affine = affineValue(*index, loop, scalarEvolution);
-  if (!affine)
-    return std::nullopt;
-  if (!fitsAddressWord(affine->offset) || !fitsAddressWord(affine->stride)) {
-    error = fail(LLVMMemoryAnalysisStatus::UnsupportedNonAffineAddress,
-                 "affine GEP index exceeds the Generic i32 address domain");
-    return std::nullopt;
+  std::ranges::sort(invariantTerms);
+  for (const auto& term : invariantTerms) {
+    if (!descriptor.invariantExpression.empty())
+      descriptor.invariantExpression += "+";
+    descriptor.invariantExpression += term;
   }
-  const auto derivedOffset = descriptor.gepConstantOffsetWords + affine->offset * scaleWords;
-  const auto derivedStride = affine->stride * scaleWords;
-  if (!fitsAddressWord(derivedOffset) || !fitsAddressWord(derivedStride)) {
-    error = fail(LLVMMemoryAnalysisStatus::UnsupportedNonAffineAddress,
-                 "affine GEP word offset or stride exceeds the Generic i32 address domain");
-    return std::nullopt;
-  }
-  descriptor.dynamicIndex = index;
-  descriptor.addressMode = affine->mode;
-  descriptor.invariantExpression = affine->invariantExpression;
-  descriptor.dynamicScaleWords = scaleWords;
-  descriptor.constantOffsetWords = derivedOffset;
-  descriptor.iterationStrideWords = derivedStride;
-  descriptor.constantOffsetBytes = descriptor.gepConstantOffsetBytes + affine->offset *
-                                                                        descriptor.dynamicScaleBytes;
-  descriptor.iterationStrideBytes = affine->stride * descriptor.dynamicScaleBytes;
-  descriptor.exactAffine = affine->mode != LLVMAddressMode::Dynamic;
+  descriptor.exactAffine = descriptor.addressMode != LLVMAddressMode::Dynamic;
   return descriptor;
 }
 

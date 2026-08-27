@@ -891,8 +891,10 @@ ir::ExternalValueId getExternal(LoweringState& state, ir::DFGBuilder& builder,
 struct IfLoweringState {
   struct GEPAddressNodes {
     ir::NodeId address = 0;
-    std::optional<ir::NodeId> scaledIndex;
-    std::optional<ir::NodeId> offsetIndex;
+    ir::ValueType type = ir::ValueType::i32();
+    std::vector<ir::NodeId> termNodes;
+    std::vector<ir::NodeId> sumNodes;
+    bool hasConstantSum = false;
   };
 
   struct SyntheticAddressNode {
@@ -907,7 +909,7 @@ struct IfLoweringState {
   std::unordered_map<const llvm::Value*, ir::NodeId> nodes;
   std::unordered_map<const llvm::Value*, ir::ExternalValueId> externals;
   std::unordered_map<const llvm::Value*, ir::ConstantId> constants;
-  std::unordered_map<std::uint32_t, ir::ConstantId> addressConstants;
+  std::map<std::pair<std::uint16_t, std::uint64_t>, ir::ConstantId> addressConstants;
   std::set<std::string> externalNames;
   std::set<std::string> liveOutNames;
   std::uint32_t nextExternalOrdinal = 0;
@@ -1132,13 +1134,16 @@ ir::ConstantId getIfConstant(IfLoweringState& state, ir::DFGBuilder& builder,
 }
 
 ir::ConstantId getAddressConstant(IfLoweringState& state, ir::DFGBuilder& builder,
-                                  std::int64_t value) {
-  const auto bits = static_cast<std::uint32_t>(static_cast<std::int32_t>(value));
-  if (const auto iterator = state.addressConstants.find(bits);
+                                  const ir::ValueType& type, std::int64_t value) {
+  auto bits = static_cast<std::uint64_t>(value);
+  if (type.bitWidth < 64)
+    bits &= (std::uint64_t{1} << type.bitWidth) - 1;
+  const auto key = std::pair{type.bitWidth, bits};
+  if (const auto iterator = state.addressConstants.find(key);
       iterator != state.addressConstants.end())
     return iterator->second;
-  const auto id = builder.addConstant(ir::ValueType::i32(), bits);
-  state.addressConstants.emplace(bits, id);
+  const auto id = builder.addConstant(type, bits);
+  state.addressConstants.emplace(key, id);
   return id;
 }
 
@@ -1166,16 +1171,25 @@ std::optional<std::uint64_t> inferStaticTripCount(LoopSelection& selection) {
   return tripCount;
 }
 
-std::optional<ir::ValueType> addressTypeForStore(const llvm::Value& address) {
-  if (address.getType()->isPointerTy())
-    return ir::ValueType::i32();
+std::optional<ir::ValueType> addressValueType(const llvm::Module& module,
+                                              const llvm::Value& address) {
+  if (const auto* gep = llvm::dyn_cast<llvm::GetElementPtrInst>(&address)) {
+    for (const auto& index : gep->indices())
+      if (!llvm::isa<llvm::ConstantInt>(index))
+        return valueType(*index);
+  }
+  if (const auto* pointer = llvm::dyn_cast<llvm::PointerType>(address.getType())) {
+    const auto bits = module.getDataLayout().getPointerSizeInBits(pointer->getAddressSpace());
+    if (bits > 0 && bits <= 64)
+      return ir::ValueType::integer(static_cast<std::uint16_t>(bits));
+    return std::nullopt;
+  }
   return valueType(address);
 }
 
 LLVMFrontendResult lowerStructuredLoop(llvm::Module& module, const LLVMFrontendOptions& options,
                                        LoopSelection& selection,
                                        std::optional<BranchRegion> discoveredRegion) {
-  static_cast<void>(module);
   static_cast<void>(options);
   LLVMFrontendResult error;
   IfLoweringState state{selection};
@@ -1323,6 +1337,15 @@ LLVMFrontendResult lowerStructuredLoop(llvm::Module& module, const LLVMFrontendO
     return false;
   };
 
+  std::unordered_set<const llvm::GetElementPtrInst*> addressChainGEPs;
+  for (const auto& access : memoryAnalysis.accesses) {
+    const llvm::Value* cursor = access.address;
+    while (const auto* gep = llvm::dyn_cast_or_null<llvm::GetElementPtrInst>(cursor)) {
+      addressChainGEPs.insert(gep);
+      cursor = gep->getPointerOperand()->stripPointerCasts();
+    }
+  }
+
   for (auto* block : blocks) {
     for (const auto& instruction : *block) {
       if (shouldSkip(instruction))
@@ -1332,23 +1355,45 @@ LLVMFrontendResult lowerStructuredLoop(llvm::Module& module, const LLVMFrontendO
       if (const auto* gep = llvm::dyn_cast<llvm::GetElementPtrInst>(&instruction)) {
         const auto access = std::ranges::find_if(
             memoryAnalysis.accesses, [&](const auto& item) { return item.address == gep; });
-        if (access == memoryAnalysis.accesses.end())
+        if (access == memoryAnalysis.accesses.end()) {
+          if (addressChainGEPs.contains(gep))
+            continue;
           return failure(LLVMFrontendStatus::UnsupportedNonAffineAddress,
                          LLVMFrontendDiagnosticCode::LLVM_FRONTEND_UNSUPPORTED_NON_AFFINE_ADDRESS,
                          "GEP is not the address of a supported memory operation", &selection, gep);
-        IfLoweringState::GEPAddressNodes addressNodes;
-        addressNodes.address = builder.addNode(
-            ir::Opcode::Add, {ir::ValueType::i32(), ir::ValueType::i32()}, ir::ValueType::i32());
-        state.nodes.emplace(gep, addressNodes.address);
-        if (access->dynamicIndex && access->dynamicScaleWords != 1) {
-          addressNodes.scaledIndex = builder.addNode(
-              ir::Opcode::Mul, {ir::ValueType::i32(), ir::ValueType::i32()}, ir::ValueType::i32());
-          state.syntheticAddressNodes.push_back({*addressNodes.scaledIndex, gep, "GEP_SCALE"});
         }
-        if (access->dynamicIndex && access->gepConstantOffsetWords != 0) {
-          addressNodes.offsetIndex = builder.addNode(
-              ir::Opcode::Add, {ir::ValueType::i32(), ir::ValueType::i32()}, ir::ValueType::i32());
-          state.syntheticAddressNodes.push_back({*addressNodes.offsetIndex, gep, "GEP_OFFSET"});
+        IfLoweringState::GEPAddressNodes addressNodes;
+        const auto addressType = addressValueType(module, *gep);
+        if (!addressType)
+          return failure(LLVMFrontendStatus::UnsupportedPointerBase,
+                         LLVMFrontendDiagnosticCode::LLVM_FRONTEND_UNSUPPORTED_POINTER_BASE,
+                         "GEP pointer width is outside the Generic scalar address contract",
+                         &selection, gep);
+        addressNodes.type = *addressType;
+        addressNodes.address = builder.addNode(
+            ir::Opcode::Add, {*addressType, *addressType}, *addressType);
+        state.nodes.emplace(gep, addressNodes.address);
+        for (std::size_t index = 0; index < access->dynamicTerms.size(); ++index) {
+          const auto term = builder.addNode(ir::Opcode::Mul, {*addressType, *addressType},
+                                            *addressType);
+          addressNodes.termNodes.push_back(term);
+          state.syntheticAddressNodes.push_back({term, gep, "GEP_TERM_SCALE"});
+        }
+        const auto termSums = access->dynamicTerms.empty() ? 0 : access->dynamicTerms.size() - 1;
+        const auto sumCount = termSums +
+                              (!access->dynamicTerms.empty() &&
+                                       access->gepConstantOffsetWords != 0
+                                   ? 1
+                                   : 0);
+        addressNodes.hasConstantSum = sumCount > termSums;
+        for (std::size_t index = 0; index < sumCount; ++index) {
+          const auto sum = builder.addNode(ir::Opcode::Add, {*addressType, *addressType},
+                                           *addressType);
+          addressNodes.sumNodes.push_back(sum);
+          state.syntheticAddressNodes.push_back(
+              {sum, gep, addressNodes.hasConstantSum && index + 1 == sumCount
+                             ? "GEP_OFFSET"
+                             : "GEP_TERM_ADD"});
         }
         state.gepAddressNodes.emplace(gep, addressNodes);
         continue;
@@ -1368,7 +1413,8 @@ LLVMFrontendResult lowerStructuredLoop(llvm::Module& module, const LLVMFrontendO
                          "Load type is outside the typed scalar memory contract", &selection,
                          load);
         state.nodes.emplace(
-            load, builder.addNode(ir::Opcode::Load, {ir::ValueType::i32()}, *loadType,
+            load, builder.addNode(ir::Opcode::Load,
+                                  {*addressValueType(module, *load->getPointerOperand())}, *loadType,
                                   std::nullopt,
                                   ir::MemoryOpInfo{access->accessWidthBits, false}));
         continue;
@@ -1520,7 +1566,8 @@ LLVMFrontendResult lowerStructuredLoop(llvm::Module& module, const LLVMFrontendO
       if (!base || !base->getType()->isPointerTy())
         return std::nullopt;
       builder.bindExternal(destination, operand,
-                           getIfExternal(state, builder, *base, ir::ValueType::i32()));
+                           getIfExternal(state, builder, *base,
+                                         *addressValueType(module, value)));
       return std::nullopt;
     }
     const auto type = valueType(value);
@@ -1571,33 +1618,44 @@ LLVMFrontendResult lowerStructuredLoop(llvm::Module& module, const LLVMFrontendO
                          LLVMFrontendDiagnosticCode::LLVM_FRONTEND_UNSUPPORTED_NON_AFFINE_ADDRESS,
                          "GEP address descriptor is missing", &selection, gep);
         const auto addressNodes = state.gepAddressNodes.at(gep);
-        provider(*access->base, addressNodes.address, 0, false);
-        if (!access->dynamicIndex) {
+        const auto* base = llvm::getUnderlyingObject(access->base);
+        if (!base || !base->getType()->isPointerTy())
+          return failure(LLVMFrontendStatus::UnsupportedPointerBase,
+                         LLVMFrontendDiagnosticCode::LLVM_FRONTEND_UNSUPPORTED_POINTER_BASE,
+                         "GEP has no loop-invariant pointer root", &selection, gep);
+        builder.bindExternal(addressNodes.address, 0,
+                             getIfExternal(state, builder, *base, addressNodes.type));
+        if (access->dynamicTerms.empty()) {
           builder.bindConstant(addressNodes.address, 1,
-                               getAddressConstant(state, builder, access->gepConstantOffsetWords));
+                               getAddressConstant(state, builder, addressNodes.type,
+                                                  access->gepConstantOffsetWords));
           continue;
         }
 
-        ir::NodeId dynamicProvider = addressNodes.address;
-        if (addressNodes.scaledIndex) {
-          provider(*access->dynamicIndex, *addressNodes.scaledIndex, 0, false);
-          builder.bindConstant(*addressNodes.scaledIndex, 1,
-                               getAddressConstant(state, builder, access->dynamicScaleWords));
-          dynamicProvider = *addressNodes.scaledIndex;
+        for (std::size_t index = 0; index < access->dynamicTerms.size(); ++index) {
+          provider(*access->dynamicTerms[index].value, addressNodes.termNodes[index], 0, false);
+          builder.bindConstant(
+              addressNodes.termNodes[index], 1,
+              getAddressConstant(state, builder, addressNodes.type,
+                                 access->dynamicTerms[index].scaleWords));
         }
-        if (addressNodes.offsetIndex) {
-          if (addressNodes.scaledIndex)
-            builder.addDataEdge(*addressNodes.scaledIndex, *addressNodes.offsetIndex, 0);
-          else
-            provider(*access->dynamicIndex, *addressNodes.offsetIndex, 0, false);
-          builder.bindConstant(*addressNodes.offsetIndex, 1,
-                               getAddressConstant(state, builder, access->gepConstantOffsetWords));
-          dynamicProvider = *addressNodes.offsetIndex;
+        ir::NodeId expression = addressNodes.termNodes.front();
+        std::size_t sumIndex = 0;
+        for (std::size_t index = 1; index < addressNodes.termNodes.size(); ++index) {
+          const auto sum = addressNodes.sumNodes[sumIndex++];
+          builder.addDataEdge(expression, sum, 0);
+          builder.addDataEdge(addressNodes.termNodes[index], sum, 1);
+          expression = sum;
         }
-        if (!addressNodes.scaledIndex && !addressNodes.offsetIndex)
-          provider(*access->dynamicIndex, addressNodes.address, 1, false);
-        else
-          builder.addDataEdge(dynamicProvider, addressNodes.address, 1);
+        if (addressNodes.hasConstantSum) {
+          const auto sum = addressNodes.sumNodes[sumIndex++];
+          builder.addDataEdge(expression, sum, 0);
+          builder.bindConstant(sum, 1,
+                               getAddressConstant(state, builder, addressNodes.type,
+                                                  access->gepConstantOffsetWords));
+          expression = sum;
+        }
+        builder.addDataEdge(expression, addressNodes.address, 1);
         continue;
       }
       if (const auto* load = llvm::dyn_cast<llvm::LoadInst>(&instruction)) {
@@ -1667,7 +1725,7 @@ LLVMFrontendResult lowerStructuredLoop(llvm::Module& module, const LLVMFrontendO
 
   for (const auto* store : stores) {
     const bool conditional = discoveredRegion && isConditionalStore(*store, state.region);
-    const auto addressType = addressTypeForStore(*store->getPointerOperand());
+    const auto addressType = addressValueType(module, *store->getPointerOperand());
     const auto dataType = valueType(*store->getValueOperand());
     if (!addressType || !dataType)
       return failure(LLVMFrontendStatus::DirectStoreAddressRequired,

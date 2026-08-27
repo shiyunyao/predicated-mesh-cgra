@@ -159,6 +159,40 @@ std::optional<ir::ValueType> valueType(const llvm::Value& value) {
   return ir::ValueType::integer(static_cast<std::uint16_t>(integer->getBitWidth()));
 }
 
+std::optional<ir::ValueType> verifiedAddressValueType(const llvm::Module& module,
+                                                      const llvm::Value& address) {
+  if (const auto* gep = llvm::dyn_cast<llvm::GetElementPtrInst>(&address)) {
+    for (const auto& index : gep->indices())
+      if (!llvm::isa<llvm::ConstantInt>(index))
+        return valueType(*index);
+  }
+  if (const auto* pointer = llvm::dyn_cast<llvm::PointerType>(address.getType())) {
+    const auto bits = module.getDataLayout().getPointerSizeInBits(pointer->getAddressSpace());
+    if (bits > 0 && bits <= 64)
+      return ir::ValueType::integer(static_cast<std::uint16_t>(bits));
+    return std::nullopt;
+  }
+  return valueType(address);
+}
+
+std::optional<ir::ValueType> verifiedPointerBridgeType(const llvm::Module& module,
+                                                       const Selection& selection,
+                                                       const llvm::Value& base) {
+  std::optional<ir::ValueType> result;
+  for (const auto* block : selection.loop->getBlocks()) {
+    for (const auto& instruction : *block) {
+      const auto* gep = llvm::dyn_cast<llvm::GetElementPtrInst>(&instruction);
+      if (!gep || llvm::getUnderlyingObject(gep) != &base)
+        continue;
+      const auto candidate = verifiedAddressValueType(module, *gep);
+      if (!candidate || (result && *result != *candidate))
+        return std::nullopt;
+      result = candidate;
+    }
+  }
+  return result ? result : verifiedAddressValueType(module, base);
+}
+
 std::optional<std::uint64_t> constantBits(const llvm::Value& value) {
   if (const auto* integer = llvm::dyn_cast<llvm::ConstantInt>(&value))
     return integer->getValue().getZExtValue();
@@ -741,7 +775,8 @@ void verifyLinearRegionStructure(const Selection& selection, const LLVMFrontendR
                "linear-loop metadata does not match the selected LLVM loop");
 }
 
-void verifyIfDataflow(const Selection& selection, const LLVMFrontendResult& result,
+void verifyIfDataflow(const llvm::Module& module, const Selection& selection,
+                      const LLVMFrontendResult& result,
                       LLVMFrontendVerificationReport& report) {
   auto slice = controlSlice(selection);
   removeRecurrenceProducerClosure(selection, slice);
@@ -855,10 +890,13 @@ void verifyIfDataflow(const Selection& selection, const LLVMFrontendResult& resu
                    "Generic Load does not match its LLVM memory access");
     } else if (llvm::isa<llvm::GetElementPtrInst>(instruction)) {
       const auto expectedOpcode =
-          provenance->opcode == "GEP_SCALE" ? ir::Opcode::Mul : ir::Opcode::Add;
-      if (node.opcode != expectedOpcode || node.resultType != ir::ValueType::i32())
+          provenance->opcode == "GEP_SCALE" || provenance->opcode == "GEP_TERM_SCALE"
+              ? ir::Opcode::Mul
+              : ir::Opcode::Add;
+      const auto addressType = verifiedAddressValueType(module, *instruction);
+      if (!addressType || node.opcode != expectedOpcode || node.resultType != *addressType)
         report.add("LLVM_FRONTEND_ADDRESS_SEMANTICS_MISMATCH",
-                   "LLVM GEP must lower to Generic word-address arithmetic");
+                   "LLVM GEP must lower using the DataLayout pointer-width address type");
     } else if (!llvm::isa<llvm::ICmpInst>(instruction)) {
       report.add("LLVM_FRONTEND_NODE_SEMANTICS_MISMATCH",
                  "Generic node provenance names an unsupported LLVM instruction");
@@ -1009,7 +1047,8 @@ void verifyIfDataflow(const Selection& selection, const LLVMFrontendResult& resu
     }
     const auto* definingInstruction = llvm::dyn_cast<llvm::Instruction>(provenance->value);
     const bool supportedPointerBridge = provenance->value->getType()->isPointerTy();
-    const auto expectedType = supportedPointerBridge ? std::optional{ir::ValueType::i32()}
+    const auto expectedType = supportedPointerBridge
+                                  ? verifiedPointerBridgeType(module, selection, *provenance->value)
                                                      : valueType(*provenance->value);
     bool referenced = false;
     for (const auto& binding : result.dfg->externalBindings())
@@ -1054,12 +1093,27 @@ void verifyIfDataflow(const Selection& selection, const LLVMFrontendResult& resu
                  "outside-used LLVM value must correspond to exactly one Generic LiveOut");
   }
 
+  std::unordered_set<const llvm::GetElementPtrInst*> coveredAddressGEPs;
+  for (const auto* block : selection.loop->getBlocks()) {
+    for (const auto& instruction : *block) {
+      const auto* load = llvm::dyn_cast<llvm::LoadInst>(&instruction);
+      const auto* store = llvm::dyn_cast<llvm::StoreInst>(&instruction);
+      const llvm::Value* cursor = load ? load->getPointerOperand()
+                                  : store ? store->getPointerOperand()
+                                          : nullptr;
+      while (const auto* gep = llvm::dyn_cast_or_null<llvm::GetElementPtrInst>(cursor)) {
+        coveredAddressGEPs.insert(gep);
+        cursor = gep->getPointerOperand()->stripPointerCasts();
+      }
+    }
+  }
   for (const auto* block : selection.loop->getBlocks())
     for (const auto& instruction : *block) {
       if (instruction.isTerminator() || ignored(instruction) ||
           llvm::isa<llvm::PHINode>(instruction) || slice.contains(&instruction))
         continue;
-      if (!mappedInstructions.contains(&instruction))
+      if (!mappedInstructions.contains(&instruction) &&
+          !coveredAddressGEPs.contains(llvm::dyn_cast<llvm::GetElementPtrInst>(&instruction)))
         report.add("LLVM_FRONTEND_SILENT_INSTRUCTION_LOSS",
                    "semantic LLVM instruction is absent from Generic DFG provenance");
     }
@@ -1069,12 +1123,19 @@ enum class VerifiedMemoryAccessKind { Load, Store };
 enum class VerifiedMemoryDependenceMode { ExactAffine, Conservative, DynamicConservative };
 
 struct VerifiedMemoryAccess {
+  struct AddressTerm {
+    const llvm::Value* value = nullptr;
+    std::int64_t scaleBytes = 0;
+    std::int64_t scaleWords = 0;
+  };
+
   std::uint32_t id = 0;
   VerifiedMemoryAccessKind kind = VerifiedMemoryAccessKind::Load;
   const llvm::Instruction* instruction = nullptr;
   const llvm::Value* address = nullptr;
   const llvm::Value* base = nullptr;
   const llvm::Value* dynamicIndex = nullptr;
+  std::vector<AddressTerm> dynamicTerms;
   LLVMAddressMode addressMode = LLVMAddressMode::ExactAffine;
   std::string invariantExpression;
   std::int64_t constantOffsetBytes = 0;
@@ -1112,6 +1173,55 @@ struct VerifiedAffineValue {
 bool verifiedFitsAddressWord(std::int64_t value) {
   return value >= std::numeric_limits<std::int32_t>::min() &&
          value <= std::numeric_limits<std::int32_t>::max();
+}
+
+bool verifiedAddScaled(std::int64_t& accumulator, std::int64_t value, std::int64_t scale) {
+  std::int64_t product = 0;
+  std::int64_t sum = 0;
+  if (__builtin_mul_overflow(value, scale, &product) ||
+      __builtin_add_overflow(accumulator, product, &sum))
+    return false;
+  accumulator = sum;
+  return true;
+}
+
+struct VerifiedCollectedAddress {
+  const llvm::Value* base = nullptr;
+  std::int64_t constantBytes = 0;
+  std::vector<std::pair<const llvm::Value*, std::int64_t>> terms;
+};
+
+std::optional<VerifiedCollectedAddress>
+verifiedCollectAddress(const llvm::Value& address, const llvm::DataLayout& dataLayout) {
+  std::vector<const llvm::GetElementPtrInst*> chain;
+  const llvm::Value* cursor = &address;
+  while (const auto* gep = llvm::dyn_cast<llvm::GetElementPtrInst>(cursor)) {
+    chain.push_back(gep);
+    cursor = gep->getPointerOperand()->stripPointerCasts();
+  }
+  std::ranges::reverse(chain);
+
+  VerifiedCollectedAddress result;
+  result.base = cursor;
+  llvm::MapVector<const llvm::Value*, std::int64_t> combined;
+  for (const auto* gep : chain) {
+    const auto bitWidth = dataLayout.getIndexTypeSizeInBits(gep->getType());
+    llvm::MapVector<llvm::Value*, llvm::APInt> offsets;
+    llvm::APInt constant(bitWidth, 0, true);
+    if (!gep->collectOffset(dataLayout, bitWidth, offsets, constant) ||
+        constant.getMinSignedBits() > 64 ||
+        !verifiedAddScaled(result.constantBytes, 1, constant.getSExtValue()))
+      return std::nullopt;
+    for (const auto& [value, scale] : offsets) {
+      if (scale.getMinSignedBits() > 64 ||
+          !verifiedAddScaled(combined[value], 1, scale.getSExtValue()))
+        return std::nullopt;
+    }
+  }
+  for (const auto& [value, scale] : combined)
+    if (scale != 0)
+      result.terms.emplace_back(value, scale);
+  return result;
 }
 
 const llvm::Value* verifiedPointerOperand(const llvm::Instruction& instruction) {
@@ -1261,55 +1371,63 @@ VerifiedMemoryExpectations recomputeMemoryExpectations(const Selection& selectio
       access.base = base;
       access.accessWidthBits = accessWidthBits;
 
-      if (const auto* gep = llvm::dyn_cast<llvm::GetElementPtrInst>(address)) {
-        const auto bitWidth = dataLayout.getIndexTypeSizeInBits(gep->getType());
-        llvm::MapVector<llvm::Value*, llvm::APInt> variableOffsets;
-        llvm::APInt constantOffset(bitWidth, 0, true);
+      if (llvm::isa<llvm::GetElementPtrInst>(address)) {
+        const auto collected = verifiedCollectAddress(*address, dataLayout);
         const std::int64_t addressUnitBytes = accessWidthBits < 32 ? 1 : 4;
-        if (!gep->collectOffset(dataLayout, bitWidth, variableOffsets, constantOffset) ||
-            constantOffset.getMinSignedBits() > 64 ||
-            constantOffset.getSExtValue() % addressUnitBytes != 0 ||
-            variableOffsets.size() > 1) {
+        if (!collected || collected->base != base ||
+            collected->constantBytes % addressUnitBytes != 0) {
           result.error = "LLVM GEP is not aligned to the verified Generic address unit";
           return result;
         }
-        access.gepConstantOffsetWords = constantOffset.getSExtValue() / addressUnitBytes;
-        access.constantOffsetBytes = constantOffset.getSExtValue();
+        access.gepConstantOffsetWords = collected->constantBytes / addressUnitBytes;
+        access.constantOffsetBytes = collected->constantBytes;
         if (!verifiedFitsAddressWord(access.gepConstantOffsetWords)) {
           result.error = "LLVM GEP constant word offset exceeds the verified i32 address domain";
           return result;
         }
         access.constantOffsetWords = access.gepConstantOffsetWords;
-        if (!variableOffsets.empty()) {
-          const auto& [index, scaleBytes] = variableOffsets.front();
-          if (scaleBytes.getMinSignedBits() > 64 ||
-              scaleBytes.getSExtValue() % addressUnitBytes != 0 ||
-              !verifiedFitsAddressWord(scaleBytes.getSExtValue() / addressUnitBytes)) {
+        access.addressMode = LLVMAddressMode::ExactAffine;
+        std::vector<std::string> invariantTerms;
+        for (const auto& [index, scaleBytes] : collected->terms) {
+          if (scaleBytes % addressUnitBytes != 0 ||
+              !verifiedFitsAddressWord(scaleBytes / addressUnitBytes)) {
             result.error = "dynamic GEP scale exceeds the verified i32 word-address domain";
             return result;
           }
-          const auto scaleWords = scaleBytes.getSExtValue() / addressUnitBytes;
+          const auto scaleWords = scaleBytes / addressUnitBytes;
           const auto affine = verifiedAffineValue(*index, *selection.loop, scalarEvolution);
           if (!affine || !verifiedFitsAddressWord(affine->offset) ||
-              !verifiedFitsAddressWord(affine->stride)) {
+              !verifiedFitsAddressWord(affine->stride) ||
+              !verifiedAddScaled(access.constantOffsetWords, affine ? affine->offset : 0,
+                                 scaleWords) ||
+              !verifiedAddScaled(access.iterationStrideWords, affine ? affine->stride : 0,
+                                 scaleWords) ||
+              !verifiedAddScaled(access.constantOffsetBytes, affine ? affine->offset : 0,
+                                 scaleBytes) ||
+              !verifiedAddScaled(access.iterationStrideBytes, affine ? affine->stride : 0,
+                                 scaleBytes)) {
             result.error = "dynamic GEP index is not a verified affine recurrence";
             return result;
           }
-          const auto derivedOffset = access.gepConstantOffsetWords + affine->offset * scaleWords;
-          const auto derivedStride = affine->stride * scaleWords;
-          if (!verifiedFitsAddressWord(derivedOffset) || !verifiedFitsAddressWord(derivedStride)) {
-            result.error = "affine GEP exceeds the verified i32 word-address domain";
-            return result;
+          access.dynamicTerms.push_back({index, scaleBytes, scaleWords});
+          if (affine->mode == LLVMAddressMode::Dynamic)
+            access.addressMode = LLVMAddressMode::Dynamic;
+          else if (affine->mode == LLVMAddressMode::SymbolicAffine &&
+                   access.addressMode != LLVMAddressMode::Dynamic) {
+            access.addressMode = LLVMAddressMode::SymbolicAffine;
+            invariantTerms.push_back(std::to_string(scaleBytes) + "*(" +
+                                     affine->invariantExpression + ")");
           }
-          access.dynamicIndex = index;
-          access.addressMode = affine->mode;
-          access.invariantExpression = affine->invariantExpression;
-          access.dynamicScaleWords = scaleWords;
-          access.constantOffsetWords = derivedOffset;
-          access.iterationStrideWords = derivedStride;
-          access.constantOffsetBytes = constantOffset.getSExtValue() +
-                                       affine->offset * scaleBytes.getSExtValue();
-          access.iterationStrideBytes = affine->stride * scaleBytes.getSExtValue();
+        }
+        if (access.dynamicTerms.size() == 1) {
+          access.dynamicIndex = access.dynamicTerms.front().value;
+          access.dynamicScaleWords = access.dynamicTerms.front().scaleWords;
+        }
+        std::ranges::sort(invariantTerms);
+        for (const auto& term : invariantTerms) {
+          if (!access.invariantExpression.empty())
+            access.invariantExpression += "+";
+          access.invariantExpression += term;
         }
       }
       result.accesses.push_back(access);
@@ -1409,20 +1527,34 @@ const LLVMMemoryAccessProvenance* memoryAccessProvenance(const LLVMFrontendResul
 }
 
 bool constantBindingMatches(const ir::DFG& dfg, ir::NodeId node, std::uint32_t operand,
-                            std::int64_t expected) {
+                            const ir::ValueType& type, std::int64_t expected) {
   if (!verifiedFitsAddressWord(expected))
     return false;
-  const auto expectedBits = static_cast<std::uint32_t>(static_cast<std::int32_t>(expected));
+  auto expectedBits = static_cast<std::uint64_t>(expected);
+  if (type.bitWidth < 64)
+    expectedBits &= (std::uint64_t{1} << type.bitWidth) - 1;
   for (const auto& binding : dfg.externalBindings()) {
     if (binding.node != node || binding.operand != operand)
       continue;
     const auto* reference = std::get_if<ir::ConstantRef>(&binding.source);
     if (!reference || !dfg.containsConstant(reference->value))
       return false;
-    return dfg.constant(reference->value).type == ir::ValueType::i32() &&
+    return dfg.constant(reference->value).type == type &&
            dfg.constant(reference->value).bits == expectedBits;
   }
   return false;
+}
+
+bool addressTermMatches(const LLVMFrontendResult& result,
+                        const VerifiedMemoryAccess::AddressTerm& term, ir::NodeId node,
+                        const ir::ValueType& addressType) {
+  return result.dfg->containsNode(node) && result.dfg->node(node).opcode == ir::Opcode::Mul &&
+         providerMatches(result, term.value, node, 0) &&
+         constantBindingMatches(*result.dfg, node, 1, addressType, term.scaleWords);
+}
+
+const ir::Edge* dataProvider(const ir::DFG& dfg, ir::NodeId node, std::uint32_t operand) {
+  return findProviderEdge(dfg, node, operand, ir::Edge::Kind::Data);
 }
 
 bool gepAddressGraphMatches(const LLVMFrontendResult& result,
@@ -1431,30 +1563,38 @@ bool gepAddressGraphMatches(const LLVMFrontendResult& result,
       result.dfg->node(addressNode).opcode != ir::Opcode::Add ||
       !providerMatches(result, descriptor.base, addressNode, 0))
     return false;
-  if (!descriptor.dynamicIndex)
-    return constantBindingMatches(*result.dfg, addressNode, 1, descriptor.gepConstantOffsetWords);
+  const auto addressType = result.dfg->node(addressNode).resultType;
+  if (descriptor.dynamicTerms.empty())
+    return constantBindingMatches(*result.dfg, addressNode, 1, addressType,
+                                  descriptor.gepConstantOffsetWords);
 
-  ir::NodeId dynamicConsumer = addressNode;
-  std::uint32_t dynamicOperand = 1;
-  if (descriptor.gepConstantOffsetWords != 0) {
-    const auto* offsetEdge = findProviderEdge(*result.dfg, addressNode, 1, ir::Edge::Kind::Data);
-    if (!offsetEdge || offsetEdge->distance != 0 ||
-        result.dfg->node(offsetEdge->src).opcode != ir::Opcode::Add ||
-        !constantBindingMatches(*result.dfg, offsetEdge->src, 1, descriptor.gepConstantOffsetWords))
-      return false;
-    dynamicConsumer = offsetEdge->src;
-    dynamicOperand = 0;
-  }
-  if (descriptor.dynamicScaleWords == 1)
-    return providerMatches(result, descriptor.dynamicIndex, dynamicConsumer, dynamicOperand);
-
-  const auto* scaleEdge =
-      findProviderEdge(*result.dfg, dynamicConsumer, dynamicOperand, ir::Edge::Kind::Data);
-  if (!scaleEdge || scaleEdge->distance != 0 ||
-      result.dfg->node(scaleEdge->src).opcode != ir::Opcode::Mul)
+  const auto* expressionEdge = dataProvider(*result.dfg, addressNode, 1);
+  if (!expressionEdge || expressionEdge->distance != 0)
     return false;
-  return providerMatches(result, descriptor.dynamicIndex, scaleEdge->src, 0) &&
-         constantBindingMatches(*result.dfg, scaleEdge->src, 1, descriptor.dynamicScaleWords);
+  auto expression = expressionEdge->src;
+  if (descriptor.gepConstantOffsetWords != 0) {
+    if (!result.dfg->containsNode(expression) ||
+        result.dfg->node(expression).opcode != ir::Opcode::Add ||
+        !constantBindingMatches(*result.dfg, expression, 1, addressType,
+                                descriptor.gepConstantOffsetWords))
+      return false;
+    const auto* previous = dataProvider(*result.dfg, expression, 0);
+    if (!previous || previous->distance != 0)
+      return false;
+    expression = previous->src;
+  }
+  for (std::size_t index = descriptor.dynamicTerms.size(); index-- > 1;) {
+    if (!result.dfg->containsNode(expression) ||
+        result.dfg->node(expression).opcode != ir::Opcode::Add)
+      return false;
+    const auto* previous = dataProvider(*result.dfg, expression, 0);
+    const auto* term = dataProvider(*result.dfg, expression, 1);
+    if (!previous || !term || previous->distance != 0 || term->distance != 0 ||
+        !addressTermMatches(result, descriptor.dynamicTerms[index], term->src, addressType))
+      return false;
+    expression = previous->src;
+  }
+  return addressTermMatches(result, descriptor.dynamicTerms.front(), expression, addressType);
 }
 
 void verifyMemoryDataflow(const Selection& selection, const LLVMFrontendResult& result,
@@ -1570,7 +1710,7 @@ LLVMFrontendVerificationReport verifyIfConvertedResult(const llvm::Module& modul
     report.add("LLVM_FRONTEND_DFG_VERIFY_FAILED", dfgReport.format());
   verifyIfRegionStructure(*selection, result, report);
   verifyLinearRegionStructure(*selection, result, report);
-  verifyIfDataflow(*selection, result, report);
+  verifyIfDataflow(module, *selection, result, report);
   verifyMemoryDataflow(*selection, result, report);
 
   for (const auto& node : result.dfg->nodes()) {

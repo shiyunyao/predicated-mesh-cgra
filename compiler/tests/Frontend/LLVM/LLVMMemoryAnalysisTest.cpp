@@ -806,7 +806,7 @@ void runSemanticCases() {
              affine.provenance.memoryAccesses.front().offsetWords == 3 &&
              affine.provenance.memoryAccesses.front().strideWords == 2,
          "DataLayout/SCEV analysis must preserve affine offset three and stride two");
-  expect(countOpcode(*affine.dfg, cgra::ir::Opcode::Mul) == 1 &&
+  expect(countOpcode(*affine.dfg, cgra::ir::Opcode::Mul) >= 1 &&
              countOpcode(*affine.dfg, cgra::ir::Opcode::Add) >= 3,
          "A[2*i+3] must retain its Mul/Add address dataflow in the Generic DFG");
 
@@ -816,7 +816,7 @@ void runSemanticCases() {
   expect(implicit.provenance.memoryAccesses.size() == 1 &&
              implicit.provenance.memoryAccesses.front().offsetWords == 1 &&
              implicit.provenance.memoryAccesses.front().strideWords == 2 &&
-             countOpcode(*implicit.dfg, cgra::ir::Opcode::Mul) == 1,
+             countOpcode(*implicit.dfg, cgra::ir::Opcode::Mul) >= 1,
          "implicit GEP scale two and offset one must be real Generic address dataflow");
 
   const auto symbolic = lower(kSymbolicAffine, "symbolic_affine", context);
@@ -1023,7 +1023,8 @@ void runVerifierCorruptionCases() {
       kImplicitGEPScaleOffset, "implicit_gep_scale_offset",
       [](auto& result) {
         const auto scale = std::ranges::find_if(
-            result.provenance.nodes, [](const auto& node) { return node.opcode == "GEP_SCALE"; });
+            result.provenance.nodes,
+            [](const auto& node) { return node.opcode == "GEP_TERM_SCALE"; });
         expect(scale != result.provenance.nodes.end(),
                "implicit GEP scale node exists before corruption");
         cgra::ir::DFGTestAccess::setConstantBindingBits(*result.dfg, scale->node, 1, 1);
