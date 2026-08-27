@@ -102,6 +102,10 @@ public:
   static TargetModel loadFromFile(const std::filesystem::path& path);
 
   std::string_view name() const noexcept { return name_; }
+  std::string_view role() const noexcept { return role_; }
+  bool isMappingResearchTarget() const noexcept {
+    return role_ == "mapping_research_target";
+  }
   unsigned contractVersion() const noexcept { return contractVersion_; }
   const ArrayDesc& array() const noexcept { return array_; }
   const RegisterFileDesc& dataRF() const noexcept { return dataRF_; }
@@ -142,6 +146,7 @@ public:
 
 private:
   std::string name_;
+  std::string role_ = "compiler_facing_target_contract";
   unsigned contractVersion_ = 0;
   ArrayDesc array_;
   RegisterFileDesc dataRF_;
@@ -157,6 +162,7 @@ private:
   std::vector<TargetOperationDesc> operations_;
   std::unordered_map<std::string, std::size_t> operationIndices_;
   std::unordered_set<std::string> defaultFuOperations_;
+  std::vector<ir::ValueType> supportedValueTypes_;
   std::unordered_map<std::uint64_t, std::unordered_set<std::string>> tileOperationOverrides_;
 
   bool hasValidEncoding(const TargetOperationDesc& operation) const noexcept;

@@ -117,9 +117,14 @@ std::optional<LLVMMemoryAccessDescriptor> analyzeAccess(const llvm::Instruction&
     return std::nullopt;
 
   const auto* valueType = load ? load->getType() : store->getValueOperand()->getType();
-  if (!valueType->isIntegerTy(32)) {
+  const bool scalarMemoryType = valueType->isIntegerTy() || valueType->isFloatTy() ||
+                                valueType->isDoubleTy();
+  const auto accessWidthBits =
+      scalarMemoryType ? static_cast<std::uint32_t>(valueType->getPrimitiveSizeInBits()) : 0U;
+  if (!scalarMemoryType || (accessWidthBits != 8 && accessWidthBits != 16 &&
+                            accessWidthBits != 32 && accessWidthBits != 64)) {
     error = fail(LLVMMemoryAnalysisStatus::UnsupportedAccessType,
-                 "T018 V0 supports only i32 Load/Store accesses");
+                 "mapping frontend supports scalar 8/16/32/64-bit integer and float accesses");
     return std::nullopt;
   }
   if ((load && (load->isVolatile() || load->isAtomic())) ||
@@ -129,9 +134,10 @@ std::optional<LLVMMemoryAccessDescriptor> analyzeAccess(const llvm::Instruction&
     return std::nullopt;
   }
   const auto alignment = load ? load->getAlign().value() : store->getAlign().value();
-  if (alignment < 4) {
+  const auto naturalAlignmentBytes = accessWidthBits / 8;
+  if (alignment < naturalAlignmentBytes) {
     error = fail(LLVMMemoryAnalysisStatus::UnsupportedAlignment,
-                 "T018 V0 requires naturally aligned i32 memory accesses");
+                 "memory access does not satisfy its natural scalar alignment");
     return std::nullopt;
   }
 
@@ -157,7 +163,7 @@ std::optional<LLVMMemoryAccessDescriptor> analyzeAccess(const llvm::Instruction&
   descriptor.instruction = &instruction;
   descriptor.address = address;
   descriptor.base = base;
-  descriptor.accessWidthBits = 32;
+  descriptor.accessWidthBits = accessWidthBits;
   descriptor.exactAffine = true;
 
   const auto* gep = llvm::dyn_cast<llvm::GetElementPtrInst>(address);
@@ -167,13 +173,15 @@ std::optional<LLVMMemoryAccessDescriptor> analyzeAccess(const llvm::Instruction&
   const auto bitWidth = dataLayout.getIndexTypeSizeInBits(gep->getType());
   llvm::MapVector<llvm::Value*, llvm::APInt> variableOffsets;
   llvm::APInt constantOffset(bitWidth, 0, true);
+  const std::int64_t addressUnitBytes = accessWidthBits < 32 ? 1 : 4;
   if (!gep->collectOffset(dataLayout, bitWidth, variableOffsets, constantOffset) ||
-      constantOffset.getMinSignedBits() > 64 || constantOffset.getSExtValue() % 4 != 0) {
+      constantOffset.getMinSignedBits() > 64 ||
+      constantOffset.getSExtValue() % addressUnitBytes != 0) {
     error = fail(LLVMMemoryAnalysisStatus::UnsupportedNonAffineAddress,
-                 "GEP byte offset is not an exact aligned affine word offset");
+                 "GEP byte offset is not aligned to the Generic address unit");
     return std::nullopt;
   }
-  descriptor.gepConstantOffsetWords = constantOffset.getSExtValue() / 4;
+  descriptor.gepConstantOffsetWords = constantOffset.getSExtValue() / addressUnitBytes;
   descriptor.gepConstantOffsetBytes = constantOffset.getSExtValue();
   if (!fitsAddressWord(descriptor.gepConstantOffsetWords)) {
     error = fail(LLVMMemoryAnalysisStatus::UnsupportedNonAffineAddress,
@@ -191,12 +199,13 @@ std::optional<LLVMMemoryAccessDescriptor> analyzeAccess(const llvm::Instruction&
     return descriptor;
 
   const auto& [index, scaleBytesValue] = variableOffsets.front();
-  if (scaleBytesValue.getMinSignedBits() > 64 || scaleBytesValue.getSExtValue() % 4 != 0) {
+  if (scaleBytesValue.getMinSignedBits() > 64 ||
+      scaleBytesValue.getSExtValue() % addressUnitBytes != 0) {
     error = fail(LLVMMemoryAnalysisStatus::UnsupportedNonAffineAddress,
                  "dynamic GEP scale is not a whole scratchpad word");
     return std::nullopt;
   }
-  const auto scaleWords = scaleBytesValue.getSExtValue() / 4;
+  const auto scaleWords = scaleBytesValue.getSExtValue() / addressUnitBytes;
   descriptor.dynamicScaleBytes = scaleBytesValue.getSExtValue();
   if (!fitsAddressWord(scaleWords)) {
     error = fail(LLVMMemoryAnalysisStatus::UnsupportedNonAffineAddress,
@@ -348,7 +357,7 @@ LLVMMemoryAnalysisResult analyzeMemoryDependences(const llvm::Loop& loop,
       addDependence(result, seen, access.id, access.id, ir::MemoryDepKind::WAW, 1,
                     LLVMMemoryDependenceMode::DynamicConservative,
                     "dynamic Store may revisit an address in the next iteration");
-    else if (isStore(access) && access.iterationStrideWords == 0)
+    else if (isStore(access) && access.iterationStrideBytes == 0)
       addDependence(result, seen, access.id, access.id, ir::MemoryDepKind::WAW, 1,
                     LLVMMemoryDependenceMode::ExactAffine,
                     "invariant Store repeats the same logical word");
@@ -363,7 +372,7 @@ LLVMMemoryAnalysisResult analyzeMemoryDependences(const llvm::Loop& loop,
 
       const bool exact = lhs->exactAffine && rhs->exactAffine && lhs->base == rhs->base &&
                          lhs->accessWidthBits == rhs->accessWidthBits &&
-                         lhs->iterationStrideWords == rhs->iterationStrideWords &&
+                         lhs->iterationStrideBytes == rhs->iterationStrideBytes &&
                          lhs->invariantExpression == rhs->invariantExpression;
       if (!exact && aliasAnalysis.alias(llvm::MemoryLocation::get(lhs->instruction),
                                         llvm::MemoryLocation::get(rhs->instruction)) ==
@@ -379,25 +388,25 @@ LLVMMemoryAnalysisResult analyzeMemoryDependences(const llvm::Loop& loop,
       }
 
       if (exact) {
-        const auto stride = lhs->iterationStrideWords;
-        if (lhs->constantOffsetWords == rhs->constantOffsetWords)
+        const auto stride = lhs->iterationStrideBytes;
+        if (lhs->constantOffsetBytes == rhs->constantOffsetBytes)
           addDependence(result, seen, lhs->id, rhs->id, dependenceKind(*lhs, *rhs), 0,
                         LLVMMemoryDependenceMode::ExactAffine,
                         "same affine address in the same iteration");
         if (stride == 0) {
-          if (lhs->constantOffsetWords == rhs->constantOffsetWords)
+          if (lhs->constantOffsetBytes == rhs->constantOffsetBytes)
             addDependence(result, seen, rhs->id, lhs->id, dependenceKind(*rhs, *lhs), 1,
                           LLVMMemoryDependenceMode::ExactAffine,
                           "invariant address dynamic order across iterations");
           continue;
         }
         if (const auto distance =
-                positiveDistance(lhs->constantOffsetWords - rhs->constantOffsetWords, stride))
+                positiveDistance(lhs->constantOffsetBytes - rhs->constantOffsetBytes, stride))
           addDependence(result, seen, lhs->id, rhs->id, dependenceKind(*lhs, *rhs), *distance,
                         LLVMMemoryDependenceMode::ExactAffine,
                         "exact positive affine dependence distance");
         if (const auto distance =
-                positiveDistance(rhs->constantOffsetWords - lhs->constantOffsetWords, stride))
+                positiveDistance(rhs->constantOffsetBytes - lhs->constantOffsetBytes, stride))
           addDependence(result, seen, rhs->id, lhs->id, dependenceKind(*rhs, *lhs), *distance,
                         LLVMMemoryDependenceMode::ExactAffine,
                         "exact reverse positive affine dependence distance");

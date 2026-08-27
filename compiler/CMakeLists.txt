@@ -378,7 +378,7 @@ if(CGRA_BUILD_TESTS)
     NAME cgra-modulo-mapper-rf-feasibility-test
     TYPE semantic
     SOURCES tests/Mapping/ModuloMapperRFFeasibilityTest.cpp tests/support/TestArtifacts.cpp
-    LIBRARIES cgra_pipeline
+    LIBRARIES cgra_abi
     DEFINITIONS CGRA_REPOSITORY_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/.."
   )
 

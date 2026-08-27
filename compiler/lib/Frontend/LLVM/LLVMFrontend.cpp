@@ -59,7 +59,7 @@ struct LoweringState {
   std::unordered_map<const llvm::Value*, ir::ExternalValueId> externals;
   std::unordered_map<const llvm::PHINode*, std::size_t> recurrences;
   std::unordered_set<const llvm::Instruction*> recurrenceBackedges;
-  std::map<std::pair<std::uint16_t, std::uint64_t>, ir::ConstantId> constants;
+  std::map<std::tuple<ir::ValueKind, std::uint16_t, std::uint64_t>, ir::ConstantId> constants;
   std::set<std::string> externalNames;
   std::set<std::string> liveOutNames;
   std::uint32_t nextExternalOrdinal = 0;
@@ -74,6 +74,51 @@ struct BranchRegion {
   llvm::BasicBlock* mergeBlock = nullptr;
   const llvm::ICmpInst* condition = nullptr;
 };
+
+bool ignoredInstruction(const llvm::Instruction& instruction);
+
+constexpr std::size_t SmallPureHelperInstructionLimit = 32;
+
+bool isSmallPureHelper(const llvm::Function& function) {
+  if (function.isDeclaration() || function.isVarArg() || function.empty())
+    return false;
+  std::size_t instructionCount = 0;
+  for (const auto& block : function) {
+    for (const auto& instruction : block) {
+      if (ignoredInstruction(instruction))
+        continue;
+      if (++instructionCount > SmallPureHelperInstructionLimit ||
+          llvm::isa<llvm::CallBase>(instruction) || llvm::isa<llvm::AllocaInst>(instruction) ||
+          instruction.mayReadOrWriteMemory() || instruction.mayThrow())
+        return false;
+    }
+  }
+  return true;
+}
+
+std::uint32_t inlineSmallPureHelpers(llvm::Module& module) {
+  std::vector<llvm::CallBase*> candidates;
+  for (auto& function : module) {
+    for (auto& block : function) {
+      for (auto& instruction : block) {
+        auto* call = llvm::dyn_cast<llvm::CallBase>(&instruction);
+        auto* callee = call ? call->getCalledFunction() : nullptr;
+        if (!callee || callee == &function || llvm::isa<llvm::InvokeInst>(call) ||
+            !isSmallPureHelper(*callee))
+          continue;
+        candidates.push_back(call);
+      }
+    }
+  }
+
+  std::uint32_t inlined = 0;
+  for (auto* call : candidates) {
+    llvm::InlineFunctionInfo information;
+    if (llvm::InlineFunction(*call, information).isSuccess())
+      ++inlined;
+  }
+  return inlined;
+}
 
 bool sameAddress(const llvm::Value& lhs, const llvm::Value& rhs, LoopSelection& selection) {
   if (&lhs == &rhs)
@@ -164,12 +209,90 @@ std::string blockName(const llvm::Function& function, const llvm::BasicBlock& bl
 }
 
 std::optional<ir::ValueType> valueType(const llvm::Value& value) {
+  if (value.getType()->isFloatTy())
+    return ir::ValueType::floating(32);
+  if (value.getType()->isDoubleTy())
+    return ir::ValueType::floating(64);
   const auto* integer = llvm::dyn_cast<llvm::IntegerType>(value.getType());
   if (!integer || integer->getBitWidth() == 0 || integer->getBitWidth() > 64)
     return std::nullopt;
   if (integer->getBitWidth() == 1)
     return ir::ValueType::predicate();
   return ir::ValueType::integer(static_cast<std::uint16_t>(integer->getBitWidth()));
+}
+
+std::optional<std::uint64_t> constantBits(const llvm::Value& value) {
+  if (const auto* integer = llvm::dyn_cast<llvm::ConstantInt>(&value))
+    return integer->getValue().getZExtValue();
+  if (const auto* floating = llvm::dyn_cast<llvm::ConstantFP>(&value))
+    return floating->getValueAPF().bitcastToAPInt().getZExtValue();
+  return std::nullopt;
+}
+
+std::optional<ir::Opcode> opcode(const llvm::Instruction& instruction);
+
+std::optional<std::string> customOperationKey(const llvm::Instruction& instruction) {
+  if (const auto* intrinsic = llvm::dyn_cast<llvm::IntrinsicInst>(&instruction);
+      intrinsic && intrinsic->getIntrinsicID() == llvm::Intrinsic::fmuladd)
+    return "FMA";
+  switch (instruction.getOpcode()) {
+  case llvm::Instruction::FAdd:
+    return "FADD";
+  case llvm::Instruction::FSub:
+    return "FSUB";
+  case llvm::Instruction::FMul:
+    return "FMUL";
+  case llvm::Instruction::FDiv:
+    return "FDIV";
+  case llvm::Instruction::FNeg:
+    return "FNEG";
+  case llvm::Instruction::SDiv:
+    return "SDIV";
+  case llvm::Instruction::SRem:
+    return "SREM";
+  case llvm::Instruction::UDiv:
+    return "UDIV";
+  case llvm::Instruction::URem:
+    return "UREM";
+  case llvm::Instruction::Trunc:
+    return "TRUNC";
+  case llvm::Instruction::ZExt:
+    return "ZEXT";
+  case llvm::Instruction::SExt:
+    return "SEXT";
+  case llvm::Instruction::SIToFP:
+    return "SITOFP";
+  case llvm::Instruction::UIToFP:
+    return "UITOFP";
+  case llvm::Instruction::FPToSI:
+    return "FPTOSI";
+  case llvm::Instruction::FPToUI:
+    return "FPTOUI";
+  case llvm::Instruction::FPTrunc:
+    return "FPTRUNC";
+  case llvm::Instruction::FPExt:
+    return "FPEXT";
+  default:
+    return std::nullopt;
+  }
+}
+
+std::vector<const llvm::Value*> semanticOperands(const llvm::Instruction& instruction) {
+  std::vector<const llvm::Value*> result;
+  if (const auto* call = llvm::dyn_cast<llvm::CallBase>(&instruction)) {
+    result.reserve(call->arg_size());
+    for (const auto& argument : call->args())
+      result.push_back(argument.get());
+    return result;
+  }
+  result.reserve(instruction.getNumOperands());
+  for (const auto& operand : instruction.operands())
+    result.push_back(operand.get());
+  return result;
+}
+
+bool supportedDataInstruction(const llvm::Instruction& instruction) {
+  return opcode(instruction).has_value() || customOperationKey(instruction).has_value();
 }
 
 std::optional<ir::Opcode> opcode(const llvm::Instruction& instruction) {
@@ -200,7 +323,7 @@ std::optional<ir::Opcode> opcode(const llvm::Instruction& instruction) {
 std::string valueSummary(const llvm::Value& value) {
   if (value.hasName())
     return "%" + value.getName().str();
-  if (const auto* constant = llvm::dyn_cast<llvm::ConstantInt>(&value)) {
+  if (const auto* constant = llvm::dyn_cast<llvm::Constant>(&value)) {
     std::string text;
     llvm::raw_string_ostream stream(text);
     constant->print(stream);
@@ -229,7 +352,8 @@ bool isMemoryInstruction(const llvm::Instruction& instruction) {
 }
 
 bool isPureInstruction(const llvm::Instruction& instruction) {
-  return opcode(instruction).has_value() || llvm::isa<llvm::ICmpInst>(instruction) ||
+  return opcode(instruction).has_value() || customOperationKey(instruction).has_value() ||
+         llvm::isa<llvm::ICmpInst>(instruction) ||
          llvm::isa<llvm::SelectInst>(instruction);
 }
 
@@ -520,7 +644,7 @@ bool discoverRecurrences(LoweringState& state, LLVMFrontendResult& error) {
                                  LLVMFrontendDiagnosticCode::LLVM_FRONTEND_UNSUPPORTED_MEMORY,
                                  "memory-carried recurrence is deferred to T018", state.selection,
                                  userInstruction);
-      if (!opcode(*userInstruction))
+      if (!supportedDataInstruction(*userInstruction))
         return recurrenceFailure(error, LLVMFrontendStatus::UnsupportedInstruction,
                                  LLVMFrontendDiagnosticCode::LLVM_FRONTEND_UNSUPPORTED_OPCODE,
                                  "recurrence PHI data use is outside the scalar integer subset",
@@ -536,12 +660,12 @@ bool discoverRecurrences(LoweringState& state, LLVMFrontendResult& error) {
           error, LLVMFrontendStatus::UnsupportedRecurrenceType,
           LLVMFrontendDiagnosticCode::LLVM_FRONTEND_UNSUPPORTED_RECURRENCE_TYPE,
           "recurrence initial provider has an unsupported type", state.selection, phi);
-    if (!llvm::isa<llvm::ConstantInt>(initial)) {
+    if (!constantBits(*initial)) {
       if (llvm::isa<llvm::Constant>(initial))
         return recurrenceFailure(
             error, LLVMFrontendStatus::UnsupportedRecurrenceProvider,
             LLVMFrontendDiagnosticCode::LLVM_FRONTEND_UNSUPPORTED_RECURRENCE_INITIAL_VALUE,
-            "recurrence initial provider must be ConstantInt or loop-external scalar",
+            "recurrence initial provider must be a scalar literal or loop-external scalar",
             state.selection, phi);
       if (const auto* initialInstruction = llvm::dyn_cast<llvm::Instruction>(initial);
           initialInstruction && state.selection.loop->contains(initialInstruction))
@@ -555,7 +679,8 @@ bool discoverRecurrences(LoweringState& state, LLVMFrontendResult& error) {
     const auto* backedge = phi->getIncomingValue(static_cast<unsigned>(latchIndex));
     const auto* backedgeInstruction = llvm::dyn_cast<llvm::Instruction>(backedge);
     if (!backedgeInstruction || !state.selection.loop->contains(backedgeInstruction) ||
-        llvm::isa<llvm::PHINode>(backedgeInstruction) || !opcode(*backedgeInstruction))
+        llvm::isa<llvm::PHINode>(backedgeInstruction) ||
+        !supportedDataInstruction(*backedgeInstruction))
       return recurrenceFailure(
           error, LLVMFrontendStatus::UnsupportedRecurrenceProvider,
           LLVMFrontendDiagnosticCode::LLVM_FRONTEND_UNSUPPORTED_RECURRENCE_PRODUCER,
@@ -608,7 +733,7 @@ bool buildControlSlice(LoweringState& state, LLVMFrontendResult& error) {
 
   for (const auto* instruction : state.controlSlice) {
     if (!llvm::isa<llvm::PHINode>(instruction) && !llvm::isa<llvm::ICmpInst>(instruction) &&
-        !opcode(*instruction)) {
+        !supportedDataInstruction(*instruction)) {
       error =
           failure(LLVMFrontendStatus::DataDependentLoopControl,
                   LLVMFrontendDiagnosticCode::LLVM_FRONTEND_DATA_DEPENDENT_CONTROL,
@@ -656,7 +781,7 @@ void promoteRecurrenceProducerClosure(LoweringState& state) {
     for (const auto& operand : instruction->operands()) {
       const auto* dependency = llvm::dyn_cast<llvm::Instruction>(operand.get());
       if (!dependency || !state.selection.loop->contains(dependency) ||
-          llvm::isa<llvm::PHINode>(dependency) || !opcode(*dependency))
+          llvm::isa<llvm::PHINode>(dependency) || !supportedDataInstruction(*dependency))
         continue;
       work.push_back(dependency);
     }
@@ -738,11 +863,14 @@ std::string sourceLabel(const llvm::Function& function, const llvm::BasicBlock& 
 }
 
 ir::ConstantId getConstant(LoweringState& state, ir::DFGBuilder& builder,
-                           const llvm::ConstantInt& constant, const ir::ValueType& type) {
-  const auto key = std::make_pair(type.bitWidth, constant.getValue().getZExtValue());
+                           const llvm::Constant& constant, const ir::ValueType& type) {
+  const auto bits = constantBits(constant);
+  if (!bits)
+    throw std::invalid_argument("unsupported Generic constant kind");
+  const auto key = std::make_tuple(type.kind, type.bitWidth, *bits);
   if (const auto iterator = state.constants.find(key); iterator != state.constants.end())
     return iterator->second;
-  const auto id = builder.addConstant(type, key.second);
+  const auto id = builder.addConstant(type, *bits);
   state.constants.emplace(key, id);
   return id;
 }
@@ -814,7 +942,7 @@ bool discoverIfRecurrences(IfLoweringState& state) {
         backedgePhi && state.region.branch && backedgePhi->getParent() == state.region.mergeBlock &&
         backedgePhi->getNumIncomingValues() == 2;
     if (!backedge || !state.selection.loop->contains(backedge) ||
-        (!conditionalSelectBackedge && !opcode(*backedge)))
+        (!conditionalSelectBackedge && !supportedDataInstruction(*backedge)))
       continue;
     bool dataUse = false;
     for (const auto* user : phi->users()) {
@@ -866,7 +994,7 @@ void promoteIfRecurrenceProducerClosure(IfLoweringState& state) {
       const auto* dependencyPhi = llvm::dyn_cast_or_null<llvm::PHINode>(dependency);
       const bool mergePhi = dependencyPhi && dependencyPhi->getParent() != state.selection.block;
       if (!dependency || !state.selection.loop->contains(dependency) ||
-          (!mergePhi && !opcode(*dependency)))
+          (!mergePhi && !supportedDataInstruction(*dependency)))
         continue;
       work.push_back(dependency);
     }
@@ -992,10 +1120,13 @@ ir::ExternalValueId getIfExternal(IfLoweringState& state, ir::DFGBuilder& builde
 }
 
 ir::ConstantId getIfConstant(IfLoweringState& state, ir::DFGBuilder& builder,
-                             const llvm::ConstantInt& constant, const ir::ValueType& type) {
+                             const llvm::Constant& constant, const ir::ValueType& type) {
   if (const auto iterator = state.constants.find(&constant); iterator != state.constants.end())
     return iterator->second;
-  const auto id = builder.addConstant(type, constant.getValue().getZExtValue());
+  const auto bits = constantBits(constant);
+  if (!bits)
+    throw std::invalid_argument("unsupported Generic constant kind");
+  const auto id = builder.addConstant(type, *bits);
   state.constants.emplace(&constant, id);
   return id;
 }
@@ -1228,9 +1359,18 @@ LLVMFrontendResult lowerStructuredLoop(llvm::Module& module, const LLVMFrontendO
                          LLVMFrontendDiagnosticCode::LLVM_FRONTEND_PREDICATED_LOAD_UNSUPPORTED,
                          "branch-local conditional Load has no V0 suppression mechanism",
                          &selection, load);
-        state.nodes.emplace(load, builder.addNode(ir::Opcode::Load, {ir::ValueType::i32()},
-                                                  ir::ValueType::i32(), std::nullopt,
-                                                  ir::MemoryOpInfo{32, false}));
+        const auto access = std::ranges::find_if(
+            memoryAnalysis.accesses, [&](const auto& item) { return item.instruction == load; });
+        const auto loadType = valueType(*load);
+        if (access == memoryAnalysis.accesses.end() || !loadType)
+          return failure(LLVMFrontendStatus::UnsupportedMemoryType,
+                         LLVMFrontendDiagnosticCode::LLVM_FRONTEND_UNSUPPORTED_MEMORY_TYPE,
+                         "Load type is outside the typed scalar memory contract", &selection,
+                         load);
+        state.nodes.emplace(
+            load, builder.addNode(ir::Opcode::Load, {ir::ValueType::i32()}, *loadType,
+                                  std::nullopt,
+                                  ir::MemoryOpInfo{access->accessWidthBits, false}));
         continue;
       }
       if (isMemoryInstruction(instruction)) {
@@ -1239,7 +1379,7 @@ LLVMFrontendResult lowerStructuredLoop(llvm::Module& module, const LLVMFrontendO
                        "memory instruction is outside the T018 V0 subset", &selection,
                        &instruction);
       }
-      if (llvm::isa<llvm::CallBase>(&instruction))
+      if (llvm::isa<llvm::CallBase>(&instruction) && !customOperationKey(instruction))
         return failure(LLVMFrontendStatus::UnsupportedIfSideEffect,
                        LLVMFrontendDiagnosticCode::LLVM_FRONTEND_UNSUPPORTED_IF_SIDE_EFFECT,
                        "calls and side-effecting intrinsics are outside T017 V0", &selection,
@@ -1293,12 +1433,13 @@ LLVMFrontendResult lowerStructuredLoop(llvm::Module& module, const LLVMFrontendO
                                                           *selectedType));
       } else {
         const auto mapped = opcode(instruction);
-        if (!mapped)
+        const auto custom = customOperationKey(instruction);
+        if (!mapped && !custom)
           return failure(LLVMFrontendStatus::UnsupportedInstruction,
                          LLVMFrontendDiagnosticCode::LLVM_FRONTEND_UNSUPPORTED_OPCODE,
                          "instruction is outside the T017 scalar subset", &selection, &instruction);
         std::vector<ir::ValueType> operandTypes;
-        for (const auto& operand : instruction.operands()) {
+        for (const auto* operand : semanticOperands(instruction)) {
           const auto operandType = valueType(*operand);
           if (!operandType)
             return failure(LLVMFrontendStatus::UnsupportedLLVMType,
@@ -1307,7 +1448,10 @@ LLVMFrontendResult lowerStructuredLoop(llvm::Module& module, const LLVMFrontendO
                            &instruction);
           operandTypes.push_back(*operandType);
         }
-        state.nodes.emplace(&instruction, builder.addNode(*mapped, std::move(operandTypes), *type));
+        state.nodes.emplace(
+            &instruction,
+            mapped ? builder.addNode(*mapped, std::move(operandTypes), *type)
+                   : builder.addCustomNode(*custom, std::move(operandTypes), *type));
       }
     }
   }
@@ -1315,6 +1459,14 @@ LLVMFrontendResult lowerStructuredLoop(llvm::Module& module, const LLVMFrontendO
   auto provider = [&](const llvm::Value& value, ir::NodeId destination, std::uint32_t operand,
                       bool predicate) -> std::optional<ir::EdgeId> {
     if (const auto* phi = llvm::dyn_cast<llvm::PHINode>(&value)) {
+      if (!selection.loop->contains(phi)) {
+        const auto type = valueType(value);
+        if (!type || predicate)
+          return std::nullopt;
+        builder.bindExternal(destination, operand,
+                             getIfExternal(state, builder, value, *type));
+        return std::nullopt;
+      }
       const auto select = state.selects.find(phi);
       if (select != state.selects.end()) {
         if (predicate)
@@ -1338,7 +1490,8 @@ LLVMFrontendResult lowerStructuredLoop(llvm::Module& module, const LLVMFrontendO
       const auto type = valueType(*descriptor.initial);
       if (!type)
         return std::nullopt;
-      if (const auto* constant = llvm::dyn_cast<llvm::ConstantInt>(descriptor.initial))
+      if (const auto* constant = llvm::dyn_cast<llvm::Constant>(descriptor.initial);
+          constant && constantBits(*constant))
         boundary.values.push_back(
             {0, ir::ConstantRef{getIfConstant(state, builder, *constant, *type)}});
       else
@@ -1354,7 +1507,8 @@ LLVMFrontendResult lowerStructuredLoop(llvm::Module& module, const LLVMFrontendO
                                   : builder.addDataEdge(node->second, destination, operand);
       return edge;
     }
-    if (const auto* constant = llvm::dyn_cast<llvm::ConstantInt>(&value)) {
+    if (const auto* constant = llvm::dyn_cast<llvm::Constant>(&value);
+        constant && constantBits(*constant)) {
       const auto type = valueType(value);
       if (!type)
         return std::nullopt;
@@ -1451,7 +1605,7 @@ LLVMFrontendResult lowerStructuredLoop(llvm::Module& module, const LLVMFrontendO
         continue;
       }
       std::uint32_t operand = 0;
-      for (const auto& value : instruction.operands()) {
+      for (const auto* value : semanticOperands(instruction)) {
         bool predicateOperand = false;
         if (llvm::isa<llvm::ICmpInst>(instruction))
           predicateOperand = false;
@@ -1464,7 +1618,7 @@ LLVMFrontendResult lowerStructuredLoop(llvm::Module& module, const LLVMFrontendO
         const auto sourceOperand = swapConditionOperands ? 1U - operand : operand;
         const llvm::Value* sourceValue =
             compare ? static_cast<const llvm::Value*>(compare->getOperand(sourceOperand))
-                    : value.get();
+                    : value;
         const auto edge = provider(*sourceValue, destination->second, operand, predicateOperand);
         if (predicateOperand && !edge)
           return failure(LLVMFrontendStatus::UnsupportedBranchCondition,
@@ -1770,14 +1924,15 @@ LLVMFrontendResult lowerSelectedLoop(llvm::Module& module, const LLVMFrontendOpt
                      &state.selection, &instruction);
     }
     const auto mappedOpcode = opcode(instruction);
-    if (!mappedOpcode) {
+    const auto custom = customOperationKey(instruction);
+    if (!mappedOpcode && !custom) {
       return failure(LLVMFrontendStatus::UnsupportedInstruction,
                      LLVMFrontendDiagnosticCode::LLVM_FRONTEND_UNSUPPORTED_OPCODE,
                      "LLVM instruction is outside the T015 scalar subset", &state.selection,
                      &instruction);
     }
     std::vector<ir::ValueType> operandTypes;
-    for (const auto& operand : instruction.operands()) {
+    for (const auto* operand : semanticOperands(instruction)) {
       const auto operandType = valueType(*operand);
       if (!operandType) {
         return failure(LLVMFrontendStatus::UnsupportedLLVMType,
@@ -1787,10 +1942,12 @@ LLVMFrontendResult lowerSelectedLoop(llvm::Module& module, const LLVMFrontendOpt
       }
       operandTypes.push_back(*operandType);
     }
-    const auto id = builder.addNode(
-        *mappedOpcode, std::move(operandTypes), *resultType, std::nullopt, std::nullopt,
-        ir::SourceInfo{sourceLabel(*state.selection.function, *state.selection.block, instruction,
-                                   instructionOrdinal)});
+    const auto source = ir::SourceInfo{sourceLabel(*state.selection.function, *state.selection.block,
+                                                   instruction, instructionOrdinal)};
+    const auto id = mappedOpcode
+                        ? builder.addNode(*mappedOpcode, std::move(operandTypes), *resultType,
+                                          std::nullopt, std::nullopt, source)
+                        : builder.addCustomNode(*custom, std::move(operandTypes), *resultType, source);
     state.nodes.emplace(&instruction, id);
     ++instructionOrdinal;
   }
@@ -1800,7 +1957,7 @@ LLVMFrontendResult lowerSelectedLoop(llvm::Module& module, const LLVMFrontendOpt
       continue;
     const auto dst = state.nodes.at(&instruction);
     std::uint32_t operandIndex = 0;
-    for (const auto& operand : instruction.operands()) {
+    for (const auto* operand : semanticOperands(instruction)) {
       if (const auto* phi = llvm::dyn_cast<llvm::PHINode>(operand)) {
         const auto recurrence = state.recurrences.find(phi);
         if (recurrence == state.recurrences.end())
@@ -1824,7 +1981,8 @@ LLVMFrontendResult lowerSelectedLoop(llvm::Module& module, const LLVMFrontendOpt
                          "recurrence boundary has an unsupported type", &state.selection,
                          &instruction);
         ir::ExternalOperandBinding initialBinding;
-        if (const auto* constant = llvm::dyn_cast<llvm::ConstantInt>(descriptor.initial)) {
+        if (const auto* constant = llvm::dyn_cast<llvm::Constant>(descriptor.initial);
+            constant && constantBits(*constant)) {
           initialBinding = ir::ConstantRef{getConstant(state, builder, *constant, *initialType)};
         } else {
           initialBinding =
@@ -1853,7 +2011,8 @@ LLVMFrontendResult lowerSelectedLoop(llvm::Module& module, const LLVMFrontendOpt
           const auto external = getExternal(state, builder, *operand, *type);
           builder.bindExternal(dst, operandIndex, external);
         }
-      } else if (const auto* constant = llvm::dyn_cast<llvm::ConstantInt>(operand)) {
+      } else if (const auto* constant = llvm::dyn_cast<llvm::Constant>(operand);
+                 constant && constantBits(*constant)) {
         const auto type = valueType(*operand);
         if (!type)
           return failure(LLVMFrontendStatus::UnsupportedLLVMType,
@@ -1864,7 +2023,7 @@ LLVMFrontendResult lowerSelectedLoop(llvm::Module& module, const LLVMFrontendOpt
       } else if (llvm::isa<llvm::Constant>(operand)) {
         return failure(LLVMFrontendStatus::UnsupportedInstruction,
                        LLVMFrontendDiagnosticCode::LLVM_FRONTEND_UNSUPPORTED_OPCODE,
-                       "only ConstantInt operands are supported in T015", &state.selection,
+                       "constant operand kind is unsupported", &state.selection,
                        &instruction);
       } else {
         const auto type = valueType(*operand);
@@ -2198,6 +2357,7 @@ std::string LLVMFrontendResult::toJson() const {
         {"loop_shape", metadata->loopShape},
         {"loop_entry_canonicalized", metadata->loopEntryCanonicalized},
         {"coalesced_store_pairs", metadata->coalescedStorePairs},
+        {"inlined_pure_helper_calls", metadata->inlinedPureHelperCalls},
         {"requires_trip_count", metadata->requiresTripCount}};
     if (metadata->staticTripCount)
       root["metadata"]["static_trip_count"] = *metadata->staticTripCount;
@@ -2311,9 +2471,12 @@ LLVMFrontendResult lowerInnermostLoop(const llvm::Module& module,
                                       const LLVMFrontendOptions& options) {
   try {
     auto normalized = std::shared_ptr<llvm::Module>(llvm::CloneModule(module).release());
+    const auto inlinedPureHelperCalls = inlineSmallPureHelpers(*normalized);
     auto result = lowerSelectedLoop(*normalized, options);
-    if (result.ok())
+    if (result.ok()) {
+      result.metadata->inlinedPureHelperCalls = inlinedPureHelperCalls;
       result.normalizedModule = std::move(normalized);
+    }
     return result;
   } catch (const std::exception& error) {
     return failure(LLVMFrontendStatus::InternalError,

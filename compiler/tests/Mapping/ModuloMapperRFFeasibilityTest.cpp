@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 #include "cgra/IR/DFGBuilder.h"
+#include "cgra/ABI/CompileKernel.h"
 #include "cgra/Pipeline/CompileDFG.h"
 #include "cgra/Target/TargetModel.h"
 #include "support/TestArtifacts.h"
@@ -7,6 +8,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
+#include <ranges>
 #include <stdexcept>
 
 #ifndef CGRA_REPOSITORY_ROOT
@@ -119,6 +121,19 @@ cgra::ir::DFG fixedRegisterOverlapCandidate() {
   return builder.finish();
 }
 
+cgra::ir::DFG typedFloatCandidate() {
+  cgra::ir::DFGBuilder builder("typed_float_mapping_candidate");
+  const auto lhs = builder.addExternal("lhs", cgra::ir::ValueType::floating(64));
+  const auto rhs = builder.addExternal("rhs", cgra::ir::ValueType::floating(64));
+  const auto add = builder.addCustomNode(
+      "FADD", {cgra::ir::ValueType::floating(64), cgra::ir::ValueType::floating(64)},
+      cgra::ir::ValueType::floating(64));
+  builder.bindExternal(add, 0, lhs);
+  builder.bindExternal(add, 1, rhs);
+  builder.addLiveOut("sum", cgra::ir::ValueType::floating(64), add);
+  return builder.finish();
+}
+
 } // namespace
 
 int main() {
@@ -161,6 +176,29 @@ int main() {
            "fixed-RF overlap must remain visible as physical infeasibility");
     expect(research.physicalRealizability.reasonCode == "rf_infeasible",
            "mapping research lost the RF failure reason");
+
+    const auto research64 =
+        cgra::TargetModel::loadFromFile(Root / "target/cgra_mapping64_v1.json");
+    cgra::abi::CompileKernelOptions typedOptions;
+    typedOptions.invocation = {4, {{0, 0x3ff0000000000000ULL},
+                                   {1, 0x4000000000000000ULL}},
+                               {}};
+    typedOptions.backend.mode = cgra::pipeline::CompileDFGMode::MappingResearch;
+    typedOptions.backend.mapper.maxII = 4;
+    typedOptions.backend.mapper.budget.maxNodeCandidateAttempts = 10'000;
+    typedOptions.backend.mapper.budget.maxBacktracks = 10'000;
+    typedOptions.backend.mapper.budget.maxRouteSearchCalls = 10'000;
+    const auto typed =
+        cgra::abi::compileKernel(typedFloatCandidate(), research64, typedOptions);
+    expect(typed.ok() && typed.backend->moduloMapping.has_value(),
+           "research64 typed kernel must reach verified modulo mapping: " + typed.message);
+    expect(typed.abiLayout && typed.abiLayout->outputs.empty(),
+           "mapping specialization must not materialize hardware ABI output Stores");
+    expect(typed.bound && typed.bound->dfg.liveOuts().size() == 1 &&
+               std::ranges::none_of(typed.bound->dfg.nodes(), [](const auto& node) {
+                 return node.opcode == cgra::ir::Opcode::Store;
+               }),
+           "mapping specialization must preserve LiveOut semantics without physical Stores");
     std::cout << "CGRA_GENERIC_RF_FEASIBILITY_TEST_PASS\n";
     return EXIT_SUCCESS;
   } catch (const std::exception& error) {

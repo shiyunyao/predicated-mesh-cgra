@@ -1,0 +1,1606 @@
+{
+  "schema": "cgra.target.v3",
+  "target_contract_version": 3,
+  "name": "cgra_mapping32_v1",
+  "version": 3,
+  "role": "mapping_research_target",
+  "authority": {
+    "mode": "compiler_source_of_truth",
+    "notes": "Abstract 32-bit mapping profile. It has no RTL encoding or hardware-executable claim."
+  },
+  "parameters": {
+    "array_rows": 4,
+    "array_cols": 4,
+    "data_width": 32,
+    "pred_width": 1,
+    "data_rf_depth": 16,
+    "pred_rf_depth": 16,
+    "const_mem_depth": 16,
+    "ctrl_mem_depth": 256,
+    "scratchpad_depth": 4096,
+    "scratchpad_addr_width": 12,
+    "shared_mem_ports": 4,
+    "mesh_hop_latency": 1,
+    "load_latency": 2,
+    "control_word_align_bits": 32,
+    "raw_control_word_width_bits": 126,
+    "physical_control_word_width_bits": 128,
+    "control_word_chunks": 4
+  },
+  "array": {
+    "rows": 4,
+    "cols": 4,
+    "data_width": 32,
+    "predicate_width": 1,
+    "hardware_branch": false
+  },
+  "data_rf": {
+    "depth": 16,
+    "read_ports": 2,
+    "write_ports": 2,
+    "same_cycle_read_write_same_address": "illegal",
+    "same_cycle_multiwrite_same_address": "illegal",
+    "write_ports_detail": {
+      "W0": {
+        "sources": [
+          "FU_DATA_RESULT"
+        ]
+      },
+      "W1": {
+        "sources": [
+          "RF_A",
+          "RF_B",
+          "NORTH_DATA_IN",
+          "SOUTH_DATA_IN",
+          "EAST_DATA_IN",
+          "WEST_DATA_IN",
+          "CONST_DATA",
+          "LSU_LOAD_DATA",
+          "ZERO"
+        ]
+      }
+    }
+  },
+  "predicate_rf": {
+    "depth": 16,
+    "read_ports": 2,
+    "write_ports": 2,
+    "same_cycle_read_write_same_address": "illegal",
+    "same_cycle_multiwrite_same_address": "illegal",
+    "write_ports_detail": {
+      "W0": {
+        "sources": [
+          "FU_PRED_RESULT"
+        ]
+      },
+      "W1": {
+        "sources": [
+          "RF_A",
+          "RF_B",
+          "NORTH_PRED_IN",
+          "SOUTH_PRED_IN",
+          "EAST_PRED_IN",
+          "WEST_PRED_IN",
+          "CONST_TRUE",
+          "CONST_FALSE"
+        ]
+      }
+    }
+  },
+  "interconnect": {
+    "topology": "mesh_2d",
+    "registered_links": true,
+    "hop_latency": 1,
+    "input_buffering": false,
+    "runtime_arbitration": false,
+    "compiler_routed": true,
+    "data_network": {
+      "separate_resource_domain": true,
+      "channels_per_direction_per_link": 1
+    },
+    "predicate_network": {
+      "separate_resource_domain": true,
+      "channels_per_direction_per_link": 1
+    }
+  },
+  "memory": {
+    "model": "shared_multiport_scratchpad",
+    "address_unit": "word",
+    "depth": 4096,
+    "width_bits": 32,
+    "ports": 4,
+    "load_latency": 2,
+    "max_issue_per_lsu_per_cycle": 1,
+    "max_issue_per_port_per_cycle": 1,
+    "dependence_separation": {
+      "RAW": 1,
+      "WAR": 1,
+      "WAW": 1
+    },
+    "same_address_policy": "multi_load_only",
+    "runtime_stall": false,
+    "runtime_arbitration": false,
+    "configuration_scope": "global_tile_0_0"
+  },
+  "derived_widths": {
+    "data_rf_addr_width": 4,
+    "pred_rf_addr_width": 4,
+    "const_addr_width": 4,
+    "ctrl_pc_width": 8,
+    "scratchpad_addr_width": 12,
+    "cfg_word_idx_width_current_rtl": 2
+  },
+  "lsu": {
+    "default_enable_policy": "left_column",
+    "port_assignment": "enabled_tile_row_major_rank",
+    "enabled_tiles": [
+      {
+        "row": 0,
+        "col": 0,
+        "port_id": 0
+      },
+      {
+        "row": 1,
+        "col": 0,
+        "port_id": 1
+      },
+      {
+        "row": 2,
+        "col": 0,
+        "port_id": 2
+      },
+      {
+        "row": 3,
+        "col": 0,
+        "port_id": 3
+      }
+    ]
+  },
+  "loop_execution": {
+    "supported": true,
+    "model": "finite_modulo_replay",
+    "control_phases": [
+      "prologue",
+      "kernel",
+      "epilogue"
+    ],
+    "rotating_registers": false,
+    "loop_counter_operand": false,
+    "same_address_rf_read_write_recurrence": false
+  },
+  "latencies": {
+    "producer_output_ready_offsets": {
+      "fu": 0,
+      "load": 2
+    },
+    "issue_occupancy": {
+      "fu": 1,
+      "load": 1,
+      "store": 1
+    },
+    "fu_ops": {
+      "NOP": 1,
+      "PASS": 1,
+      "ADD": 1,
+      "SUB": 1,
+      "MUL": 1,
+      "AND": 1,
+      "OR": 1,
+      "XOR": 1,
+      "SHL": 1,
+      "LSHR": 1,
+      "SELECT": 1,
+      "CMP_EQ": 1,
+      "CMP_NE": 1,
+      "CMP_ULT": 1,
+      "CMP_ULE": 1,
+      "PPASS": 1,
+      "PNOT": 1,
+      "PAND": 1,
+      "POR": 1
+    },
+    "mesh_hop": 1,
+    "load_response": 2
+  },
+  "ops": {
+    "data": [
+      "NOP",
+      "PASS",
+      "ADD",
+      "SUB",
+      "MUL",
+      "AND",
+      "OR",
+      "XOR",
+      "SHL",
+      "LSHR",
+      "SELECT"
+    ],
+    "compare": [
+      "CMP_EQ",
+      "CMP_NE",
+      "CMP_ULT",
+      "CMP_ULE"
+    ],
+    "predicate": [
+      "PPASS",
+      "PNOT",
+      "PAND",
+      "POR"
+    ]
+  },
+  "operations": {
+    "NOP": {
+      "execution_class": "FU",
+      "operands": [],
+      "result": {
+        "role": "data"
+      },
+      "issue_occupancy": 1,
+      "result_latency": 1,
+      "producer_output_ready_offset": 0,
+      "encoding": {
+        "domain": "op",
+        "symbol": "NOP"
+      },
+      "lowering": {
+        "operand_sinks": [],
+        "result_source": "fu_data_result"
+      }
+    },
+    "PASS": {
+      "execution_class": "FU",
+      "operands": [
+        {
+          "role": "data"
+        }
+      ],
+      "result": {
+        "role": "data"
+      },
+      "issue_occupancy": 1,
+      "result_latency": 1,
+      "producer_output_ready_offset": 0,
+      "encoding": {
+        "domain": "op",
+        "symbol": "PASS"
+      },
+      "lowering": {
+        "operand_sinks": [
+          "fu_data_a"
+        ],
+        "result_source": "fu_data_result"
+      }
+    },
+    "ADD": {
+      "execution_class": "FU",
+      "operands": [
+        {
+          "role": "data"
+        },
+        {
+          "role": "data"
+        }
+      ],
+      "result": {
+        "role": "data"
+      },
+      "issue_occupancy": 1,
+      "result_latency": 1,
+      "producer_output_ready_offset": 0,
+      "encoding": {
+        "domain": "op",
+        "symbol": "ADD"
+      },
+      "lowering": {
+        "operand_sinks": [
+          "fu_data_a",
+          "fu_data_b"
+        ],
+        "result_source": "fu_data_result"
+      }
+    },
+    "SUB": {
+      "execution_class": "FU",
+      "operands": [
+        {
+          "role": "data"
+        },
+        {
+          "role": "data"
+        }
+      ],
+      "result": {
+        "role": "data"
+      },
+      "issue_occupancy": 1,
+      "result_latency": 1,
+      "producer_output_ready_offset": 0,
+      "encoding": {
+        "domain": "op",
+        "symbol": "SUB"
+      },
+      "lowering": {
+        "operand_sinks": [
+          "fu_data_a",
+          "fu_data_b"
+        ],
+        "result_source": "fu_data_result"
+      }
+    },
+    "MUL": {
+      "execution_class": "FU",
+      "operands": [
+        {
+          "role": "data"
+        },
+        {
+          "role": "data"
+        }
+      ],
+      "result": {
+        "role": "data"
+      },
+      "issue_occupancy": 1,
+      "result_latency": 1,
+      "producer_output_ready_offset": 0,
+      "encoding": {
+        "domain": "op",
+        "symbol": "MUL"
+      },
+      "lowering": {
+        "operand_sinks": [
+          "fu_data_a",
+          "fu_data_b"
+        ],
+        "result_source": "fu_data_result"
+      }
+    },
+    "AND": {
+      "execution_class": "FU",
+      "operands": [
+        {
+          "role": "data"
+        },
+        {
+          "role": "data"
+        }
+      ],
+      "result": {
+        "role": "data"
+      },
+      "issue_occupancy": 1,
+      "result_latency": 1,
+      "producer_output_ready_offset": 0,
+      "encoding": {
+        "domain": "op",
+        "symbol": "AND"
+      },
+      "lowering": {
+        "operand_sinks": [
+          "fu_data_a",
+          "fu_data_b"
+        ],
+        "result_source": "fu_data_result"
+      }
+    },
+    "OR": {
+      "execution_class": "FU",
+      "operands": [
+        {
+          "role": "data"
+        },
+        {
+          "role": "data"
+        }
+      ],
+      "result": {
+        "role": "data"
+      },
+      "issue_occupancy": 1,
+      "result_latency": 1,
+      "producer_output_ready_offset": 0,
+      "encoding": {
+        "domain": "op",
+        "symbol": "OR"
+      },
+      "lowering": {
+        "operand_sinks": [
+          "fu_data_a",
+          "fu_data_b"
+        ],
+        "result_source": "fu_data_result"
+      }
+    },
+    "XOR": {
+      "execution_class": "FU",
+      "operands": [
+        {
+          "role": "data"
+        },
+        {
+          "role": "data"
+        }
+      ],
+      "result": {
+        "role": "data"
+      },
+      "issue_occupancy": 1,
+      "result_latency": 1,
+      "producer_output_ready_offset": 0,
+      "encoding": {
+        "domain": "op",
+        "symbol": "XOR"
+      },
+      "lowering": {
+        "operand_sinks": [
+          "fu_data_a",
+          "fu_data_b"
+        ],
+        "result_source": "fu_data_result"
+      }
+    },
+    "SHL": {
+      "execution_class": "FU",
+      "operands": [
+        {
+          "role": "data"
+        },
+        {
+          "role": "data"
+        }
+      ],
+      "result": {
+        "role": "data"
+      },
+      "issue_occupancy": 1,
+      "result_latency": 1,
+      "producer_output_ready_offset": 0,
+      "encoding": {
+        "domain": "op",
+        "symbol": "SHL"
+      },
+      "lowering": {
+        "operand_sinks": [
+          "fu_data_a",
+          "fu_data_b"
+        ],
+        "result_source": "fu_data_result"
+      }
+    },
+    "LSHR": {
+      "execution_class": "FU",
+      "operands": [
+        {
+          "role": "data"
+        },
+        {
+          "role": "data"
+        }
+      ],
+      "result": {
+        "role": "data"
+      },
+      "issue_occupancy": 1,
+      "result_latency": 1,
+      "producer_output_ready_offset": 0,
+      "encoding": {
+        "domain": "op",
+        "symbol": "LSHR"
+      },
+      "lowering": {
+        "operand_sinks": [
+          "fu_data_a",
+          "fu_data_b"
+        ],
+        "result_source": "fu_data_result"
+      }
+    },
+    "SELECT": {
+      "execution_class": "FU",
+      "operands": [
+        {
+          "role": "predicate"
+        },
+        {
+          "role": "data"
+        },
+        {
+          "role": "data"
+        }
+      ],
+      "result": {
+        "role": "data"
+      },
+      "issue_occupancy": 1,
+      "result_latency": 1,
+      "producer_output_ready_offset": 0,
+      "encoding": {
+        "domain": "op",
+        "symbol": "SELECT"
+      },
+      "lowering": {
+        "operand_sinks": [
+          "fu_pred_0",
+          "fu_data_a",
+          "fu_data_b"
+        ],
+        "result_source": "fu_data_result"
+      }
+    },
+    "CMP_EQ": {
+      "execution_class": "FU",
+      "operands": [
+        {
+          "role": "data"
+        },
+        {
+          "role": "data"
+        }
+      ],
+      "result": {
+        "role": "predicate"
+      },
+      "issue_occupancy": 1,
+      "result_latency": 1,
+      "producer_output_ready_offset": 0,
+      "encoding": {
+        "domain": "op",
+        "symbol": "CMP_EQ"
+      },
+      "lowering": {
+        "operand_sinks": [
+          "fu_data_a",
+          "fu_data_b"
+        ],
+        "result_source": "fu_pred_result"
+      }
+    },
+    "CMP_NE": {
+      "execution_class": "FU",
+      "operands": [
+        {
+          "role": "data"
+        },
+        {
+          "role": "data"
+        }
+      ],
+      "result": {
+        "role": "predicate"
+      },
+      "issue_occupancy": 1,
+      "result_latency": 1,
+      "producer_output_ready_offset": 0,
+      "encoding": {
+        "domain": "op",
+        "symbol": "CMP_NE"
+      },
+      "lowering": {
+        "operand_sinks": [
+          "fu_data_a",
+          "fu_data_b"
+        ],
+        "result_source": "fu_pred_result"
+      }
+    },
+    "CMP_ULT": {
+      "execution_class": "FU",
+      "operands": [
+        {
+          "role": "data"
+        },
+        {
+          "role": "data"
+        }
+      ],
+      "result": {
+        "role": "predicate"
+      },
+      "issue_occupancy": 1,
+      "result_latency": 1,
+      "producer_output_ready_offset": 0,
+      "encoding": {
+        "domain": "op",
+        "symbol": "CMP_ULT"
+      },
+      "lowering": {
+        "operand_sinks": [
+          "fu_data_a",
+          "fu_data_b"
+        ],
+        "result_source": "fu_pred_result"
+      }
+    },
+    "CMP_ULE": {
+      "execution_class": "FU",
+      "operands": [
+        {
+          "role": "data"
+        },
+        {
+          "role": "data"
+        }
+      ],
+      "result": {
+        "role": "predicate"
+      },
+      "issue_occupancy": 1,
+      "result_latency": 1,
+      "producer_output_ready_offset": 0,
+      "encoding": {
+        "domain": "op",
+        "symbol": "CMP_ULE"
+      },
+      "lowering": {
+        "operand_sinks": [
+          "fu_data_a",
+          "fu_data_b"
+        ],
+        "result_source": "fu_pred_result"
+      }
+    },
+    "PPASS": {
+      "execution_class": "FU",
+      "operands": [
+        {
+          "role": "predicate"
+        }
+      ],
+      "result": {
+        "role": "predicate"
+      },
+      "issue_occupancy": 1,
+      "result_latency": 1,
+      "producer_output_ready_offset": 0,
+      "encoding": {
+        "domain": "op",
+        "symbol": "PPASS"
+      },
+      "lowering": {
+        "operand_sinks": [
+          "fu_pred_0"
+        ],
+        "result_source": "fu_pred_result"
+      }
+    },
+    "PNOT": {
+      "execution_class": "FU",
+      "operands": [
+        {
+          "role": "predicate"
+        }
+      ],
+      "result": {
+        "role": "predicate"
+      },
+      "issue_occupancy": 1,
+      "result_latency": 1,
+      "producer_output_ready_offset": 0,
+      "encoding": {
+        "domain": "op",
+        "symbol": "PNOT"
+      },
+      "lowering": {
+        "operand_sinks": [
+          "fu_pred_0"
+        ],
+        "result_source": "fu_pred_result"
+      }
+    },
+    "PAND": {
+      "execution_class": "FU",
+      "operands": [
+        {
+          "role": "predicate"
+        },
+        {
+          "role": "predicate"
+        }
+      ],
+      "result": {
+        "role": "predicate"
+      },
+      "issue_occupancy": 1,
+      "result_latency": 1,
+      "producer_output_ready_offset": 0,
+      "encoding": {
+        "domain": "op",
+        "symbol": "PAND"
+      },
+      "lowering": {
+        "operand_sinks": [
+          "fu_pred_0",
+          "fu_pred_1"
+        ],
+        "result_source": "fu_pred_result"
+      }
+    },
+    "POR": {
+      "execution_class": "FU",
+      "operands": [
+        {
+          "role": "predicate"
+        },
+        {
+          "role": "predicate"
+        }
+      ],
+      "result": {
+        "role": "predicate"
+      },
+      "issue_occupancy": 1,
+      "result_latency": 1,
+      "producer_output_ready_offset": 0,
+      "encoding": {
+        "domain": "op",
+        "symbol": "POR"
+      },
+      "lowering": {
+        "operand_sinks": [
+          "fu_pred_0",
+          "fu_pred_1"
+        ],
+        "result_source": "fu_pred_result"
+      }
+    },
+    "LOAD": {
+      "execution_class": "LSU",
+      "operands": [
+        {
+          "role": "address"
+        }
+      ],
+      "result": {
+        "role": "data"
+      },
+      "issue_occupancy": 1,
+      "result_latency": 2,
+      "producer_output_ready_offset": 2,
+      "memory_access_width_bits": 32,
+      "encoding": {
+        "domain": "lsu_op",
+        "symbol": "LOAD"
+      },
+      "lowering": {
+        "operand_sinks": [
+          "lsu_address"
+        ],
+        "result_source": "lsu_load_data"
+      }
+    },
+    "STORE": {
+      "execution_class": "LSU",
+      "operands": [
+        {
+          "role": "address"
+        },
+        {
+          "role": "data"
+        },
+        {
+          "role": "predicate",
+          "optional": true
+        }
+      ],
+      "result": {
+        "role": "void"
+      },
+      "issue_occupancy": 1,
+      "memory_access_width_bits": 32,
+      "encoding": {
+        "domain": "lsu_op",
+        "symbol": "STORE"
+      },
+      "lowering": {
+        "operand_sinks": [
+          "lsu_address",
+          "lsu_store_data",
+          "lsu_commit_predicate"
+        ],
+        "result_source": "none"
+      }
+    },
+    "FADD": {
+      "execution_class": "FU",
+      "operands": [
+        {
+          "role": "data"
+        },
+        {
+          "role": "data"
+        }
+      ],
+      "result": {
+        "role": "data"
+      },
+      "issue_occupancy": 1,
+      "result_latency": 2,
+      "producer_output_ready_offset": 1
+    },
+    "FSUB": {
+      "execution_class": "FU",
+      "operands": [
+        {
+          "role": "data"
+        },
+        {
+          "role": "data"
+        }
+      ],
+      "result": {
+        "role": "data"
+      },
+      "issue_occupancy": 1,
+      "result_latency": 2,
+      "producer_output_ready_offset": 1
+    },
+    "FMUL": {
+      "execution_class": "FU",
+      "operands": [
+        {
+          "role": "data"
+        },
+        {
+          "role": "data"
+        }
+      ],
+      "result": {
+        "role": "data"
+      },
+      "issue_occupancy": 1,
+      "result_latency": 3,
+      "producer_output_ready_offset": 2
+    },
+    "FMA": {
+      "execution_class": "FU",
+      "operands": [
+        {
+          "role": "data"
+        },
+        {
+          "role": "data"
+        },
+        {
+          "role": "data"
+        }
+      ],
+      "result": {
+        "role": "data"
+      },
+      "issue_occupancy": 1,
+      "result_latency": 3,
+      "producer_output_ready_offset": 2
+    },
+    "FDIV": {
+      "execution_class": "FU",
+      "operands": [
+        {
+          "role": "data"
+        },
+        {
+          "role": "data"
+        }
+      ],
+      "result": {
+        "role": "data"
+      },
+      "issue_occupancy": 4,
+      "result_latency": 8,
+      "producer_output_ready_offset": 7
+    },
+    "FNEG": {
+      "execution_class": "FU",
+      "operands": [
+        {
+          "role": "data"
+        }
+      ],
+      "result": {
+        "role": "data"
+      },
+      "issue_occupancy": 1,
+      "result_latency": 1,
+      "producer_output_ready_offset": 0
+    },
+    "SDIV": {
+      "execution_class": "FU",
+      "operands": [
+        {
+          "role": "data"
+        },
+        {
+          "role": "data"
+        }
+      ],
+      "result": {
+        "role": "data"
+      },
+      "issue_occupancy": 4,
+      "result_latency": 8,
+      "producer_output_ready_offset": 7
+    },
+    "SREM": {
+      "execution_class": "FU",
+      "operands": [
+        {
+          "role": "data"
+        },
+        {
+          "role": "data"
+        }
+      ],
+      "result": {
+        "role": "data"
+      },
+      "issue_occupancy": 4,
+      "result_latency": 8,
+      "producer_output_ready_offset": 7
+    },
+    "UDIV": {
+      "execution_class": "FU",
+      "operands": [
+        {
+          "role": "data"
+        },
+        {
+          "role": "data"
+        }
+      ],
+      "result": {
+        "role": "data"
+      },
+      "issue_occupancy": 4,
+      "result_latency": 8,
+      "producer_output_ready_offset": 7
+    },
+    "UREM": {
+      "execution_class": "FU",
+      "operands": [
+        {
+          "role": "data"
+        },
+        {
+          "role": "data"
+        }
+      ],
+      "result": {
+        "role": "data"
+      },
+      "issue_occupancy": 4,
+      "result_latency": 8,
+      "producer_output_ready_offset": 7
+    },
+    "TRUNC": {
+      "execution_class": "FU",
+      "operands": [
+        {
+          "role": "data"
+        }
+      ],
+      "result": {
+        "role": "data"
+      },
+      "issue_occupancy": 1,
+      "result_latency": 1,
+      "producer_output_ready_offset": 0
+    },
+    "ZEXT": {
+      "execution_class": "FU",
+      "operands": [
+        {
+          "role": "data"
+        }
+      ],
+      "result": {
+        "role": "data"
+      },
+      "issue_occupancy": 1,
+      "result_latency": 1,
+      "producer_output_ready_offset": 0
+    },
+    "SEXT": {
+      "execution_class": "FU",
+      "operands": [
+        {
+          "role": "data"
+        }
+      ],
+      "result": {
+        "role": "data"
+      },
+      "issue_occupancy": 1,
+      "result_latency": 1,
+      "producer_output_ready_offset": 0
+    },
+    "SITOFP": {
+      "execution_class": "FU",
+      "operands": [
+        {
+          "role": "data"
+        }
+      ],
+      "result": {
+        "role": "data"
+      },
+      "issue_occupancy": 1,
+      "result_latency": 2,
+      "producer_output_ready_offset": 1
+    },
+    "UITOFP": {
+      "execution_class": "FU",
+      "operands": [
+        {
+          "role": "data"
+        }
+      ],
+      "result": {
+        "role": "data"
+      },
+      "issue_occupancy": 1,
+      "result_latency": 2,
+      "producer_output_ready_offset": 1
+    },
+    "FPTOSI": {
+      "execution_class": "FU",
+      "operands": [
+        {
+          "role": "data"
+        }
+      ],
+      "result": {
+        "role": "data"
+      },
+      "issue_occupancy": 1,
+      "result_latency": 2,
+      "producer_output_ready_offset": 1
+    },
+    "FPTOUI": {
+      "execution_class": "FU",
+      "operands": [
+        {
+          "role": "data"
+        }
+      ],
+      "result": {
+        "role": "data"
+      },
+      "issue_occupancy": 1,
+      "result_latency": 2,
+      "producer_output_ready_offset": 1
+    },
+    "FPTRUNC": {
+      "execution_class": "FU",
+      "operands": [
+        {
+          "role": "data"
+        }
+      ],
+      "result": {
+        "role": "data"
+      },
+      "issue_occupancy": 1,
+      "result_latency": 1,
+      "producer_output_ready_offset": 0
+    },
+    "FPEXT": {
+      "execution_class": "FU",
+      "operands": [
+        {
+          "role": "data"
+        }
+      ],
+      "result": {
+        "role": "data"
+      },
+      "issue_occupancy": 1,
+      "result_latency": 1,
+      "producer_output_ready_offset": 0
+    },
+    "LOAD8": {
+      "execution_class": "LSU",
+      "operands": [
+        {
+          "role": "address"
+        }
+      ],
+      "result": {
+        "role": "data"
+      },
+      "issue_occupancy": 1,
+      "result_latency": 2,
+      "producer_output_ready_offset": 2,
+      "memory_access_width_bits": 8
+    },
+    "LOAD16": {
+      "execution_class": "LSU",
+      "operands": [
+        {
+          "role": "address"
+        }
+      ],
+      "result": {
+        "role": "data"
+      },
+      "issue_occupancy": 1,
+      "result_latency": 2,
+      "producer_output_ready_offset": 2,
+      "memory_access_width_bits": 16
+    },
+    "STORE8": {
+      "execution_class": "LSU",
+      "operands": [
+        {
+          "role": "address"
+        },
+        {
+          "role": "data"
+        },
+        {
+          "role": "predicate",
+          "optional": true
+        }
+      ],
+      "result": {
+        "role": "void"
+      },
+      "issue_occupancy": 1,
+      "memory_access_width_bits": 8
+    },
+    "STORE16": {
+      "execution_class": "LSU",
+      "operands": [
+        {
+          "role": "address"
+        },
+        {
+          "role": "data"
+        },
+        {
+          "role": "predicate",
+          "optional": true
+        }
+      ],
+      "result": {
+        "role": "void"
+      },
+      "issue_occupancy": 1,
+      "memory_access_width_bits": 16
+    }
+  },
+  "tile_capabilities": {
+    "default_fu_operations": [
+      "NOP",
+      "PASS",
+      "ADD",
+      "SUB",
+      "MUL",
+      "AND",
+      "OR",
+      "XOR",
+      "SHL",
+      "LSHR",
+      "SELECT",
+      "CMP_EQ",
+      "CMP_NE",
+      "CMP_ULT",
+      "CMP_ULE",
+      "PPASS",
+      "PNOT",
+      "PAND",
+      "POR",
+      "FADD",
+      "FSUB",
+      "FMUL",
+      "FMA",
+      "FDIV",
+      "FNEG",
+      "SDIV",
+      "SREM",
+      "UDIV",
+      "UREM",
+      "TRUNC",
+      "ZEXT",
+      "SEXT",
+      "SITOFP",
+      "UITOFP",
+      "FPTOSI",
+      "FPTOUI",
+      "FPTRUNC",
+      "FPEXT"
+    ],
+    "overrides": []
+  },
+  "operation_compatibility": {
+    "status": "legacy_compatibility_view",
+    "authoritative_section": "operations"
+  },
+  "enums": {
+    "data_sources": [
+      "ZERO",
+      "DATA_RF_A",
+      "DATA_RF_B",
+      "NORTH_DATA_IN",
+      "SOUTH_DATA_IN",
+      "EAST_DATA_IN",
+      "WEST_DATA_IN",
+      "CONST_DATA",
+      "LSU_LOAD_DATA"
+    ],
+    "predicate_sources": [
+      "CONST_FALSE",
+      "CONST_TRUE",
+      "PRED_RF_A",
+      "PRED_RF_B",
+      "NORTH_PRED_IN",
+      "SOUTH_PRED_IN",
+      "EAST_PRED_IN",
+      "WEST_PRED_IN"
+    ],
+    "data_route_sources": [
+      "NONE",
+      "NORTH_DATA_IN",
+      "SOUTH_DATA_IN",
+      "EAST_DATA_IN",
+      "WEST_DATA_IN",
+      "FU_DATA_RESULT",
+      "DATA_RF_A",
+      "DATA_RF_B",
+      "CONST_DATA",
+      "LSU_LOAD_DATA",
+      "ZERO"
+    ],
+    "predicate_route_sources": [
+      "NONE",
+      "NORTH_PRED_IN",
+      "SOUTH_PRED_IN",
+      "EAST_PRED_IN",
+      "WEST_PRED_IN",
+      "FU_PRED_RESULT",
+      "PRED_RF_A",
+      "PRED_RF_B",
+      "CONST_TRUE",
+      "CONST_FALSE"
+    ],
+    "lsu_ops": [
+      "NONE",
+      "LOAD",
+      "STORE"
+    ]
+  },
+  "enum_compatibility": {
+    "status": "legacy_compatibility_view",
+    "authoritative_section": "encodings"
+  },
+  "encodings": {
+    "op": {
+      "NOP": 0,
+      "PASS": 1,
+      "ADD": 2,
+      "SUB": 3,
+      "MUL": 4,
+      "AND": 5,
+      "OR": 6,
+      "XOR": 7,
+      "SHL": 8,
+      "LSHR": 9,
+      "SELECT": 10,
+      "CMP_EQ": 16,
+      "CMP_NE": 17,
+      "CMP_ULT": 18,
+      "CMP_ULE": 19,
+      "PPASS": 32,
+      "PNOT": 33,
+      "PAND": 34,
+      "POR": 35
+    },
+    "data_source": {
+      "RF_A": 0,
+      "RF_B": 1,
+      "NORTH_DATA_IN": 2,
+      "SOUTH_DATA_IN": 3,
+      "EAST_DATA_IN": 4,
+      "WEST_DATA_IN": 5,
+      "CONST_DATA": 6,
+      "LSU_LOAD_DATA": 7,
+      "ZERO": 8
+    },
+    "predicate_source": {
+      "RF_A": 0,
+      "RF_B": 1,
+      "NORTH_PRED_IN": 2,
+      "SOUTH_PRED_IN": 3,
+      "EAST_PRED_IN": 4,
+      "WEST_PRED_IN": 5,
+      "CONST_TRUE": 6,
+      "CONST_FALSE": 7
+    },
+    "route_data_source": {
+      "NONE": 0,
+      "NORTH_DATA_IN": 1,
+      "SOUTH_DATA_IN": 2,
+      "EAST_DATA_IN": 3,
+      "WEST_DATA_IN": 4,
+      "FU_DATA_RESULT": 5,
+      "RF_A": 6,
+      "RF_B": 7,
+      "CONST_DATA": 8,
+      "LSU_LOAD_DATA": 9,
+      "ZERO": 10
+    },
+    "route_predicate_source": {
+      "NONE": 0,
+      "NORTH_PRED_IN": 1,
+      "SOUTH_PRED_IN": 2,
+      "EAST_PRED_IN": 3,
+      "WEST_PRED_IN": 4,
+      "FU_PRED_RESULT": 5,
+      "RF_A": 6,
+      "RF_B": 7,
+      "CONST_TRUE": 8,
+      "CONST_FALSE": 9
+    },
+    "lsu_op": {
+      "NONE": 0,
+      "LOAD": 1,
+      "STORE": 2,
+      "RESERVED": 3
+    }
+  },
+  "control_layout": {
+    "raw_width": 126,
+    "physical_width": 128,
+    "chunks": 4,
+    "chunk_bits": 32,
+    "chunk_order": "little_word",
+    "padding": {
+      "lsb": 126,
+      "width": 2,
+      "value": 0
+    },
+    "fields": [
+      {
+        "name": "op",
+        "lsb": 0,
+        "width": 6,
+        "encoding": "op"
+      },
+      {
+        "name": "src_a",
+        "lsb": 6,
+        "width": 4,
+        "encoding": "data_source"
+      },
+      {
+        "name": "src_b",
+        "lsb": 10,
+        "width": 4,
+        "encoding": "data_source"
+      },
+      {
+        "name": "src_p0",
+        "lsb": 14,
+        "width": 4,
+        "encoding": "predicate_source"
+      },
+      {
+        "name": "src_p1",
+        "lsb": 18,
+        "width": 4,
+        "encoding": "predicate_source"
+      },
+      {
+        "name": "data_rf_raddr_a",
+        "lsb": 22,
+        "width": 4
+      },
+      {
+        "name": "data_rf_raddr_b",
+        "lsb": 26,
+        "width": 4
+      },
+      {
+        "name": "pred_rf_raddr_a",
+        "lsb": 30,
+        "width": 4
+      },
+      {
+        "name": "pred_rf_raddr_b",
+        "lsb": 34,
+        "width": 4
+      },
+      {
+        "name": "data_w0_we",
+        "lsb": 38,
+        "width": 1
+      },
+      {
+        "name": "data_w0_addr",
+        "lsb": 39,
+        "width": 4
+      },
+      {
+        "name": "data_w1_we",
+        "lsb": 43,
+        "width": 1
+      },
+      {
+        "name": "data_w1_addr",
+        "lsb": 44,
+        "width": 4
+      },
+      {
+        "name": "data_w1_src",
+        "lsb": 48,
+        "width": 4,
+        "encoding": "data_source"
+      },
+      {
+        "name": "pred_w0_we",
+        "lsb": 52,
+        "width": 1
+      },
+      {
+        "name": "pred_w0_addr",
+        "lsb": 53,
+        "width": 4
+      },
+      {
+        "name": "pred_w1_we",
+        "lsb": 57,
+        "width": 1
+      },
+      {
+        "name": "pred_w1_addr",
+        "lsb": 58,
+        "width": 4
+      },
+      {
+        "name": "pred_w1_src",
+        "lsb": 62,
+        "width": 4,
+        "encoding": "predicate_source"
+      },
+      {
+        "name": "data_route_north_we",
+        "lsb": 66,
+        "width": 1
+      },
+      {
+        "name": "data_route_north_src",
+        "lsb": 67,
+        "width": 4,
+        "encoding": "route_data_source"
+      },
+      {
+        "name": "data_route_south_we",
+        "lsb": 71,
+        "width": 1
+      },
+      {
+        "name": "data_route_south_src",
+        "lsb": 72,
+        "width": 4,
+        "encoding": "route_data_source"
+      },
+      {
+        "name": "data_route_east_we",
+        "lsb": 76,
+        "width": 1
+      },
+      {
+        "name": "data_route_east_src",
+        "lsb": 77,
+        "width": 4,
+        "encoding": "route_data_source"
+      },
+      {
+        "name": "data_route_west_we",
+        "lsb": 81,
+        "width": 1
+      },
+      {
+        "name": "data_route_west_src",
+        "lsb": 82,
+        "width": 4,
+        "encoding": "route_data_source"
+      },
+      {
+        "name": "pred_route_north_we",
+        "lsb": 86,
+        "width": 1
+      },
+      {
+        "name": "pred_route_north_src",
+        "lsb": 87,
+        "width": 4,
+        "encoding": "route_predicate_source"
+      },
+      {
+        "name": "pred_route_south_we",
+        "lsb": 91,
+        "width": 1
+      },
+      {
+        "name": "pred_route_south_src",
+        "lsb": 92,
+        "width": 4,
+        "encoding": "route_predicate_source"
+      },
+      {
+        "name": "pred_route_east_we",
+        "lsb": 96,
+        "width": 1
+      },
+      {
+        "name": "pred_route_east_src",
+        "lsb": 97,
+        "width": 4,
+        "encoding": "route_predicate_source"
+      },
+      {
+        "name": "pred_route_west_we",
+        "lsb": 101,
+        "width": 1
+      },
+      {
+        "name": "pred_route_west_src",
+        "lsb": 102,
+        "width": 4,
+        "encoding": "route_predicate_source"
+      },
+      {
+        "name": "const_addr",
+        "lsb": 106,
+        "width": 4
+      },
+      {
+        "name": "lsu_op",
+        "lsb": 110,
+        "width": 2,
+        "encoding": "lsu_op"
+      },
+      {
+        "name": "lsu_addr_src",
+        "lsb": 112,
+        "width": 4,
+        "encoding": "data_source"
+      },
+      {
+        "name": "lsu_store_data_src",
+        "lsb": 116,
+        "width": 4,
+        "encoding": "data_source"
+      },
+      {
+        "name": "lsu_commit_pred_enable",
+        "lsb": 120,
+        "width": 1
+      },
+      {
+        "name": "lsu_commit_pred_invert",
+        "lsb": 121,
+        "width": 1
+      },
+      {
+        "name": "lsu_commit_pred_src",
+        "lsb": 122,
+        "width": 4,
+        "encoding": "predicate_source"
+      }
+    ]
+  },
+  "control_schema": {
+    "encoding": "lsb_first_fixed_field_order",
+    "alignment_bits": 32,
+    "raw_width_bits": 126,
+    "physical_width_bits": 128,
+    "chunks": 4
+  },
+  "supported_value_types": [
+    "i8",
+    "i16",
+    "i32",
+    "f32"
+  ]
+}

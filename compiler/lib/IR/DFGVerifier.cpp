@@ -390,6 +390,12 @@ private:
       case Opcode::Store:
         verifyStore(node);
         break;
+      case Opcode::Custom:
+        if (!node.operationKey || node.operationKey->empty() || node.operandTypes.empty() ||
+            node.resultType == ValueType::voidTy())
+          add(DFGDiagnosticCode::DFG_OPCODE_METADATA_INVALID,
+              "Custom requires a key, at least one operand, and a value result", node.id);
+        break;
       default:
         add(DFGDiagnosticCode::DFG_OPCODE_METADATA_INVALID, "unknown opcode value", node.id);
         break;
@@ -421,6 +427,12 @@ private:
       add(DFGDiagnosticCode::DFG_OPCODE_UNEXPECTED_METADATA,
           "only Load and Store may carry MemoryOpInfo", node.id);
     }
+    if (node.opcode != Opcode::Custom && node.operationKey)
+      add(DFGDiagnosticCode::DFG_OPCODE_UNEXPECTED_METADATA,
+          "only Custom may carry an operation key", node.id);
+    if (node.opcode == Opcode::Custom && (!node.operationKey || node.operationKey->empty()))
+      add(DFGDiagnosticCode::DFG_OPCODE_METADATA_INVALID,
+          "Custom operation key must not be empty", node.id);
   }
 
   bool hasArity(const Node& node, std::size_t expected) {

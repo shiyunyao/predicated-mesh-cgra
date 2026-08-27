@@ -143,6 +143,18 @@ void testPositiveFixtures(const cgra::TargetModel& target) {
 }
 
 void testUnsupportedGenericOperations(const cgra::TargetModel& target) {
+  cgra::ir::DFGBuilder customBuilder("custom_fadd");
+  const auto customValue = customBuilder.addExternal("value", cgra::ir::ValueType::f32());
+  const auto customAdd = customBuilder.addCustomNode(
+      "FADD", {cgra::ir::ValueType::f32(), cgra::ir::ValueType::f32()},
+      cgra::ir::ValueType::f32());
+  customBuilder.bindExternal(customAdd, 0, customValue);
+  customBuilder.bindExternal(customAdd, 1, customValue);
+  const auto customResult =
+      cgra::target::TargetLegalizer::legalize(customBuilder.finish(), target);
+  expect(!customResult.ok() && !customResult.dfg,
+         "hardware target must reject abstract Custom floating operation");
+
   cgra::ir::DFGBuilder ashrBuilder("ashr_i32");
   const auto value = ashrBuilder.addExternal("value", cgra::ir::ValueType::i32());
   const auto shift = ashrBuilder.addNode(cgra::ir::Opcode::AShr,
@@ -261,6 +273,46 @@ void testTargetMutation(const cgra::ir::DFG& fixture) {
   expect(!failed.ok() && !failed.dfg, "removing ADD rejects Generic Add");
 }
 
+void testMappingResearchTarget() {
+  const auto hardware = cgra::TargetModel::loadFromFile(RepositoryRoot / "target/cgra_v3.json");
+  const auto research =
+      cgra::TargetModel::loadFromFile(RepositoryRoot / "target/cgra_mapping32_v1.json");
+  expect(research.isMappingResearchTarget() &&
+             research.role() == std::string_view{"mapping_research_target"},
+         "abstract target must be explicitly marked mapping-only");
+  expect(research.supportsValueType(cgra::ir::ValueType::f32()) &&
+             research.supportsValueType(cgra::ir::ValueType::i8()) &&
+             !research.supportsValueType(cgra::ir::ValueType::floating(64)),
+         "research32 declares its typed datapath exactly");
+
+  cgra::ir::DFGBuilder builder("typed_mapping_research");
+  const auto lhs = builder.addExternal("lhs", cgra::ir::ValueType::f32());
+  const auto rhs = builder.addExternal("rhs", cgra::ir::ValueType::f32());
+  const auto add = builder.addCustomNode(
+      "FADD", {cgra::ir::ValueType::f32(), cgra::ir::ValueType::f32()},
+      cgra::ir::ValueType::f32());
+  builder.bindExternal(add, 0, lhs);
+  builder.bindExternal(add, 1, rhs);
+  const auto graph = builder.finish();
+
+  const auto researchResult = cgra::target::TargetLegalizer::legalize(graph, research);
+  expect(researchResult.ok() && researchResult.dfg &&
+             researchResult.dfg->node(0).operation == "FADD",
+         "typed custom operation must legalize on a declared abstract FU");
+  expect(cgra::target::TargetDFGVerifier::verify(*researchResult.dfg, research, &graph).ok(),
+         "typed abstract Target DFG must pass the independent target verifier");
+  const auto hardwareResult = cgra::target::TargetLegalizer::legalize(graph, hardware);
+  expect(!hardwareResult.ok() && !hardwareResult.dfg,
+         "mapping-only float support must not weaken the executable hardware target");
+
+  const auto research64 =
+      cgra::TargetModel::loadFromFile(RepositoryRoot / "target/cgra_mapping64_v1.json");
+  expect(research64.isMappingResearchTarget() &&
+             research64.supportsValueType(cgra::ir::ValueType::floating(64)) &&
+             research64.supportsValueType(cgra::ir::ValueType::integer(64)),
+         "research64 explicitly supports 64-bit integer and floating values");
+}
+
 void testTargetDrivenOperations() {
   auto targetJson = loadTargetJson();
   targetJson["operations"]["ASHR"] = targetJson["operations"]["LSHR"];
@@ -337,6 +389,7 @@ int main() {
     testUnsupportedGenericOperations(target);
     testTargetDrivenOperations();
     testTargetMutation(fixture);
+    testMappingResearchTarget();
     std::cout << "CGRA_TARGET_LEGALIZER_TEST_PASS\n";
     return 0;
   } catch (const std::exception& error) {

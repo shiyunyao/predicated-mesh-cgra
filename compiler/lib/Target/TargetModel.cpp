@@ -218,6 +218,33 @@ TargetModel TargetModel::loadFromFile(const std::filesystem::path& path) {
   model.name_ = required<std::string>(root, "name", "");
   if (model.name_.empty())
     fail("name", "must not be empty");
+  if (root.contains("role"))
+    model.role_ = required<std::string>(root, "role", "");
+  if (model.role_ != "compiler_facing_target_contract" &&
+      model.role_ != "mapping_research_target")
+    fail("role", "must be compiler_facing_target_contract or mapping_research_target");
+  const bool mappingResearchTarget = model.role_ == "mapping_research_target";
+  if (root.contains("supported_value_types")) {
+    const auto& types = requiredArray(root, "supported_value_types", "");
+    for (std::size_t index = 0; index < types.size(); ++index) {
+      if (!types[index].is_string())
+        fail("supported_value_types[" + std::to_string(index) + "]", "must be a string");
+      try {
+        const auto type = ir::ValueType::fromString(types[index].get<std::string>());
+        if (type.kind == ir::ValueKind::Void || type.kind == ir::ValueKind::Predicate)
+          fail("supported_value_types[" + std::to_string(index) + "]",
+               "void and predicate support are implicit");
+        if (std::ranges::find(model.supportedValueTypes_, type) !=
+            model.supportedValueTypes_.end())
+          fail("supported_value_types", "contains a duplicate value type");
+        model.supportedValueTypes_.push_back(type);
+      } catch (const std::exception& error) {
+        fail("supported_value_types[" + std::to_string(index) + "]", error.what());
+      }
+    }
+  }
+  if (mappingResearchTarget && model.supportedValueTypes_.empty())
+    fail("supported_value_types", "mapping research target must declare its typed datapath");
 
   const auto& array = requiredObject(root, "array", "");
   model.array_.rows = positiveUnsigned(array, "rows", "array");
@@ -358,12 +385,17 @@ TargetModel TargetModel::loadFromFile(const std::filesystem::path& path) {
         fail(operandContext, "required operand follows optional operand");
       operands.push_back(operand);
     }
-    const auto& encodingJson = requiredObject(descriptorJson, "encoding", context);
-    TargetEncodingRef encoding{
-        required<std::string>(encodingJson, "domain", context + ".encoding"),
-        required<std::string>(encodingJson, "symbol", context + ".encoding")};
-    if (encoding.domain.empty() || encoding.symbol.empty())
-      fail(context + ".encoding", "domain and symbol must not be empty");
+    std::optional<TargetEncodingRef> encoding;
+    if (descriptorJson.contains("encoding")) {
+      const auto& encodingJson = requiredObject(descriptorJson, "encoding", context);
+      encoding = TargetEncodingRef{
+          required<std::string>(encodingJson, "domain", context + ".encoding"),
+          required<std::string>(encodingJson, "symbol", context + ".encoding")};
+      if (encoding->domain.empty() || encoding->symbol.empty())
+        fail(context + ".encoding", "domain and symbol must not be empty");
+    } else if (!mappingResearchTarget) {
+      fail(context + ".encoding", "hardware target operation requires an encoding binding");
+    }
     const auto& resultJson = requiredObject(descriptorJson, "result", context);
     TargetResultRole resultRole;
     try {
@@ -400,7 +432,7 @@ TargetModel TargetModel::loadFromFile(const std::filesystem::path& path) {
         fail(context + ".lowering.result_source", error.what());
       }
     } else {
-      if (explicitLoweringContract)
+      if (explicitLoweringContract && !mappingResearchTarget)
         fail(context + ".lowering", "canonical v3 operation is missing explicit lowering");
       // Legacy target files predate the explicit lowering contract.  Derive the
       // canonical current-target sinks once at load time so all consumers still
@@ -618,8 +650,11 @@ TargetModel TargetModel::loadFromFile(const std::filesystem::path& path) {
   }
 
   for (const auto& operation : model.operations_) {
-    if (!operation.encoding)
+    if (!operation.encoding) {
+      if (mappingResearchTarget)
+        continue;
       fail("operations." + operation.id + ".encoding", "missing encoding binding");
+    }
     const auto& binding = *operation.encoding;
     const auto domainIt = model.encodings_.find(binding.domain);
     if (domainIt == model.encodings_.end())
@@ -854,6 +889,8 @@ bool TargetModel::supportsValueType(const ir::ValueType& type) const noexcept {
     return type.bitWidth == 0;
   if (type.kind == ir::ValueKind::Predicate)
     return type.bitWidth == array_.predicateWidth;
+  if (isMappingResearchTarget())
+    return std::ranges::find(supportedValueTypes_, type) != supportedValueTypes_.end();
   return type.kind == ir::ValueKind::Integer && type.bitWidth == array_.dataWidth;
 }
 
@@ -884,7 +921,7 @@ TargetModel::executionResourceCount(TargetExecutionClass executionClass) const n
 
 std::uint64_t
 TargetModel::compatibleResourceCount(const TargetOperationDesc& operation) const noexcept {
-  if (!hasValidEncoding(operation))
+  if (!isMappingResearchTarget() && !hasValidEncoding(operation))
     return 0;
   if (operation.executionClass == TargetExecutionClass::LSU)
     return lsuTiles_.size();

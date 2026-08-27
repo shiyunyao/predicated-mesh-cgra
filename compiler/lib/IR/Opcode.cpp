@@ -33,6 +33,8 @@ std::string_view toString(Opcode opcode) {
     return "Load";
   case Opcode::Store:
     return "Store";
+  case Opcode::Custom:
+    return "Custom";
   }
   throw std::logic_error("unknown opcode");
 }
@@ -40,7 +42,8 @@ std::string_view toString(Opcode opcode) {
 Opcode opcodeFromString(std::string_view value) {
   for (const auto opcode :
        {Opcode::Add, Opcode::Sub, Opcode::Mul, Opcode::And, Opcode::Or, Opcode::Xor, Opcode::Shl,
-        Opcode::LShr, Opcode::AShr, Opcode::ICmp, Opcode::Select, Opcode::Load, Opcode::Store}) {
+        Opcode::LShr, Opcode::AShr, Opcode::ICmp, Opcode::Select, Opcode::Load, Opcode::Store,
+        Opcode::Custom}) {
     if (toString(opcode) == value)
       return opcode;
   }

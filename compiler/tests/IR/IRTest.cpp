@@ -32,6 +32,7 @@ void testTypesAndOpcodes() {
   expect(ValueType::f32() == ValueType::fromString("f32"), "f32 round-trip");
   expect(ValueType::voidTy() == ValueType::fromString("void"), "void round-trip");
   expect(opcodeFromString("AShr") == Opcode::AShr, "generic AShr opcode");
+  expect(opcodeFromString("Custom") == Opcode::Custom, "generic Custom opcode");
   expect(icmpPredicateFromString("SLT") == ICmpPredicate::SLT, "signed compare predicate");
 }
 
@@ -135,6 +136,19 @@ void testSerialization() {
   const auto restoredRecurrence = cgra::ir::readJson(recurrencePath);
   std::filesystem::remove(recurrencePath);
   expect(recurrence == restoredRecurrence, "recurrence boundary JSON semantic round-trip");
+
+  DFGBuilder customBuilder("custom_operation");
+  const auto customInput = customBuilder.addExternal("input", ValueType::f32());
+  const auto custom =
+      customBuilder.addCustomNode("FNEG", {ValueType::f32()}, ValueType::f32());
+  customBuilder.bindExternal(custom, 0, customInput);
+  const auto customGraph = customBuilder.finish();
+  const auto customPath = std::filesystem::temp_directory_path() / "cgra-dfg-custom.json";
+  cgra::ir::writeJson(customGraph, customPath);
+  const auto restoredCustom = cgra::ir::readJson(customPath);
+  std::filesystem::remove(customPath);
+  expect(customGraph == restoredCustom && restoredCustom.node(custom).operationKey == "FNEG",
+         "Custom operation key survives JSON semantic round-trip");
 
   const auto sparseSourcePath =
       std::filesystem::temp_directory_path() / "cgra-dfg-sparse-source.json";

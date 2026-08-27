@@ -28,6 +28,8 @@ public:
                  std::optional<ICmpPredicate> predicate = std::nullopt,
                  std::optional<MemoryOpInfo> memoryInfo = std::nullopt,
                  std::optional<SourceInfo> source = std::nullopt);
+  NodeId addCustomNode(std::string operationKey, std::vector<ValueType> operandTypes,
+                       ValueType resultType, std::optional<SourceInfo> source = std::nullopt);
   NodeId importNode(Node node) {
     nextNodeId_ = std::max(nextNodeId_, node.id + 1);
     return dfg_.appendNode(std::move(node));

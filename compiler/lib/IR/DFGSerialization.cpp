@@ -59,6 +59,8 @@ Json nodeJson(const Node& node) {
                        {"volatile", node.memoryInfo->isVolatile}};
   if (node.source)
     value["source"] = {{"label", node.source->label}};
+  if (node.operationKey)
+    value["operation_key"] = *node.operationKey;
   return value;
 }
 
@@ -243,9 +245,12 @@ DFG parse(std::string_view jsonText) {
     std::optional<SourceInfo> source;
     if (value.contains("source"))
       source = SourceInfo{required<std::string>(value.at("source"), "label", "node.source")};
+    std::optional<std::string> operationKey;
+    if (value.contains("operation_key"))
+      operationKey = required<std::string>(value, "operation_key", "node");
     builder.importNode({id, opcodeFromString(required<std::string>(value, "opcode", "node")),
                         parseType(value.at("result_type"), "node result"), std::move(operandTypes),
-                        predicate, memory, source});
+                        predicate, memory, source, operationKey});
   }
 
   const auto liveOuts = root.value("live_outs", Json::array());

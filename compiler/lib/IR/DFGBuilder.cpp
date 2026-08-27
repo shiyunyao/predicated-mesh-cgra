@@ -28,7 +28,16 @@ NodeId DFGBuilder::addNode(Opcode opcode, std::vector<ValueType> operandTypes, V
                            std::optional<MemoryOpInfo> memoryInfo,
                            std::optional<SourceInfo> source) {
   Node node{nextNodeId_++, opcode,     resultType,       std::move(operandTypes),
-            predicate,     memoryInfo, std::move(source)};
+            predicate,     memoryInfo, std::move(source), std::nullopt};
+  return dfg_.appendNode(std::move(node));
+}
+
+NodeId DFGBuilder::addCustomNode(std::string operationKey, std::vector<ValueType> operandTypes,
+                                 ValueType resultType, std::optional<SourceInfo> source) {
+  if (operationKey.empty())
+    throw std::invalid_argument("custom DFG operation key must not be empty");
+  Node node{nextNodeId_++, Opcode::Custom, resultType, std::move(operandTypes), std::nullopt,
+            std::nullopt, std::move(source), std::move(operationKey)};
   return dfg_.appendNode(std::move(node));
 }
 

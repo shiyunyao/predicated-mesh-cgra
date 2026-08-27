@@ -62,11 +62,18 @@ std::string operationFor(const ir::Node& node) {
     case ir::ICmpPredicate::SGE:
       return "CMP_SGE";
     }
+    return {};
+  case ir::Opcode::Custom:
+    return node.operationKey.value_or("");
   }
   return {};
 }
 
-std::string opcodeName(const ir::Node& node) { return std::string(ir::toString(node.opcode)); }
+std::string opcodeName(const ir::Node& node) {
+  return node.opcode == ir::Opcode::Custom && node.operationKey
+             ? "Custom(" + *node.operationKey + ")"
+             : std::string(ir::toString(node.opcode));
+}
 
 bool isPredicate(const ir::ValueType& type) {
   return type.kind == ir::ValueKind::Predicate && type.bitWidth == 1;
@@ -195,7 +202,13 @@ TargetLegalizationResult TargetLegalizer::legalize(const ir::DFG& generic,
       continue;
     }
 
-    const auto operationName = operationFor(node);
+    auto operationName = operationFor(node);
+    if (target.isMappingResearchTarget() && node.memoryInfo &&
+        (node.opcode == ir::Opcode::Load || node.opcode == ir::Opcode::Store)) {
+      const auto widthSpecific = operationName + std::to_string(node.memoryInfo->accessWidthBits);
+      if (target.findOperation(widthSpecific))
+        operationName = widthSpecific;
+    }
     if (operationName.empty()) {
       const auto code = node.opcode == ir::Opcode::ICmp ? "TLEG_UNSUPPORTED_ICMP_PREDICATE"
                                                         : "TLEG_UNSUPPORTED_OPCODE";
@@ -255,7 +268,7 @@ TargetLegalizationResult TargetLegalizer::legalize(const ir::DFG& generic,
           node.id);
       continue;
     }
-    if (operation->resultType != node.resultType) {
+    if (!target.isMappingResearchTarget() && operation->resultType != node.resultType) {
       addDiagnostic(
           result, LegalizationStatus::TargetContractError, "TLEG_INVALID_TARGET_OPERATION_DESC",
           "target operation " + operationName + " result type does not match Generic DFG", node.id);

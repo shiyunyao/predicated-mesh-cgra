@@ -515,6 +515,23 @@ exit:
 }
 )IR";
 
+const char* kWideFloatLoad = R"IR(
+target datalayout = "e-p:64:64"
+define void @wide_float(double* %A) {
+entry:
+  br label %loop
+loop:
+  %i = phi i32 [ 0, %entry ], [ %inc, %loop ]
+  %addr = getelementptr double, double* %A, i32 %i
+  %value = load double, double* %addr, align 8
+  %inc = add i32 %i, 1
+  %done = icmp ult i32 %inc, 4
+  br i1 %done, label %loop, label %exit
+exit:
+  ret void
+}
+)IR";
+
 const char* kUnalignedLoad = R"IR(
 target datalayout = "e-p:64:64"
 define void @unaligned(i32* %A) {
@@ -828,10 +845,19 @@ void runNegativeCases() {
          "volatile Load uses structured memory rejection");
 
   const auto subword = lower(kSubwordLoad, "subword", context);
-  expect(!subword.ok() &&
-             subword.status ==
-                 cgra::frontend::llvm_frontend::LLVMFrontendStatus::UnsupportedMemoryType,
-         "subword memory access must be rejected by the T018 type contract");
+  expect(subword.ok() && subword.provenance.memoryAccesses.size() == 1 &&
+             subword.provenance.memoryAccesses.front().accessWidthBits == 16 &&
+             subword.dfg->node(subword.provenance.memoryAccesses.front().memoryNode).resultType ==
+                 cgra::ir::ValueType::i16(),
+         "typed memory frontend must preserve a naturally aligned i16 Load");
+
+  const auto wideFloat = lower(kWideFloatLoad, "wide_float", context);
+  expect(wideFloat.ok() && wideFloat.provenance.memoryAccesses.size() == 1 &&
+             wideFloat.provenance.memoryAccesses.front().accessWidthBits == 64 &&
+             wideFloat.provenance.memoryAccesses.front().strideBytes == 8 &&
+             wideFloat.dfg->node(wideFloat.provenance.memoryAccesses.front().memoryNode)
+                     .resultType == cgra::ir::ValueType::floating(64),
+         "typed memory frontend must retain f64 width and byte stride");
 
   const auto unaligned = lower(kUnalignedLoad, "unaligned", context);
   expect(!unaligned.ok() &&

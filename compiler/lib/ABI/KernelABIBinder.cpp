@@ -233,7 +233,8 @@ KernelABIBindingResult KernelABIBinder::bind(const ir::DFG& source, const Target
                           {ir::ValueType::i32(), output.type},
                           std::nullopt,
                           ir::MemoryOpInfo{target.memory().widthBits, false},
-                          ir::SourceInfo{"abi.liveout." + std::to_string(output.id)}});
+                          ir::SourceInfo{"abi.liveout." + std::to_string(output.id)},
+                          std::nullopt});
       builder.bindConstant(storeNode, 0, addressConstant);
       builder.addDataEdge(output.source, storeNode, 1);
       builder.addMemoryEdge(storeNode, storeNode, ir::MemoryDepKind::WAW, 1);

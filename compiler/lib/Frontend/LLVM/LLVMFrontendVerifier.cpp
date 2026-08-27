@@ -96,13 +96,75 @@ std::optional<ir::Opcode> opcode(const llvm::Instruction& instruction) {
   }
 }
 
+std::optional<std::string> verifiedCustomOperationKey(const llvm::Instruction& instruction) {
+  if (const auto* intrinsic = llvm::dyn_cast<llvm::IntrinsicInst>(&instruction);
+      intrinsic && intrinsic->getIntrinsicID() == llvm::Intrinsic::fmuladd)
+    return "FMA";
+  switch (instruction.getOpcode()) {
+  case llvm::Instruction::FAdd:
+    return "FADD";
+  case llvm::Instruction::FSub:
+    return "FSUB";
+  case llvm::Instruction::FMul:
+    return "FMUL";
+  case llvm::Instruction::FDiv:
+    return "FDIV";
+  case llvm::Instruction::FNeg:
+    return "FNEG";
+  case llvm::Instruction::SDiv:
+    return "SDIV";
+  case llvm::Instruction::SRem:
+    return "SREM";
+  case llvm::Instruction::UDiv:
+    return "UDIV";
+  case llvm::Instruction::URem:
+    return "UREM";
+  case llvm::Instruction::Trunc:
+    return "TRUNC";
+  case llvm::Instruction::ZExt:
+    return "ZEXT";
+  case llvm::Instruction::SExt:
+    return "SEXT";
+  case llvm::Instruction::SIToFP:
+    return "SITOFP";
+  case llvm::Instruction::UIToFP:
+    return "UITOFP";
+  case llvm::Instruction::FPToSI:
+    return "FPTOSI";
+  case llvm::Instruction::FPToUI:
+    return "FPTOUI";
+  case llvm::Instruction::FPTrunc:
+    return "FPTRUNC";
+  case llvm::Instruction::FPExt:
+    return "FPEXT";
+  default:
+    return std::nullopt;
+  }
+}
+
+bool verifiedSupportedDataInstruction(const llvm::Instruction& instruction) {
+  return opcode(instruction).has_value() || verifiedCustomOperationKey(instruction).has_value();
+}
+
 std::optional<ir::ValueType> valueType(const llvm::Value& value) {
+  if (value.getType()->isFloatTy())
+    return ir::ValueType::floating(32);
+  if (value.getType()->isDoubleTy())
+    return ir::ValueType::floating(64);
   const auto* integer = llvm::dyn_cast<llvm::IntegerType>(value.getType());
   if (!integer || integer->getBitWidth() == 0 || integer->getBitWidth() > 64)
     return std::nullopt;
   if (integer->getBitWidth() == 1)
     return ir::ValueType::predicate();
   return ir::ValueType::integer(static_cast<std::uint16_t>(integer->getBitWidth()));
+}
+
+std::optional<std::uint64_t> constantBits(const llvm::Value& value) {
+  if (const auto* integer = llvm::dyn_cast<llvm::ConstantInt>(&value))
+    return integer->getValue().getZExtValue();
+  if (const auto* floating = llvm::dyn_cast<llvm::ConstantFP>(&value))
+    return floating->getValueAPF().bitcastToAPInt().getZExtValue();
+  return std::nullopt;
 }
 
 std::optional<ir::ICmpPredicate> icmpPredicate(const llvm::ICmpInst& instruction) {
@@ -260,7 +322,7 @@ void removeRecurrenceProducerClosure(const Selection& selection,
           backedgePhi && backedgePhi->getParent() != selection.block &&
           backedgePhi->getNumIncomingValues() == 2;
       if (!backedge || !selection.loop->contains(backedge) ||
-          (!conditionalSelectBackedge && !opcode(*backedge)))
+          (!conditionalSelectBackedge && !verifiedSupportedDataInstruction(*backedge)))
         continue;
       const bool hasDataUse = std::ranges::any_of(phi->users(), [&](const llvm::User* user) {
         const auto* use = llvm::dyn_cast<llvm::Instruction>(user);
@@ -284,7 +346,7 @@ void removeRecurrenceProducerClosure(const Selection& selection,
       const auto* dependencyPhi = llvm::dyn_cast_or_null<llvm::PHINode>(dependency);
       const bool mergePhi = dependencyPhi && dependencyPhi->getParent() != selection.block;
       if (!dependency || !selection.loop->contains(dependency) ||
-          (!mergePhi && !opcode(*dependency)))
+          (!mergePhi && !verifiedSupportedDataInstruction(*dependency)))
         continue;
       work.push_back(dependency);
     }
@@ -349,7 +411,8 @@ bool boundaryMatches(const LLVMFrontendResult& result, const ir::DFG& dfg,
   if (boundary.values.size() != 1 || boundary.values.front().iterationOffset != 0)
     return false;
   const auto& value = boundary.values.front().value;
-  if (const auto* constant = llvm::dyn_cast<llvm::ConstantInt>(recurrence.initial)) {
+  if (const auto* constant = llvm::dyn_cast<llvm::Constant>(recurrence.initial);
+      constant && constantBits(*constant)) {
     if (!std::holds_alternative<ir::ConstantRef>(value))
       return false;
     const auto id = std::get<ir::ConstantRef>(value).value;
@@ -357,7 +420,7 @@ bool boundaryMatches(const LLVMFrontendResult& result, const ir::DFG& dfg,
       return false;
     const auto type = valueType(*constant);
     return type && dfg.constant(id).type == *type &&
-           dfg.constant(id).bits == constant->getValue().getZExtValue();
+           dfg.constant(id).bits == *constantBits(*constant);
   }
   if (!std::holds_alternative<ir::ExternalValueRef>(value))
     return false;
@@ -401,7 +464,6 @@ bool providerMatches(const LLVMFrontendResult& result, const llvm::Value* value,
       return data && data->boundary &&
              boundaryMatches(result, *result.dfg, recurrence, *data->boundary);
     }
-    return false;
   }
   if (const auto* edge =
           findProviderEdge(*result.dfg, destination, operand, ir::Edge::Kind::Data)) {
@@ -416,13 +478,14 @@ bool providerMatches(const LLVMFrontendResult& result, const llvm::Value* value,
       for (const auto& provenance : result.provenance.externals)
         if (provenance.external == external->value && provenance.value == value)
           return true;
-    } else if (const auto* constant = llvm::dyn_cast<llvm::ConstantInt>(value)) {
+    } else if (const auto* constant = llvm::dyn_cast<llvm::Constant>(value);
+               constant && constantBits(*constant)) {
       const auto* reference = std::get_if<ir::ConstantRef>(&binding.source);
       if (!reference)
         return false;
       const auto id = reference->value;
       if (result.dfg->containsConstant(id) &&
-          result.dfg->constant(id).bits == constant->getValue().getZExtValue() &&
+          result.dfg->constant(id).bits == *constantBits(*constant) &&
           valueType(*constant) && result.dfg->constant(id).type == *valueType(*constant))
         return true;
     }
@@ -766,6 +829,12 @@ void verifyIfDataflow(const Selection& selection, const LLVMFrontendResult& resu
       if (!type || node.opcode != *expected || node.resultType != *type)
         report.add("LLVM_FRONTEND_NODE_SEMANTICS_MISMATCH",
                    "Generic arithmetic node does not match its LLVM instruction");
+    } else if (const auto custom = verifiedCustomOperationKey(*instruction)) {
+      const auto type = valueType(*instruction);
+      if (!type || node.opcode != ir::Opcode::Custom || node.operationKey != custom ||
+          node.resultType != *type)
+        report.add("LLVM_FRONTEND_NODE_SEMANTICS_MISMATCH",
+                   "Generic Custom node does not match its LLVM typed operation");
     } else if (llvm::isa<llvm::SelectInst>(instruction) || llvm::isa<llvm::PHINode>(instruction)) {
       if (node.opcode != ir::Opcode::Select || !plannedSelects.contains(node.id))
         report.add("LLVM_FRONTEND_SELECT_SEMANTICS_MISMATCH",
@@ -776,8 +845,11 @@ void verifyIfDataflow(const Selection& selection, const LLVMFrontendResult& resu
         report.add("LLVM_FRONTEND_STORE_SEMANTICS_MISMATCH",
                    "Generic Store is not covered by memory/predication provenance");
     } else if (llvm::isa<llvm::LoadInst>(instruction)) {
-      if (node.opcode != ir::Opcode::Load || node.resultType != ir::ValueType::i32() ||
-          !node.memoryInfo || node.memoryInfo->accessWidthBits != 32 ||
+      const auto loadType = valueType(*instruction);
+      const auto accessWidth = static_cast<std::uint32_t>(
+          instruction->getType()->getPrimitiveSizeInBits());
+      if (!loadType || node.opcode != ir::Opcode::Load || node.resultType != *loadType ||
+          !node.memoryInfo || node.memoryInfo->accessWidthBits != accessWidth ||
           !plannedMemoryNodes.contains(node.id))
         report.add("LLVM_FRONTEND_MEMORY_NODE_SEMANTICS_MISMATCH",
                    "Generic Load does not match its LLVM memory access");
@@ -791,7 +863,7 @@ void verifyIfDataflow(const Selection& selection, const LLVMFrontendResult& resu
       report.add("LLVM_FRONTEND_NODE_SEMANTICS_MISMATCH",
                  "Generic node provenance names an unsupported LLVM instruction");
     }
-    if (opcode(*instruction) || llvm::isa<llvm::ICmpInst>(instruction)) {
+    if (verifiedSupportedDataInstruction(*instruction) || llvm::isa<llvm::ICmpInst>(instruction)) {
       for (std::uint32_t operand = 0; operand < node.operandTypes.size(); ++operand) {
         const auto llvmOperand = correspondingLLVMOperand(result, *instruction, operand);
         if (llvmOperand >= instruction->getNumOperands() ||
@@ -952,7 +1024,7 @@ void verifyIfDataflow(const Selection& selection, const LLVMFrontendResult& resu
           referenced |= reference->value == external.id;
     }
     if ((definingInstruction && selection.loop->contains(definingInstruction)) ||
-        llvm::isa<llvm::ConstantInt>(provenance->value) || !expectedType ||
+        constantBits(*provenance->value) || !expectedType ||
         external.type != *expectedType || !referenced ||
         !externalValues.insert(provenance->value).second)
       report.add("LLVM_FRONTEND_EXTERNAL_PROVENANCE_INVALID",
@@ -1151,10 +1223,20 @@ VerifiedMemoryExpectations recomputeMemoryExpectations(const Selection& selectio
 
       const auto* accessedType = load ? load->getType() : store->getValueOperand()->getType();
       const auto alignment = load ? load->getAlign().value() : store->getAlign().value();
-      if (!accessedType->isIntegerTy(32) || alignment < 4 ||
+      const bool scalarMemoryType = accessedType->isIntegerTy() || accessedType->isFloatTy() ||
+                                    accessedType->isDoubleTy();
+      const auto accessWidthBits =
+          scalarMemoryType
+              ? static_cast<std::uint32_t>(accessedType->getPrimitiveSizeInBits())
+              : 0U;
+      const auto naturalAlignmentBytes = accessWidthBits / 8;
+      if (!scalarMemoryType ||
+          (accessWidthBits != 8 && accessWidthBits != 16 && accessWidthBits != 32 &&
+           accessWidthBits != 64) ||
+          alignment < naturalAlignmentBytes ||
           (load && (load->isVolatile() || load->isAtomic())) ||
           (store && (store->isVolatile() || store->isAtomic()))) {
-        result.error = "LLVM memory access is outside the verified i32 V0 subset";
+        result.error = "LLVM memory access is outside the verified typed scalar subset";
         return result;
       }
 
@@ -1177,19 +1259,21 @@ VerifiedMemoryExpectations recomputeMemoryExpectations(const Selection& selectio
       access.instruction = &instruction;
       access.address = address;
       access.base = base;
-      access.accessWidthBits = 32;
+      access.accessWidthBits = accessWidthBits;
 
       if (const auto* gep = llvm::dyn_cast<llvm::GetElementPtrInst>(address)) {
         const auto bitWidth = dataLayout.getIndexTypeSizeInBits(gep->getType());
         llvm::MapVector<llvm::Value*, llvm::APInt> variableOffsets;
         llvm::APInt constantOffset(bitWidth, 0, true);
+        const std::int64_t addressUnitBytes = accessWidthBits < 32 ? 1 : 4;
         if (!gep->collectOffset(dataLayout, bitWidth, variableOffsets, constantOffset) ||
-            constantOffset.getMinSignedBits() > 64 || constantOffset.getSExtValue() % 4 != 0 ||
+            constantOffset.getMinSignedBits() > 64 ||
+            constantOffset.getSExtValue() % addressUnitBytes != 0 ||
             variableOffsets.size() > 1) {
-          result.error = "LLVM GEP is not a verified affine word address";
+          result.error = "LLVM GEP is not aligned to the verified Generic address unit";
           return result;
         }
-        access.gepConstantOffsetWords = constantOffset.getSExtValue() / 4;
+        access.gepConstantOffsetWords = constantOffset.getSExtValue() / addressUnitBytes;
         access.constantOffsetBytes = constantOffset.getSExtValue();
         if (!verifiedFitsAddressWord(access.gepConstantOffsetWords)) {
           result.error = "LLVM GEP constant word offset exceeds the verified i32 address domain";
@@ -1198,12 +1282,13 @@ VerifiedMemoryExpectations recomputeMemoryExpectations(const Selection& selectio
         access.constantOffsetWords = access.gepConstantOffsetWords;
         if (!variableOffsets.empty()) {
           const auto& [index, scaleBytes] = variableOffsets.front();
-          if (scaleBytes.getMinSignedBits() > 64 || scaleBytes.getSExtValue() % 4 != 0 ||
-              !verifiedFitsAddressWord(scaleBytes.getSExtValue() / 4)) {
+          if (scaleBytes.getMinSignedBits() > 64 ||
+              scaleBytes.getSExtValue() % addressUnitBytes != 0 ||
+              !verifiedFitsAddressWord(scaleBytes.getSExtValue() / addressUnitBytes)) {
             result.error = "dynamic GEP scale exceeds the verified i32 word-address domain";
             return result;
           }
-          const auto scaleWords = scaleBytes.getSExtValue() / 4;
+          const auto scaleWords = scaleBytes.getSExtValue() / addressUnitBytes;
           const auto affine = verifiedAffineValue(*index, *selection.loop, scalarEvolution);
           if (!affine || !verifiedFitsAddressWord(affine->offset) ||
               !verifiedFitsAddressWord(affine->stride)) {
@@ -1236,7 +1321,7 @@ VerifiedMemoryExpectations recomputeMemoryExpectations(const Selection& selectio
     if (verifiedIsStore(access) && access.addressMode == LLVMAddressMode::Dynamic)
       addVerifiedDependence(result, seen, access.id, access.id, ir::MemoryDepKind::WAW, 1,
                             VerifiedMemoryDependenceMode::DynamicConservative);
-    else if (verifiedIsStore(access) && access.iterationStrideWords == 0)
+    else if (verifiedIsStore(access) && access.iterationStrideBytes == 0)
       addVerifiedDependence(result, seen, access.id, access.id, ir::MemoryDepKind::WAW, 1,
                             VerifiedMemoryDependenceMode::ExactAffine);
 
@@ -1250,7 +1335,7 @@ VerifiedMemoryExpectations recomputeMemoryExpectations(const Selection& selectio
       const bool exact = lhs->addressMode != LLVMAddressMode::Dynamic &&
                          rhs->addressMode != LLVMAddressMode::Dynamic && lhs->base == rhs->base &&
                          lhs->accessWidthBits == rhs->accessWidthBits &&
-                         lhs->iterationStrideWords == rhs->iterationStrideWords &&
+                         lhs->iterationStrideBytes == rhs->iterationStrideBytes &&
                          lhs->invariantExpression == rhs->invariantExpression;
       if (!exact && aliasAnalysis.alias(llvm::MemoryLocation::get(lhs->instruction),
                                         llvm::MemoryLocation::get(rhs->instruction)) ==
@@ -1268,23 +1353,23 @@ VerifiedMemoryExpectations recomputeMemoryExpectations(const Selection& selectio
       }
 
       if (exact) {
-        const auto stride = lhs->iterationStrideWords;
-        if (lhs->constantOffsetWords == rhs->constantOffsetWords)
+        const auto stride = lhs->iterationStrideBytes;
+        if (lhs->constantOffsetBytes == rhs->constantOffsetBytes)
           addVerifiedDependence(result, seen, lhs->id, rhs->id, verifiedDependenceKind(*lhs, *rhs),
                                 0, VerifiedMemoryDependenceMode::ExactAffine);
         if (stride == 0) {
-          if (lhs->constantOffsetWords == rhs->constantOffsetWords)
+          if (lhs->constantOffsetBytes == rhs->constantOffsetBytes)
             addVerifiedDependence(result, seen, rhs->id, lhs->id,
                                   verifiedDependenceKind(*rhs, *lhs), 1,
                                   VerifiedMemoryDependenceMode::ExactAffine);
           continue;
         }
         if (const auto distance = verifiedPositiveDistance(
-                lhs->constantOffsetWords - rhs->constantOffsetWords, stride))
+                lhs->constantOffsetBytes - rhs->constantOffsetBytes, stride))
           addVerifiedDependence(result, seen, lhs->id, rhs->id, verifiedDependenceKind(*lhs, *rhs),
                                 *distance, VerifiedMemoryDependenceMode::ExactAffine);
         if (const auto distance = verifiedPositiveDistance(
-                rhs->constantOffsetWords - lhs->constantOffsetWords, stride))
+                rhs->constantOffsetBytes - lhs->constantOffsetBytes, stride))
           addVerifiedDependence(result, seen, rhs->id, lhs->id, verifiedDependenceKind(*rhs, *lhs),
                                 *distance, VerifiedMemoryDependenceMode::ExactAffine);
         continue;
@@ -1705,8 +1790,12 @@ LLVMFrontendVerificationReport verifyFrontendResult(const llvm::Module& module,
       continue;
     }
     const auto expectedOpcode = opcode(*instruction);
+    const auto expectedCustom = verifiedCustomOperationKey(*instruction);
     const auto expectedType = valueType(*instruction);
-    if (!expectedOpcode || !expectedType || node.opcode != *expectedOpcode ||
+    if ((!expectedOpcode && !expectedCustom) || !expectedType ||
+        (expectedOpcode && node.opcode != *expectedOpcode) ||
+        (expectedCustom &&
+         (node.opcode != ir::Opcode::Custom || node.operationKey != expectedCustom)) ||
         node.resultType != *expectedType) {
       report.add("LLVM_FRONTEND_NODE_SEMANTICS_MISMATCH",
                  "Generic node opcode or result type does not match LLVM instruction");
@@ -1863,7 +1952,7 @@ LLVMFrontendVerificationReport verifyFrontendResult(const llvm::Module& module,
     }
     const auto* definingInstruction = llvm::dyn_cast<llvm::Instruction>(provenance->value);
     if ((definingInstruction && selection->loop->contains(definingInstruction)) ||
-        llvm::isa<llvm::ConstantInt>(provenance->value) || !valueType(*provenance->value) ||
+        constantBits(*provenance->value) || !valueType(*provenance->value) ||
         !externalValues.insert(provenance->value).second) {
       report.add("LLVM_FRONTEND_EXTERNAL_PROVENANCE_INVALID",
                  "ExternalValue provenance is not a unique loop-external scalar");

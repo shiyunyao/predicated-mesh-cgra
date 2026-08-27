@@ -377,6 +377,48 @@ exit:
 }
 )IR";
 
+const char* kFusedMultiplyAdd = R"IR(
+declare float @llvm.fmuladd.f32(float, float, float)
+
+define float @fma_loop(float %a, float %b, float %c) {
+entry:
+  br label %loop
+loop:
+  %iv = phi i32 [ 0, %entry ], [ %iv.next, %loop ]
+  %iv.next = add i32 %iv, 1
+  %y = call float @llvm.fmuladd.f32(float %a, float %b, float %c)
+  %cmp = icmp ult i32 %iv.next, 2
+  br i1 %cmp, label %loop, label %exit
+exit:
+  %result = phi float [ %y, %loop ]
+  ret float %result
+}
+)IR";
+
+const char* kPureHelper = R"IR(
+define internal i32 @absolute(i32 %x) {
+entry:
+  %negative = icmp slt i32 %x, 0
+  %negated = sub i32 0, %x
+  %value = select i1 %negative, i32 %negated, i32 %x
+  ret i32 %value
+}
+
+define i32 @pure_helper_loop(i32 %x) {
+entry:
+  br label %loop
+loop:
+  %iv = phi i32 [ 0, %entry ], [ %iv.next, %loop ]
+  %iv.next = add i32 %iv, 1
+  %y = call i32 @absolute(i32 %x)
+  %cmp = icmp ult i32 %iv.next, 2
+  br i1 %cmp, label %loop, label %exit
+exit:
+  %result = phi i32 [ %y, %loop ]
+  ret i32 %result
+}
+)IR";
+
 const char* kUndefOperand = R"IR(
 define i32 @undef_operand(i32 %x) {
 entry:
@@ -1321,8 +1363,55 @@ void testBoundaryRejections() {
   expect(cgra::frontend::llvm_frontend::verifyFrontendResult(*memory, memoryOptions, memoryResult)
              .ok(),
          "T018 direct Load must pass frontend verification");
-  expectStatus(kFloat, "float_loop",
-               cgra::frontend::llvm_frontend::LLVMFrontendStatus::UnsupportedLLVMType);
+  llvm::LLVMContext floatContext;
+  auto floatModule = parse(kFloat, floatContext);
+  cgra::frontend::llvm_frontend::LLVMFrontendOptions floatOptions;
+  floatOptions.functionName = "float_loop";
+  const auto floatResult =
+      cgra::frontend::llvm_frontend::lowerInnermostLoop(*floatModule, floatOptions);
+  expect(floatResult.ok(), "target-independent frontend must preserve scalar float semantics");
+  expect(floatResult.dfg->nodes().size() == 1 &&
+             floatResult.dfg->node(0).opcode == cgra::ir::Opcode::Custom &&
+             floatResult.dfg->node(0).operationKey == std::optional<std::string>{"FADD"},
+         "LLVM fadd must lower to the typed FADD operation key");
+  expect(cgra::frontend::llvm_frontend::verifyFrontendResult(*floatModule, floatOptions,
+                                                              floatResult)
+             .ok(),
+         "independent verifier must accept typed float lowering");
+
+  llvm::LLVMContext fmaContext;
+  auto fmaModule = parse(kFusedMultiplyAdd, fmaContext);
+  cgra::frontend::llvm_frontend::LLVMFrontendOptions fmaOptions;
+  fmaOptions.functionName = "fma_loop";
+  const auto fmaResult =
+      cgra::frontend::llvm_frontend::lowerInnermostLoop(*fmaModule, fmaOptions);
+  expect(fmaResult.ok() && fmaResult.dfg->nodes().size() == 1,
+         "llvm.fmuladd must lower as one semantic operation");
+  expect(fmaResult.dfg->node(0).opcode == cgra::ir::Opcode::Custom &&
+             fmaResult.dfg->node(0).operationKey == std::optional<std::string>{"FMA"} &&
+             fmaResult.dfg->node(0).operandTypes.size() == 3,
+         "llvm.fmuladd must lower to one three-input FMA custom operation");
+  expect(cgra::frontend::llvm_frontend::verifyFrontendResult(*fmaModule, fmaOptions, fmaResult)
+             .ok(),
+         "independent verifier must accept FMA intrinsic lowering");
+
+  llvm::LLVMContext helperContext;
+  auto helperModule = parse(kPureHelper, helperContext);
+  cgra::frontend::llvm_frontend::LLVMFrontendOptions helperOptions;
+  helperOptions.functionName = "pure_helper_loop";
+  const auto helperResult =
+      cgra::frontend::llvm_frontend::lowerInnermostLoop(*helperModule, helperOptions);
+  expect(helperResult.ok() && helperResult.metadata &&
+             helperResult.metadata->inlinedPureHelperCalls == 1,
+         "one small pure local helper must inline on the analysis clone");
+  expect(std::ranges::none_of(helperResult.provenance.nodes, [](const auto& node) {
+           return node.opcode == "call";
+         }),
+         "the Generic graph must contain helper semantics rather than a Call node");
+  expect(cgra::frontend::llvm_frontend::verifyFrontendResult(*helperModule, helperOptions,
+                                                              helperResult)
+             .ok(),
+         "inlined helper semantics must pass independent frontend verification");
   expectStatus(kUndefOperand, "undef_operand",
                cgra::frontend::llvm_frontend::LLVMFrontendStatus::UnsupportedInstruction);
 
@@ -1814,8 +1903,20 @@ void testRecurrenceNegativeCorpus() {
                cgra::frontend::llvm_frontend::LLVMFrontendStatus::UnsupportedPhiToPhiUse);
   expectStatus(kPointerPhi, "pointer_phi",
                cgra::frontend::llvm_frontend::LLVMFrontendStatus::UnsupportedRecurrenceType);
-  expectStatus(kFloatPhi, "float_phi",
-               cgra::frontend::llvm_frontend::LLVMFrontendStatus::UnsupportedRecurrenceType);
+  llvm::LLVMContext floatContext;
+  auto floatModule = parse(kFloatPhi, floatContext);
+  cgra::frontend::llvm_frontend::LLVMFrontendOptions floatOptions;
+  floatOptions.functionName = "float_phi";
+  const auto floatResult =
+      cgra::frontend::llvm_frontend::lowerInnermostLoop(*floatModule, floatOptions);
+  if (!floatResult.ok())
+    std::cerr << "float recurrence status=" << static_cast<int>(floatResult.status)
+              << " message=" << floatResult.message << '\n';
+  expect(floatResult.ok(), "scalar float recurrence must lower target-independently");
+  expect(cgra::frontend::llvm_frontend::verifyFrontendResult(*floatModule, floatOptions,
+                                                              floatResult)
+             .ok(),
+         "scalar float recurrence must pass independent verification");
   expectStatus(kVectorPhi, "vector_phi",
                cgra::frontend::llvm_frontend::LLVMFrontendStatus::UnsupportedRecurrenceType);
   expectStatus(kRawPhiLiveOut, "raw_phi_liveout",

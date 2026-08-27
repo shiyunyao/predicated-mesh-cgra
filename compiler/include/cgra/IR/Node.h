@@ -38,6 +38,7 @@ struct Node {
   std::optional<ICmpPredicate> icmpPredicate;
   std::optional<MemoryOpInfo> memoryInfo;
   std::optional<SourceInfo> source;
+  std::optional<std::string> operationKey;
 
   friend bool operator==(const Node&, const Node&) = default;
 };

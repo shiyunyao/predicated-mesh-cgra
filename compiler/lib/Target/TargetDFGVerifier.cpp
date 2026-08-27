@@ -292,7 +292,7 @@ TargetDFGVerifier::verify(const TargetDFG& dfg, const TargetModel& target, const
     if (operation->accessWidthBits != node.accessWidthBits)
       report.add({TargetDFGDiagnosticCode::TDFG_MEMORY_ACCESS_WIDTH_MISMATCH,
                   "node memory access width disagrees with TargetModel", node.id});
-    if (operation->resultType != node.resultType)
+    if (!target.isMappingResearchTarget() && operation->resultType != node.resultType)
       report.add({TargetDFGDiagnosticCode::TDFG_RESULT_TYPE_MISMATCH,
                   "node result type disagrees with TargetModel", node.id});
     if (!resultRoleMatches(operation->resultRole, node.resultType))

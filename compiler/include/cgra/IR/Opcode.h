@@ -20,6 +20,7 @@ enum class Opcode {
   Select,
   Load,
   Store,
+  Custom,
 };
 
 enum class ICmpPredicate {
