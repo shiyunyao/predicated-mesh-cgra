@@ -231,7 +231,15 @@ def write_case_evidence(out: pathlib.Path, corpus: pathlib.Path, target: pathlib
         if path.is_file():
             logs.mkdir(parents=True, exist_ok=True)
             shutil.copy2(path, logs / path.name)
+    project_root = corpus.parent.parent
+    portable_command = []
+    for token in result.get("command", []):
+        candidate = pathlib.Path(token)
+        if candidate.is_absolute() and candidate.is_relative_to(project_root):
+            portable_command.append(candidate.relative_to(project_root).as_posix())
+        else:
+            portable_command.append(token)
     (reproducer / "command.txt").write_text(
-        shlex.join(result.get("command", [])) + "\n", encoding="utf-8"
+        shlex.join(portable_command) + "\n", encoding="utf-8"
     )
     write_json(reproducer / "metrics.json", metrics)
