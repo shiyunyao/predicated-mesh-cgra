@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 from tools.cgra_bench.classify import classify
+from tools.cgra_bench.build_llvm import SOURCE_ABI_FLAGS
 from tools.cgra_bench.check_baseline import check, check_expectations
 from tools.cgra_bench.evidence import complete_stage_records, write_case_evidence
 from tools.cgra_bench.freeze_supported import freeze, load_completed_run
@@ -32,6 +33,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def test_smoke_mapping_profile_is_bounded_below_full_audit() -> None:
     baseline = MAPPING_PROFILES["baseline"]
+    research = MAPPING_PROFILES["research"]
     smoke = MAPPING_PROFILES["smoke"]
     assert baseline == {
         "max_ii": 8,
@@ -41,6 +43,21 @@ def test_smoke_mapping_profile_is_bounded_below_full_audit() -> None:
         "max_route_states": 10000,
     }
     assert 0 < smoke["max_ii"] < baseline["max_ii"]
+    assert research == {
+        "max_ii": 32,
+        "max_node_candidates": 100000,
+        "max_backtracks": 50000,
+        "max_route_calls": 100000,
+        "max_route_states": 10000,
+    }
+    assert baseline["max_ii"] < research["max_ii"]
+    for budget in (
+        "max_node_candidates",
+        "max_backtracks",
+        "max_route_calls",
+        "max_route_states",
+    ):
+        assert research[budget] == baseline[budget]
     for budget in (
         "max_node_candidates",
         "max_backtracks",
@@ -48,6 +65,10 @@ def test_smoke_mapping_profile_is_bounded_below_full_audit() -> None:
         "max_route_states",
     ):
         assert 0 < smoke[budget] < baseline[budget]
+
+
+def test_source_abi_profiles_never_silently_fallback() -> None:
+    assert SOURCE_ABI_FLAGS == {"m32": ["-m32"], "native": []}
 
 
 def test_mapping_research_success_is_mapped_not_manifest_complete(tmp_path: Path) -> None:

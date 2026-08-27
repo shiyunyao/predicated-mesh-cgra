@@ -37,7 +37,19 @@ def run(command: list[str], cwd: pathlib.Path, timeout: int, log: pathlib.Path) 
     return result
 
 
-def build(source: pathlib.Path, output: pathlib.Path, timeout: int, extra_flags: list[str] | None = None) -> dict[str, Any]:
+SOURCE_ABI_FLAGS = {
+    "m32": ["-m32"],
+    "native": [],
+}
+
+
+def build(
+    source: pathlib.Path,
+    output: pathlib.Path,
+    timeout: int,
+    extra_flags: list[str] | None = None,
+    source_abi: str = "m32",
+) -> dict[str, Any]:
     started = time.monotonic()
 
     def finish(result: dict[str, Any]) -> dict[str, Any]:
@@ -51,12 +63,27 @@ def build(source: pathlib.Path, output: pathlib.Path, timeout: int, extra_flags:
     llvm_dis = shutil.which("llvm-dis-14")
     if not compiler or not opt or not llvm_dis:
         return finish({"status": "SOURCE_BUILD_FAILED", "diagnostic_code": "TOOLCHAIN_MISSING", "message": "clang-14/clang++-14, opt-14, and llvm-dis-14 are required"})
+    if source_abi not in SOURCE_ABI_FLAGS:
+        raise ValueError(f"unsupported source ABI profile: {source_abi}")
     flags = list(extra_flags or [])
     raw_bc = output / "source.raw.bc"
     raw_ll = output / "source.raw.ll"
     canonical_bc = output / "source.bc"
     canonical_ll = output / "source.canonical.ll"
-    compile_command = [compiler, "-O0", "-Xclang", "-disable-O0-optnone", "-fno-discard-value-names", "-m32", *flags, "-emit-llvm", "-c", str(source), "-o", str(raw_bc)]
+    compile_command = [
+        compiler,
+        "-O0",
+        "-Xclang",
+        "-disable-O0-optnone",
+        "-fno-discard-value-names",
+        *SOURCE_ABI_FLAGS[source_abi],
+        *flags,
+        "-emit-llvm",
+        "-c",
+        str(source),
+        "-o",
+        str(raw_bc),
+    ]
     raw_disassemble_command = [llvm_dis, str(raw_bc), "-o", str(raw_ll)]
     canonical_command = [opt, "-mem2reg", "-loop-simplify", "-lcssa", "-simplifycfg", str(raw_bc), "-o", str(canonical_bc)]
     canonical_disassemble_command = [llvm_dis, str(canonical_bc), "-o", str(canonical_ll)]
@@ -102,7 +129,11 @@ def build(source: pathlib.Path, output: pathlib.Path, timeout: int, extra_flags:
         "triple": next((line.split(' = ', 1)[1].strip('"') for line in canonical_ll.read_text(encoding="utf-8").splitlines() if line.startswith("target triple = ")), None),
         "compiler": compiler,
         "opt": opt,
-        "profile": {"optimization": "O0", "canonicalization": ["mem2reg", "loop-simplify", "lcssa", "simplifycfg"], "m32": True},
+        "profile": {
+            "optimization": "O0",
+            "canonicalization": ["mem2reg", "loop-simplify", "lcssa", "simplifycfg"],
+            "source_abi": source_abi,
+        },
         "host": platform.platform(),
         "commands": commands,
     })
@@ -113,9 +144,10 @@ def main() -> int:
     parser.add_argument("source", type=pathlib.Path)
     parser.add_argument("--out", required=True, type=pathlib.Path)
     parser.add_argument("--timeout", type=int, default=120)
+    parser.add_argument("--source-abi", choices=sorted(SOURCE_ABI_FLAGS), default="m32")
     args = parser.parse_args()
     try:
-        result = build(args.source, args.out, args.timeout)
+        result = build(args.source, args.out, args.timeout, source_abi=args.source_abi)
         write_json(args.out / "build.json", result)
         print(json.dumps(result, indent=2, sort_keys=True))
         return 0 if result["status"] == "LLVM_BUILT" else 1

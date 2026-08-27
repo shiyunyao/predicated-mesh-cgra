@@ -43,6 +43,13 @@ BASELINE_MAPPING_PROFILE = {
 }
 MAPPING_PROFILES = {
     "baseline": BASELINE_MAPPING_PROFILE,
+    "research": {
+        "max_ii": 32,
+        "max_node_candidates": 100000,
+        "max_backtracks": 50000,
+        "max_route_calls": 100000,
+        "max_route_states": 10000,
+    },
     "smoke": {
         "max_ii": 4,
         "max_node_candidates": 500,
@@ -179,7 +186,8 @@ def backend_observation(artifact_dir: pathlib.Path) -> dict[str, Any]:
 def run_case(case: dict[str, Any], root: pathlib.Path, corpus: pathlib.Path, out: pathlib.Path,
              target: pathlib.Path, frontend_bin: pathlib.Path, compile_bin: pathlib.Path,
              timeout: int, functional_cases: dict[str, dict[str, Any]],
-             mapping_profile: dict[str, int], pipeline_lane: str = "hardware") -> list[dict[str, Any]]:
+             mapping_profile: dict[str, int], pipeline_lane: str = "hardware",
+             source_abi: str = "m32") -> list[dict[str, Any]]:
     if not case.get("enabled", True):
         return [{"id": case["id"], "kernel": case["kernel"], "source": case["source"], "loop_header": None, "tier": "DISCOVERED", "terminal_stage": "S0_CORPUS_DISCOVERY", "status": "EXCLUDED", "stages": [{"stage": "S0_CORPUS_DISCOVERY", "status": "EXCLUDED"}], "category": "CORPUS", "owner": "HARNESS", "diagnostic_code": "EXPLICIT_EXCLUSION", "message": case.get("exclusion", "explicitly excluded"), "excluded": True}]
     source = corpus / case["source"]
@@ -188,7 +196,7 @@ def run_case(case: dict[str, Any], root: pathlib.Path, corpus: pathlib.Path, out
     flags = list(case.get("compile_flags", []))
     flags.extend(f"-D{define}" for define in case.get("defines", []))
     flags.extend(f"-I{(corpus / include).resolve()}" for include in case.get("include_dirs", []))
-    source_result = build(source, source_out / "build", timeout, flags)
+    source_result = build(source, source_out / "build", timeout, flags, source_abi)
     write_json(source_out / "build.json", source_result)
     if source_result.get("status") != "LLVM_BUILT":
         canonicalization_failed = source_result.get("status") == "LLVM_CANONICALIZE_FAILED"
@@ -439,6 +447,12 @@ def main() -> int:
     parser.add_argument("--timeout", type=int, default=120)
     parser.add_argument("--profile", choices=sorted(MAPPING_PROFILES), default="baseline")
     parser.add_argument("--lane", choices=("hardware", "mapping-research"), default="hardware")
+    parser.add_argument(
+        "--source-abi",
+        choices=("m32", "native"),
+        default="m32",
+        help="LLVM source ABI profile; native is explicit and never an automatic m32 fallback",
+    )
     parser.add_argument("--all", action="store_true")
     parser.add_argument("--allow-subset", action="store_true", help="allow a smoke manifest to cover a corpus subset")
     args = parser.parse_args()
@@ -520,6 +534,7 @@ def main() -> int:
             "profile": {
                 "name": args.profile,
                 "lane": args.lane,
+                "source_abi": args.source_abi,
                 "timeout_seconds": args.timeout,
                 "mapping": mapping_profile,
             },
@@ -540,6 +555,7 @@ def main() -> int:
                         functional_cases,
                         mapping_profile,
                         args.lane,
+                        args.source_abi,
                     )
                 )
             except Exception as error:  # every case must have a terminal result
@@ -558,6 +574,7 @@ def main() -> int:
             result["audit_profile"] = {
                 "name": args.profile,
                 "lane": args.lane,
+                "source_abi": args.source_abi,
                 "timeout_seconds": args.timeout,
                 "mapping": mapping_profile,
             }
