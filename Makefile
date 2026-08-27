@@ -378,7 +378,7 @@ cgra-bench-smoke: cgra-bench-inventory
 	cmake -S compiler -B "$(CGRA_BENCH_FRONTEND_BUILD)" -DCGRA_BUILD_TESTS=OFF -DCGRA_WARNINGS_AS_ERRORS=ON $(LLVM_CMAKE_ARG); \
 	cmake --build "$(CGRA_BENCH_FRONTEND_BUILD)" --target cgra-llvm-loop-lower cgrac-compile-kernel --parallel; \
 	python3 tools/cgra_bench/run.py --corpus "$(CGRA_BENCH_CORPUS)" --cases benchmarks/cgra-bench/smoke_cases.v1.json --target target/cgra_v3.json --frontend-bin "$(CGRA_BENCH_FRONTEND_BIN)" --compile-kernel-bin "$(CGRA_BENCH_COMPILE_BIN)" --out "$(CGRA_BENCH_OUT)/smoke" --all --allow-subset; \
-	python3 tools/cgra_bench/check_baseline.py --run "$(CGRA_BENCH_OUT)/smoke"
+	python3 tools/cgra_bench/check_baseline.py --run "$(CGRA_BENCH_OUT)/smoke" --expectations benchmarks/cgra-bench/smoke_expectations.v1.json
 
 cgra-bench-audit: cgra-bench-inventory
 	@set -eu; \

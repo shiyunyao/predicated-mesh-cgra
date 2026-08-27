@@ -26,12 +26,15 @@ def check(run: pathlib.Path, baseline_path: pathlib.Path) -> list[str]:
     ids = [entry["id"] if isinstance(entry, dict) else entry for entry in expected]
     if len(ids) != len(set(ids)):
         return ["known-supported baseline contains duplicate case IDs"]
-    results = {
-        result["id"]: result
+    parsed = [
+        json.loads(line)
         for line in (run / "results.jsonl").read_text(encoding="utf-8").splitlines()
         if line.strip()
-        for result in [json.loads(line)]
-    }
+    ]
+    result_ids = [result["id"] for result in parsed]
+    if len(result_ids) != len(set(result_ids)):
+        return ["audit results contain duplicate case IDs"]
+    results = {result["id"]: result for result in parsed}
     failures = []
     for case_id, result in sorted(results.items()):
         if result.get("terminal_stage") not in STAGES:
@@ -57,6 +60,39 @@ def check(run: pathlib.Path, baseline_path: pathlib.Path) -> list[str]:
     return failures
 
 
+def check_expectations(run: pathlib.Path, expectations_path: pathlib.Path) -> list[str]:
+    expectations = read_json(expectations_path)
+    if expectations.get("schema") != "cgra.cgra_bench.smoke_expectations.v1":
+        return ["smoke expectation schema mismatch"]
+    parsed = [
+        json.loads(line)
+        for line in (run / "results.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    result_ids = [result["id"] for result in parsed]
+    if len(result_ids) != len(set(result_ids)):
+        return ["audit results contain duplicate case IDs"]
+    results = {result["id"]: result for result in parsed}
+    failures = []
+    for expected in expectations.get("cases", []):
+        result = results.get(expected["id"])
+        if result is None:
+            failures.append(f"smoke expectation missing case: {expected['id']}")
+            continue
+        if result.get("terminal_stage") != expected["terminal_stage"]:
+            failures.append(
+                f"{expected['id']}: terminal stage changed from {expected['terminal_stage']} "
+                f"to {result.get('terminal_stage')}"
+            )
+        accepted = expected.get("diagnostic_codes", [expected.get("diagnostic_code")])
+        if result.get("diagnostic_code") not in accepted:
+            failures.append(
+                f"{expected['id']}: diagnostic changed to {result.get('diagnostic_code')}; "
+                f"expected one of {accepted}"
+            )
+    return failures
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--run", required=True, type=pathlib.Path)
@@ -65,9 +101,17 @@ def main() -> int:
         type=pathlib.Path,
         default=pathlib.Path("benchmarks/cgra-bench/known_supported.v1.json"),
     )
+    parser.add_argument(
+        "--expectations",
+        type=pathlib.Path,
+        default=None,
+        help="optional fixed smoke classification contract",
+    )
     args = parser.parse_args()
     try:
         failures = check(args.run, args.baseline)
+        if args.expectations:
+            failures.extend(check_expectations(args.run, args.expectations))
     except (OSError, KeyError, ValueError, json.JSONDecodeError) as error:
         print(f"cgra-bench baseline: {error}", file=sys.stderr)
         return 2

@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 
 from tools.cgra_bench.classify import classify
-from tools.cgra_bench.check_baseline import check
+from tools.cgra_bench.check_baseline import check, check_expectations
 from tools.cgra_bench.evidence import complete_stage_records, write_case_evidence
 from tools.cgra_bench.inventory import PIN, inventory
 from tools.cgra_bench.invocation import address_external_ids, synthesize_invocation
@@ -211,3 +211,18 @@ def test_known_supported_baseline_rejects_regression(tmp_path: Path) -> None:
     assert check(run, baseline) == [
         "case::loop: regressed to FRONTEND_DFG (MAPPING_FAILED); expected at least MAPPED"
     ]
+
+
+def test_smoke_expectations_reject_classification_drift(tmp_path: Path) -> None:
+    run = tmp_path / "run"
+    run.mkdir()
+    (run / "results.jsonl").write_text(json.dumps({
+        "id": "case::loop", "terminal_stage": "S4_FRONTEND_LOWER",
+        "diagnostic_code": "LLVM_FRONTEND_UNSUPPORTED_LOOP_SHAPE",
+    }) + "\n")
+    expectations = tmp_path / "expectations.json"
+    expectations.write_text(json.dumps({
+        "schema": "cgra.cgra_bench.smoke_expectations.v1",
+        "cases": [{"id": "case::loop", "terminal_stage": "S4_FRONTEND_LOWER", "diagnostic_code": "LLVM_FRONTEND_UNSUPPORTED_LOOP_SHAPE"}],
+    }))
+    assert check_expectations(run, expectations) == []

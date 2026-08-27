@@ -21,6 +21,11 @@ The smoke gate uses the fixed six-source manifest:
 make cgra-bench-smoke
 ```
 
+Smoke additionally checks `benchmarks/cgra-bench/smoke_expectations.v1.json`,
+which freezes representative unsupported-loop terminal classifications. This
+guards diagnostic drift even while the mapped-case baseline is empty on the
+initial audit.
+
 Both commands use the production `cgra-llvm-loop-lower` and
 `cgrac-compile-kernel` binaries. The runner creates an isolated directory for
 each source and loop, preserves compiler logs and artifacts, and continues
