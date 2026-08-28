@@ -511,6 +511,25 @@ exit:
 }
 )IR";
 
+const char* kPredicateSSA = R"IR(
+define i32 @predicate_ssa(i32 %x, i32 %y) {
+entry:
+  br label %loop
+loop:
+  %iv = phi i32 [ 0, %entry ], [ %inc, %loop ]
+  %inc = add i32 %iv, 1
+  %p = icmp ult i32 %x, %y
+  %not.p = xor i1 %p, true
+  %wide = zext i1 %not.p to i32
+  %v = select i1 %not.p, i32 %wide, i32 %x
+  %done = icmp ult i32 %inc, 2
+  br i1 %done, label %loop, label %exit
+exit:
+  %out = phi i32 [ %v, %loop ]
+  ret i32 %out
+}
+)IR";
+
 const char* kDiamond = R"IR(
 define i32 @diamond(i32 %x, i32 %y) {
 entry:
@@ -1374,26 +1393,25 @@ void testBoundaryRejections() {
              floatResult.dfg->node(0).opcode == cgra::ir::Opcode::Custom &&
              floatResult.dfg->node(0).operationKey == std::optional<std::string>{"FADD"},
          "LLVM fadd must lower to the typed FADD operation key");
-  expect(cgra::frontend::llvm_frontend::verifyFrontendResult(*floatModule, floatOptions,
-                                                              floatResult)
-             .ok(),
-         "independent verifier must accept typed float lowering");
+  expect(
+      cgra::frontend::llvm_frontend::verifyFrontendResult(*floatModule, floatOptions, floatResult)
+          .ok(),
+      "independent verifier must accept typed float lowering");
 
   llvm::LLVMContext fmaContext;
   auto fmaModule = parse(kFusedMultiplyAdd, fmaContext);
   cgra::frontend::llvm_frontend::LLVMFrontendOptions fmaOptions;
   fmaOptions.functionName = "fma_loop";
-  const auto fmaResult =
-      cgra::frontend::llvm_frontend::lowerInnermostLoop(*fmaModule, fmaOptions);
+  const auto fmaResult = cgra::frontend::llvm_frontend::lowerInnermostLoop(*fmaModule, fmaOptions);
   expect(fmaResult.ok() && fmaResult.dfg->nodes().size() == 1,
          "llvm.fmuladd must lower as one semantic operation");
   expect(fmaResult.dfg->node(0).opcode == cgra::ir::Opcode::Custom &&
              fmaResult.dfg->node(0).operationKey == std::optional<std::string>{"FMA"} &&
              fmaResult.dfg->node(0).operandTypes.size() == 3,
          "llvm.fmuladd must lower to one three-input FMA custom operation");
-  expect(cgra::frontend::llvm_frontend::verifyFrontendResult(*fmaModule, fmaOptions, fmaResult)
-             .ok(),
-         "independent verifier must accept FMA intrinsic lowering");
+  expect(
+      cgra::frontend::llvm_frontend::verifyFrontendResult(*fmaModule, fmaOptions, fmaResult).ok(),
+      "independent verifier must accept FMA intrinsic lowering");
 
   llvm::LLVMContext helperContext;
   auto helperModule = parse(kPureHelper, helperContext);
@@ -1404,12 +1422,11 @@ void testBoundaryRejections() {
   expect(helperResult.ok() && helperResult.metadata &&
              helperResult.metadata->inlinedPureHelperCalls == 1,
          "one small pure local helper must inline on the analysis clone");
-  expect(std::ranges::none_of(helperResult.provenance.nodes, [](const auto& node) {
-           return node.opcode == "call";
-         }),
+  expect(std::ranges::none_of(helperResult.provenance.nodes,
+                              [](const auto& node) { return node.opcode == "call"; }),
          "the Generic graph must contain helper semantics rather than a Call node");
   expect(cgra::frontend::llvm_frontend::verifyFrontendResult(*helperModule, helperOptions,
-                                                              helperResult)
+                                                             helperResult)
              .ok(),
          "inlined helper semantics must pass independent frontend verification");
   expectStatus(kUndefOperand, "undef_operand",
@@ -1452,6 +1469,26 @@ void testPredicationLowering() {
   expect(
       !cgra::frontend::llvm_frontend::verifyFrontendResult(*direct, options, wrongPredicate).ok(),
       "Select verifier must reject a corrupted predicate source");
+
+  auto predicateSSA = parse(kPredicateSSA, context);
+  options.functionName = "predicate_ssa";
+  const auto predicateResult =
+      cgra::frontend::llvm_frontend::lowerInnermostLoop(*predicateSSA, options);
+  expect(predicateResult.ok(), "predicate SSA operations must lower");
+  const auto predicateXor =
+      std::ranges::find_if(predicateResult.dfg->nodes(), [](const auto& node) {
+        return node.opcode == cgra::ir::Opcode::Custom && node.operationKey == "PXOR";
+      });
+  expect(predicateXor != predicateResult.dfg->nodes().end(),
+         "i1 xor must retain predicate semantics as PXOR");
+  expect(std::ranges::count_if(
+             predicateResult.dfg->edges(),
+             [](const auto& edge) { return edge.kind() == cgra::ir::Edge::Kind::Predicate; }) == 3,
+         "predicate SSA users must be connected by PredicateEdges");
+  expect(
+      cgra::frontend::llvm_frontend::verifyFrontendResult(*predicateSSA, options, predicateResult)
+          .ok(),
+      "predicate SSA verifier");
 
   auto diamond = parse(kDiamond, context);
   options.functionName = "diamond";
@@ -1700,11 +1737,13 @@ void testPredicationLowering() {
       cgra::frontend::llvm_frontend::lowerInnermostLoop(*conditionalRecurrence, options);
   expect(conditionalRecurrenceResult.ok(),
          "canonical control-merge Select must provide a distance-one recurrence");
-  expect(std::ranges::any_of(conditionalRecurrenceResult.dfg->edges(), [&](const auto& edge) {
-           if (edge.kind() != cgra::ir::Edge::Kind::Data || edge.distance != 1)
-             return false;
-           return conditionalRecurrenceResult.dfg->node(edge.src).opcode == cgra::ir::Opcode::Select;
-         }),
+  expect(std::ranges::any_of(conditionalRecurrenceResult.dfg->edges(),
+                             [&](const auto& edge) {
+                               if (edge.kind() != cgra::ir::Edge::Kind::Data || edge.distance != 1)
+                                 return false;
+                               return conditionalRecurrenceResult.dfg->node(edge.src).opcode ==
+                                      cgra::ir::Opcode::Select;
+                             }),
          "conditional recurrence must use the merge Select as its distance-one producer");
   const auto conditionalRecurrenceVerification =
       cgra::frontend::llvm_frontend::verifyFrontendResult(*conditionalRecurrence, options,
@@ -1723,12 +1762,12 @@ void testPredicationLowering() {
   expect(sameAddressStoreResult.metadata &&
              sameAddressStoreResult.metadata->coalescedStorePairs == 1,
          "frontend metadata must disclose one coalesced Store pair");
-  expect(std::ranges::count_if(sameAddressStoreResult.dfg->nodes(), [](const auto& node) {
-           return node.opcode == cgra::ir::Opcode::Store;
-         }) == 1 &&
-             std::ranges::count_if(sameAddressStoreResult.dfg->nodes(), [](const auto& node) {
-               return node.opcode == cgra::ir::Opcode::Select;
-             }) == 1,
+  expect(std::ranges::count_if(
+             sameAddressStoreResult.dfg->nodes(),
+             [](const auto& node) { return node.opcode == cgra::ir::Opcode::Store; }) == 1 &&
+             std::ranges::count_if(
+                 sameAddressStoreResult.dfg->nodes(),
+                 [](const auto& node) { return node.opcode == cgra::ir::Opcode::Select; }) == 1,
          "coalescing must emit exactly one semantic Store fed by one Select");
   const auto sameAddressStoreVerification = cgra::frontend::llvm_frontend::verifyFrontendResult(
       *sameAddressStores, options, sameAddressStoreResult);
@@ -1913,10 +1952,10 @@ void testRecurrenceNegativeCorpus() {
     std::cerr << "float recurrence status=" << static_cast<int>(floatResult.status)
               << " message=" << floatResult.message << '\n';
   expect(floatResult.ok(), "scalar float recurrence must lower target-independently");
-  expect(cgra::frontend::llvm_frontend::verifyFrontendResult(*floatModule, floatOptions,
-                                                              floatResult)
-             .ok(),
-         "scalar float recurrence must pass independent verification");
+  expect(
+      cgra::frontend::llvm_frontend::verifyFrontendResult(*floatModule, floatOptions, floatResult)
+          .ok(),
+      "scalar float recurrence must pass independent verification");
   expectStatus(kVectorPhi, "vector_phi",
                cgra::frontend::llvm_frontend::LLVMFrontendStatus::UnsupportedRecurrenceType);
   expectStatus(kRawPhiLiveOut, "raw_phi_liveout",

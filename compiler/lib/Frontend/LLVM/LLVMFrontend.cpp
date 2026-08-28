@@ -149,11 +149,12 @@ void coalesceSameAddressStores(LoopSelection& selection, const BranchRegion& reg
   auto* trueStore = trueStores.front();
   auto* falseStore = falseStores.front();
   if (trueStore->isVolatile() || trueStore->isAtomic() || falseStore->isVolatile() ||
-      falseStore->isAtomic() || trueStore->getValueOperand()->getType() !=
-                                    falseStore->getValueOperand()->getType() ||
+      falseStore->isAtomic() ||
+      trueStore->getValueOperand()->getType() != falseStore->getValueOperand()->getType() ||
       !sameAddress(*trueStore->getPointerOperand(), *falseStore->getPointerOperand(), selection))
     return;
-  const auto unsafeSideEffect = [&](const llvm::BasicBlock& block, const llvm::StoreInst* accepted) {
+  const auto unsafeSideEffect = [&](const llvm::BasicBlock& block,
+                                    const llvm::StoreInst* accepted) {
     return std::ranges::any_of(block, [&](const llvm::Instruction& instruction) {
       return &instruction != accepted && !instruction.isTerminator() &&
              instruction.mayHaveSideEffects();
@@ -166,10 +167,9 @@ void coalesceSameAddressStores(LoopSelection& selection, const BranchRegion& reg
   auto insertion = region.mergeBlock->getFirstInsertionPt();
   if (insertion == region.mergeBlock->end())
     return;
-  auto* selected = llvm::SelectInst::Create(region.branch->getCondition(),
-                                            trueStore->getValueOperand(),
-                                            falseStore->getValueOperand(),
-                                            "cgra.store.value", &*insertion);
+  auto* selected =
+      llvm::SelectInst::Create(region.branch->getCondition(), trueStore->getValueOperand(),
+                               falseStore->getValueOperand(), "cgra.store.value", &*insertion);
   auto* mergedStore = new llvm::StoreInst(selected, trueStore->getPointerOperand(), &*insertion);
   mergedStore->setAlignment(std::min(trueStore->getAlign(), falseStore->getAlign()));
   trueStore->eraseFromParent();
@@ -237,6 +237,16 @@ std::optional<std::string> customOperationKey(const llvm::Instruction& instructi
   if (const auto* intrinsic = llvm::dyn_cast<llvm::IntrinsicInst>(&instruction);
       intrinsic && intrinsic->getIntrinsicID() == llvm::Intrinsic::fmuladd)
     return "FMA";
+  if ((instruction.getOpcode() == llvm::Instruction::And ||
+       instruction.getOpcode() == llvm::Instruction::Or ||
+       instruction.getOpcode() == llvm::Instruction::Xor) &&
+      instruction.getType()->isIntegerTy(1)) {
+    if (instruction.getOpcode() == llvm::Instruction::And)
+      return "PAND";
+    if (instruction.getOpcode() == llvm::Instruction::Or)
+      return "POR";
+    return "PXOR";
+  }
   switch (instruction.getOpcode()) {
   case llvm::Instruction::FAdd:
     return "FADD";
@@ -297,7 +307,17 @@ bool supportedDataInstruction(const llvm::Instruction& instruction) {
   return opcode(instruction).has_value() || customOperationKey(instruction).has_value();
 }
 
+bool supportedRecurrenceProducer(const llvm::Instruction& instruction) {
+  return supportedDataInstruction(instruction) ||
+         llvm::isa<llvm::LoadInst, llvm::SelectInst>(&instruction);
+}
+
 std::optional<ir::Opcode> opcode(const llvm::Instruction& instruction) {
+  if ((instruction.getOpcode() == llvm::Instruction::And ||
+       instruction.getOpcode() == llvm::Instruction::Or ||
+       instruction.getOpcode() == llvm::Instruction::Xor) &&
+      instruction.getType()->isIntegerTy(1))
+    return std::nullopt;
   switch (instruction.getOpcode()) {
   case llvm::Instruction::Add:
     return ir::Opcode::Add;
@@ -355,8 +375,7 @@ bool isMemoryInstruction(const llvm::Instruction& instruction) {
 
 bool isPureInstruction(const llvm::Instruction& instruction) {
   return opcode(instruction).has_value() || customOperationKey(instruction).has_value() ||
-         llvm::isa<llvm::ICmpInst>(instruction) ||
-         llvm::isa<llvm::SelectInst>(instruction);
+         llvm::isa<llvm::ICmpInst>(instruction) || llvm::isa<llvm::SelectInst>(instruction);
 }
 
 std::optional<ir::ICmpPredicate> icmpPredicate(const llvm::ICmpInst& instruction) {
@@ -511,18 +530,18 @@ bool canonicalizeLoopEntry(LoopSelection& selection, LLVMFrontendResult& error) 
       continue;
     for (auto* predecessor : llvm::predecessors(block)) {
       if (!selection.loop->contains(predecessor)) {
-        error = failure(
-            LLVMFrontendStatus::UnsupportedLoopShape,
-            LLVMFrontendDiagnosticCode::LLVM_FRONTEND_LINEAR_LOOP_NON_LINEAR_CFG,
-            "selected natural loop has an outside side entry that cannot be canonicalized",
-            &selection);
+        error =
+            failure(LLVMFrontendStatus::UnsupportedLoopShape,
+                    LLVMFrontendDiagnosticCode::LLVM_FRONTEND_LINEAR_LOOP_NON_LINEAR_CFG,
+                    "selected natural loop has an outside side entry that cannot be canonicalized",
+                    &selection);
         return false;
       }
     }
   }
 
   auto* preheader = llvm::InsertPreheaderForLoop(selection.loop, selection.dominatorTree.get(),
-                                                  selection.loopInfo.get(), nullptr, true);
+                                                 selection.loopInfo.get(), nullptr, true);
   if (!preheader) {
     error = failure(LLVMFrontendStatus::UnsupportedLoopShape,
                     LLVMFrontendDiagnosticCode::LLVM_FRONTEND_LINEAR_LOOP_NO_PREHEADER,
@@ -942,16 +961,16 @@ bool discoverIfRecurrences(IfLoweringState& state, const llvm::Module& module) {
     const auto* backedge = llvm::dyn_cast<llvm::Instruction>(
         phi->getIncomingValue(static_cast<unsigned>(backedgeIndex)));
     const auto* backedgePhi = llvm::dyn_cast_or_null<llvm::PHINode>(backedge);
-    const bool conditionalSelectBackedge =
-        backedgePhi && state.region.branch && backedgePhi->getParent() == state.region.mergeBlock &&
-        backedgePhi->getNumIncomingValues() == 2;
-    const bool pointerRecurrence = phi->getType()->isPointerTy() &&
-                                   llvm::isa_and_nonnull<llvm::GetElementPtrInst>(backedge);
+    const bool conditionalSelectBackedge = backedgePhi && state.region.branch &&
+                                           backedgePhi->getParent() == state.region.mergeBlock &&
+                                           backedgePhi->getNumIncomingValues() == 2;
+    const bool pointerRecurrence =
+        phi->getType()->isPointerTy() && llvm::isa_and_nonnull<llvm::GetElementPtrInst>(backedge);
     const bool conditionalPointerRecurrence =
         phi->getType()->isPointerTy() && conditionalSelectBackedge;
     if (!backedge || !state.selection.loop->contains(backedge) ||
         (!conditionalSelectBackedge && !pointerRecurrence &&
-         !supportedDataInstruction(*backedge)))
+         !supportedRecurrenceProducer(*backedge)))
       continue;
     bool dataUse = false;
     for (const auto* user : phi->users()) {
@@ -1005,7 +1024,7 @@ void promoteIfRecurrenceProducerClosure(IfLoweringState& state) {
       const auto* dependencyPhi = llvm::dyn_cast_or_null<llvm::PHINode>(dependency);
       const bool mergePhi = dependencyPhi && dependencyPhi->getParent() != state.selection.block;
       if (!dependency || !state.selection.loop->contains(dependency) ||
-          (!mergePhi && !supportedDataInstruction(*dependency)))
+          (!mergePhi && !supportedRecurrenceProducer(*dependency)))
         continue;
       work.push_back(dependency);
     }
@@ -1316,13 +1335,13 @@ LLVMFrontendResult lowerStructuredLoop(llvm::Module& module, const LLVMFrontendO
                        LLVMFrontendDiagnosticCode::LLVM_FRONTEND_UNSUPPORTED_CONTROL_MERGE,
                        "merge PHI must have exactly true and false incoming values", &selection,
                        phi);
-      const auto type = phi->getType()->isPointerTy() ? addressValueType(module, *phi)
-                                                      : valueType(*phi);
+      const auto type =
+          phi->getType()->isPointerTy() ? addressValueType(module, *phi) : valueType(*phi);
       if (!type)
         return failure(LLVMFrontendStatus::UnsupportedLLVMType,
                        LLVMFrontendDiagnosticCode::LLVM_FRONTEND_UNSUPPORTED_TYPE,
-                       "control merge PHI must have a supported scalar or address type",
-                       &selection, phi);
+                       "control merge PHI must have a supported scalar or address type", &selection,
+                       phi);
       const auto select =
           builder.addNode(ir::Opcode::Select, {ir::ValueType::predicate(), *type, *type}, *type);
       state.selects.emplace(phi, select);
@@ -1388,10 +1407,9 @@ LLVMFrontendResult lowerStructuredLoop(llvm::Module& module, const LLVMFrontendO
       if (const auto* gep = llvm::dyn_cast<llvm::GetElementPtrInst>(&instruction)) {
         if (const auto update = pointerRecurrenceUpdates.find(gep);
             update != pointerRecurrenceUpdates.end()) {
-          state.nodes.emplace(
-              gep, builder.addNode(ir::Opcode::Add,
-                                   {update->second.type, update->second.type},
-                                   update->second.type));
+          state.nodes.emplace(gep, builder.addNode(ir::Opcode::Add,
+                                                   {update->second.type, update->second.type},
+                                                   update->second.type));
           continue;
         }
         const auto access = std::ranges::find_if(
@@ -1411,30 +1429,28 @@ LLVMFrontendResult lowerStructuredLoop(llvm::Module& module, const LLVMFrontendO
                          "GEP pointer width is outside the Generic scalar address contract",
                          &selection, gep);
         addressNodes.type = *addressType;
-        addressNodes.address = builder.addNode(
-            ir::Opcode::Add, {*addressType, *addressType}, *addressType);
+        addressNodes.address =
+            builder.addNode(ir::Opcode::Add, {*addressType, *addressType}, *addressType);
         state.nodes.emplace(gep, addressNodes.address);
         for (std::size_t index = 0; index < access->dynamicTerms.size(); ++index) {
-          const auto term = builder.addNode(ir::Opcode::Mul, {*addressType, *addressType},
-                                            *addressType);
+          const auto term =
+              builder.addNode(ir::Opcode::Mul, {*addressType, *addressType}, *addressType);
           addressNodes.termNodes.push_back(term);
           state.syntheticAddressNodes.push_back({term, gep, "GEP_TERM_SCALE"});
         }
         const auto termSums = access->dynamicTerms.empty() ? 0 : access->dynamicTerms.size() - 1;
-        const auto sumCount = termSums +
-                              (!access->dynamicTerms.empty() &&
-                                       access->gepConstantOffsetWords != 0
-                                   ? 1
-                                   : 0);
+        const auto sumCount =
+            termSums +
+            (!access->dynamicTerms.empty() && access->gepConstantOffsetWords != 0 ? 1 : 0);
         addressNodes.hasConstantSum = sumCount > termSums;
         for (std::size_t index = 0; index < sumCount; ++index) {
-          const auto sum = builder.addNode(ir::Opcode::Add, {*addressType, *addressType},
-                                           *addressType);
+          const auto sum =
+              builder.addNode(ir::Opcode::Add, {*addressType, *addressType}, *addressType);
           addressNodes.sumNodes.push_back(sum);
           state.syntheticAddressNodes.push_back(
-              {sum, gep, addressNodes.hasConstantSum && index + 1 == sumCount
-                             ? "GEP_OFFSET"
-                             : "GEP_TERM_ADD"});
+              {sum, gep,
+               addressNodes.hasConstantSum && index + 1 == sumCount ? "GEP_OFFSET"
+                                                                    : "GEP_TERM_ADD"});
         }
         state.gepAddressNodes.emplace(gep, addressNodes);
         continue;
@@ -1451,13 +1467,11 @@ LLVMFrontendResult lowerStructuredLoop(llvm::Module& module, const LLVMFrontendO
         if (access == memoryAnalysis.accesses.end() || !loadType)
           return failure(LLVMFrontendStatus::UnsupportedMemoryType,
                          LLVMFrontendDiagnosticCode::LLVM_FRONTEND_UNSUPPORTED_MEMORY_TYPE,
-                         "Load type is outside the typed scalar memory contract", &selection,
-                         load);
+                         "Load type is outside the typed scalar memory contract", &selection, load);
         state.nodes.emplace(
-            load, builder.addNode(ir::Opcode::Load,
-                                  {*addressValueType(module, *load->getPointerOperand())}, *loadType,
-                                  std::nullopt,
-                                  ir::MemoryOpInfo{access->accessWidthBits, false}));
+            load, builder.addNode(
+                      ir::Opcode::Load, {*addressValueType(module, *load->getPointerOperand())},
+                      *loadType, std::nullopt, ir::MemoryOpInfo{access->accessWidthBits, false}));
         continue;
       }
       if (isMemoryInstruction(instruction)) {
@@ -1536,9 +1550,8 @@ LLVMFrontendResult lowerStructuredLoop(llvm::Module& module, const LLVMFrontendO
           operandTypes.push_back(*operandType);
         }
         state.nodes.emplace(
-            &instruction,
-            mapped ? builder.addNode(*mapped, std::move(operandTypes), *type)
-                   : builder.addCustomNode(*custom, std::move(operandTypes), *type));
+            &instruction, mapped ? builder.addNode(*mapped, std::move(operandTypes), *type)
+                                 : builder.addCustomNode(*custom, std::move(operandTypes), *type));
       }
     }
   }
@@ -1548,10 +1561,9 @@ LLVMFrontendResult lowerStructuredLoop(llvm::Module& module, const LLVMFrontendO
     if (const auto* phi = llvm::dyn_cast<llvm::PHINode>(&value)) {
       if (!selection.loop->contains(phi)) {
         const auto type = valueType(value);
-        if (!type || predicate)
+        if (!type)
           return std::nullopt;
-        builder.bindExternal(destination, operand,
-                             getIfExternal(state, builder, value, *type));
+        builder.bindExternal(destination, operand, getIfExternal(state, builder, value, *type));
         return std::nullopt;
       }
       const auto select = state.selects.find(phi);
@@ -1609,8 +1621,7 @@ LLVMFrontendResult lowerStructuredLoop(llvm::Module& module, const LLVMFrontendO
       if (!base || !base->getType()->isPointerTy())
         return std::nullopt;
       builder.bindExternal(destination, operand,
-                           getIfExternal(state, builder, *base,
-                                         *addressValueType(module, value)));
+                           getIfExternal(state, builder, *base, *addressValueType(module, value)));
       return std::nullopt;
     }
     const auto type = valueType(value);
@@ -1677,8 +1688,7 @@ LLVMFrontendResult lowerStructuredLoop(llvm::Module& module, const LLVMFrontendO
           provider(*access->addressRoot, addressNodes.address, 0, false);
         } else {
           builder.bindExternal(addressNodes.address, 0,
-                               getIfExternal(state, builder, *access->base,
-                                             addressNodes.type));
+                               getIfExternal(state, builder, *access->base, addressNodes.type));
         }
         if (access->dynamicTerms.empty()) {
           builder.bindConstant(addressNodes.address, 1,
@@ -1689,10 +1699,9 @@ LLVMFrontendResult lowerStructuredLoop(llvm::Module& module, const LLVMFrontendO
 
         for (std::size_t index = 0; index < access->dynamicTerms.size(); ++index) {
           provider(*access->dynamicTerms[index].value, addressNodes.termNodes[index], 0, false);
-          builder.bindConstant(
-              addressNodes.termNodes[index], 1,
-              getAddressConstant(state, builder, addressNodes.type,
-                                 access->dynamicTerms[index].scaleWords));
+          builder.bindConstant(addressNodes.termNodes[index], 1,
+                               getAddressConstant(state, builder, addressNodes.type,
+                                                  access->dynamicTerms[index].scaleWords));
         }
         ir::NodeId expression = addressNodes.termNodes.front();
         std::size_t sumIndex = 0;
@@ -1719,25 +1728,30 @@ LLVMFrontendResult lowerStructuredLoop(llvm::Module& module, const LLVMFrontendO
       }
       std::uint32_t operand = 0;
       for (const auto* value : semanticOperands(instruction)) {
-        bool predicateOperand = false;
-        if (llvm::isa<llvm::ICmpInst>(instruction))
-          predicateOperand = false;
-        else if (llvm::isa<llvm::SelectInst>(instruction))
-          predicateOperand = operand == 0;
         const auto* compare = llvm::dyn_cast<llvm::ICmpInst>(&instruction);
         const bool swapConditionOperands = compare && compare == state.region.condition &&
                                            storePredicateComplemented &&
                                            complementSwapsOperands(*icmpPredicate(*compare));
         const auto sourceOperand = swapConditionOperands ? 1U - operand : operand;
         const llvm::Value* sourceValue =
-            compare ? static_cast<const llvm::Value*>(compare->getOperand(sourceOperand))
-                    : value;
+            compare ? static_cast<const llvm::Value*>(compare->getOperand(sourceOperand)) : value;
+        bool predicateOperand = false;
+        if (llvm::isa<llvm::ICmpInst>(instruction))
+          predicateOperand = false;
+        else if (llvm::isa<llvm::SelectInst>(instruction))
+          predicateOperand = operand == 0;
+        else if (const auto operandType = valueType(*sourceValue);
+                 operandType && operandType->kind == ir::ValueKind::Predicate)
+          predicateOperand = true;
         const auto edge = provider(*sourceValue, destination->second, operand, predicateOperand);
-        if (predicateOperand && !edge)
+        const bool constantPredicate = predicateOperand && llvm::isa<llvm::Constant>(sourceValue) &&
+                                       constantBits(*sourceValue).has_value();
+        if (predicateOperand && !edge && !constantPredicate)
           return failure(LLVMFrontendStatus::UnsupportedBranchCondition,
                          LLVMFrontendDiagnosticCode::LLVM_FRONTEND_UNSUPPORTED_BRANCH_CONDITION,
-                         "predicate operand has no Generic predicate provider", &selection,
-                         &instruction);
+                         "predicate operand " + valueSummary(*sourceValue) +
+                             " has no Generic predicate provider",
+                         &selection, &instruction);
         if (predicateOperand && edge) {
           const auto* directSelect = llvm::dyn_cast<llvm::SelectInst>(&instruction);
           if (directSelect) {
@@ -1826,10 +1840,10 @@ LLVMFrontendResult lowerStructuredLoop(llvm::Module& module, const LLVMFrontendO
     state.provenance.memoryAccesses.push_back(
         {access.id, std::string(toString(access.kind)), valueSummary(*access.base),
          std::string(toString(access.addressMode)), access.invariantExpression,
-         access.constantOffsetBytes, access.iterationStrideBytes,
-         access.constantOffsetWords, access.iterationStrideWords, access.accessWidthBits,
-         memoryNode, addressNode == state.nodes.end() ? memoryNode : addressNode->second,
-         access.instruction, access.base});
+         access.constantOffsetBytes, access.iterationStrideBytes, access.constantOffsetWords,
+         access.iterationStrideWords, access.accessWidthBits, memoryNode,
+         addressNode == state.nodes.end() ? memoryNode : addressNode->second, access.instruction,
+         access.base});
   }
   for (const auto& dependence : memoryAnalysis.dependences) {
     const auto source =
@@ -1880,10 +1894,20 @@ LLVMFrontendResult lowerStructuredLoop(llvm::Module& module, const LLVMFrontendO
 
   auto dfg = builder.finish();
   const auto verification = ir::DFGVerifier::verify(dfg);
-  if (!verification.ok())
+  if (!verification.ok()) {
+    std::string detail = verification.format();
+    detail += "\nnode provenance:";
+    std::vector<std::pair<ir::NodeId, std::string>> nodeProvenance;
+    nodeProvenance.reserve(state.nodes.size());
+    for (const auto& [value, node] : state.nodes)
+      nodeProvenance.emplace_back(node, valueSummary(*value));
+    std::sort(nodeProvenance.begin(), nodeProvenance.end());
+    for (const auto& [node, value] : nodeProvenance)
+      detail += " n" + std::to_string(node) + "=" + value;
     return failure(LLVMFrontendStatus::InvalidGenericDFG,
-                   LLVMFrontendDiagnosticCode::LLVM_FRONTEND_DFG_VERIFY_FAILED,
-                   verification.format(), &selection);
+                   LLVMFrontendDiagnosticCode::LLVM_FRONTEND_DFG_VERIFY_FAILED, std::move(detail),
+                   &selection);
+  }
 
   LLVMFrontendResult result;
   result.status = LLVMFrontendStatus::Success;
@@ -2055,12 +2079,12 @@ LLVMFrontendResult lowerSelectedLoop(llvm::Module& module, const LLVMFrontendOpt
       }
       operandTypes.push_back(*operandType);
     }
-    const auto source = ir::SourceInfo{sourceLabel(*state.selection.function, *state.selection.block,
-                                                   instruction, instructionOrdinal)};
-    const auto id = mappedOpcode
-                        ? builder.addNode(*mappedOpcode, std::move(operandTypes), *resultType,
-                                          std::nullopt, std::nullopt, source)
-                        : builder.addCustomNode(*custom, std::move(operandTypes), *resultType, source);
+    const auto source = ir::SourceInfo{sourceLabel(
+        *state.selection.function, *state.selection.block, instruction, instructionOrdinal)};
+    const auto id =
+        mappedOpcode ? builder.addNode(*mappedOpcode, std::move(operandTypes), *resultType,
+                                       std::nullopt, std::nullopt, source)
+                     : builder.addCustomNode(*custom, std::move(operandTypes), *resultType, source);
     state.nodes.emplace(&instruction, id);
     ++instructionOrdinal;
   }
@@ -2136,8 +2160,7 @@ LLVMFrontendResult lowerSelectedLoop(llvm::Module& module, const LLVMFrontendOpt
       } else if (llvm::isa<llvm::Constant>(operand)) {
         return failure(LLVMFrontendStatus::UnsupportedInstruction,
                        LLVMFrontendDiagnosticCode::LLVM_FRONTEND_UNSUPPORTED_OPCODE,
-                       "constant operand kind is unsupported", &state.selection,
-                       &instruction);
+                       "constant operand kind is unsupported", &state.selection, &instruction);
       } else {
         const auto type = valueType(*operand);
         if (!type)
@@ -2464,14 +2487,15 @@ std::string LLVMFrontendResult::toJson() const {
             {"message", message},
             {"diagnostics", Json::array()}};
   if (metadata) {
-    root["metadata"] = {
-        {"function", metadata->functionName}, {"loop_header", metadata->loopHeader},
-        {"loop_depth", metadata->loopDepth},  {"loop_block_count", metadata->loopBlockCount},
-        {"loop_shape", metadata->loopShape},
-        {"loop_entry_canonicalized", metadata->loopEntryCanonicalized},
-        {"coalesced_store_pairs", metadata->coalescedStorePairs},
-        {"inlined_pure_helper_calls", metadata->inlinedPureHelperCalls},
-        {"requires_trip_count", metadata->requiresTripCount}};
+    root["metadata"] = {{"function", metadata->functionName},
+                        {"loop_header", metadata->loopHeader},
+                        {"loop_depth", metadata->loopDepth},
+                        {"loop_block_count", metadata->loopBlockCount},
+                        {"loop_shape", metadata->loopShape},
+                        {"loop_entry_canonicalized", metadata->loopEntryCanonicalized},
+                        {"coalesced_store_pairs", metadata->coalescedStorePairs},
+                        {"inlined_pure_helper_calls", metadata->inlinedPureHelperCalls},
+                        {"requires_trip_count", metadata->requiresTripCount}};
     if (metadata->staticTripCount)
       root["metadata"]["static_trip_count"] = *metadata->staticTripCount;
     else
@@ -2549,19 +2573,19 @@ std::string LLVMFrontendResult::toJson() const {
     root["provenance"]["if_conversions"].push_back(std::move(item));
   }
   for (const auto& access : provenance.memoryAccesses)
-    root["provenance"]["memory_accesses"].push_back({{"id", access.id},
-                                                     {"kind", access.kind},
-                                                     {"base", access.base},
-                                                     {"address_mode", access.addressMode},
-                                                     {"invariant_expression",
-                                                      access.invariantExpression},
-                                                     {"offset_bytes", access.offsetBytes},
-                                                     {"stride_bytes", access.strideBytes},
-                                                     {"offset_words", access.offsetWords},
-                                                     {"stride_words", access.strideWords},
-                                                     {"access_width_bits", access.accessWidthBits},
-                                                     {"memory_node", access.memoryNode},
-                                                     {"address_provider", access.addressProvider}});
+    root["provenance"]["memory_accesses"].push_back(
+        {{"id", access.id},
+         {"kind", access.kind},
+         {"base", access.base},
+         {"address_mode", access.addressMode},
+         {"invariant_expression", access.invariantExpression},
+         {"offset_bytes", access.offsetBytes},
+         {"stride_bytes", access.strideBytes},
+         {"offset_words", access.offsetWords},
+         {"stride_words", access.strideWords},
+         {"access_width_bits", access.accessWidthBits},
+         {"memory_node", access.memoryNode},
+         {"address_provider", access.addressProvider}});
   for (const auto& dependence : provenance.memoryDependences)
     root["provenance"]["memory_dependences"].push_back(
         {{"source_access", dependence.sourceAccess},

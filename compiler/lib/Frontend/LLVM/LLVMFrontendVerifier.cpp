@@ -71,7 +71,26 @@ bool ignored(const llvm::Instruction& instruction) {
   return false;
 }
 
+std::string valueSummary(const llvm::Value& value) {
+  if (value.hasName())
+    return "%" + value.getName().str();
+  if (const auto* constant = llvm::dyn_cast<llvm::Constant>(&value)) {
+    std::string text;
+    llvm::raw_string_ostream stream(text);
+    constant->print(stream);
+    return stream.str();
+  }
+  if (const auto* instruction = llvm::dyn_cast<llvm::Instruction>(&value))
+    return instruction->getOpcodeName();
+  return "external";
+}
+
 std::optional<ir::Opcode> opcode(const llvm::Instruction& instruction) {
+  if ((instruction.getOpcode() == llvm::Instruction::And ||
+       instruction.getOpcode() == llvm::Instruction::Or ||
+       instruction.getOpcode() == llvm::Instruction::Xor) &&
+      instruction.getType()->isIntegerTy(1))
+    return std::nullopt;
   switch (instruction.getOpcode()) {
   case llvm::Instruction::Add:
     return ir::Opcode::Add;
@@ -100,6 +119,16 @@ std::optional<std::string> verifiedCustomOperationKey(const llvm::Instruction& i
   if (const auto* intrinsic = llvm::dyn_cast<llvm::IntrinsicInst>(&instruction);
       intrinsic && intrinsic->getIntrinsicID() == llvm::Intrinsic::fmuladd)
     return "FMA";
+  if ((instruction.getOpcode() == llvm::Instruction::And ||
+       instruction.getOpcode() == llvm::Instruction::Or ||
+       instruction.getOpcode() == llvm::Instruction::Xor) &&
+      instruction.getType()->isIntegerTy(1)) {
+    if (instruction.getOpcode() == llvm::Instruction::And)
+      return "PAND";
+    if (instruction.getOpcode() == llvm::Instruction::Or)
+      return "POR";
+    return "PXOR";
+  }
   switch (instruction.getOpcode()) {
   case llvm::Instruction::FAdd:
     return "FADD";
@@ -352,9 +381,9 @@ void removeRecurrenceProducerClosure(const Selection& selection,
       const auto* backedge = llvm::dyn_cast<llvm::Instruction>(
           phi->getIncomingValue(static_cast<unsigned>(latchIndex)));
       const auto* backedgePhi = llvm::dyn_cast_or_null<llvm::PHINode>(backedge);
-      const bool conditionalSelectBackedge =
-          backedgePhi && backedgePhi->getParent() != selection.block &&
-          backedgePhi->getNumIncomingValues() == 2;
+      const bool conditionalSelectBackedge = backedgePhi &&
+                                             backedgePhi->getParent() != selection.block &&
+                                             backedgePhi->getNumIncomingValues() == 2;
       if (!backedge || !selection.loop->contains(backedge) ||
           (!conditionalSelectBackedge && !verifiedSupportedDataInstruction(*backedge)))
         continue;
@@ -499,8 +528,9 @@ bool providerMatches(const LLVMFrontendResult& result, const llvm::Value* value,
              boundaryMatches(result, *result.dfg, recurrence, *data->boundary);
     }
   }
-  if (const auto* edge =
-          findProviderEdge(*result.dfg, destination, operand, ir::Edge::Kind::Data)) {
+  const bool predicateValue = value->getType()->isIntegerTy(1);
+  const auto providerKind = predicateValue ? ir::Edge::Kind::Predicate : ir::Edge::Kind::Data;
+  if (const auto* edge = findProviderEdge(*result.dfg, destination, operand, providerKind)) {
     const auto* source = nodeProvenance(result, edge->src);
     if (source && source->instruction == value)
       return true;
@@ -519,8 +549,8 @@ bool providerMatches(const LLVMFrontendResult& result, const llvm::Value* value,
         return false;
       const auto id = reference->value;
       if (result.dfg->containsConstant(id) &&
-          result.dfg->constant(id).bits == *constantBits(*constant) &&
-          valueType(*constant) && result.dfg->constant(id).type == *valueType(*constant))
+          result.dfg->constant(id).bits == *constantBits(*constant) && valueType(*constant) &&
+          result.dfg->constant(id).type == *valueType(*constant))
         return true;
     }
   }
@@ -557,8 +587,7 @@ std::uint32_t verifiedCoalescibleStorePairs(const Selection& selection) {
   std::uint32_t count = 0;
   for (auto* block : selection.loop->getBlocks()) {
     const auto* branch = llvm::dyn_cast<llvm::BranchInst>(block->getTerminator());
-    if (!branch || !branch->isConditional() ||
-        !selection.loop->contains(branch->getSuccessor(0)) ||
+    if (!branch || !branch->isConditional() || !selection.loop->contains(branch->getSuccessor(0)) ||
         !selection.loop->contains(branch->getSuccessor(1)) || !branchMerge(*branch))
       continue;
     auto storesIn = [](llvm::BasicBlock& arm) {
@@ -574,12 +603,10 @@ std::uint32_t verifiedCoalescibleStorePairs(const Selection& selection) {
       continue;
     auto* trueStore = trueStores.front();
     auto* falseStore = falseStores.front();
-    const bool samePointer =
-        trueStore->getPointerOperand() == falseStore->getPointerOperand() ||
-        scalarEvolution.getSCEV(trueStore->getPointerOperand()) ==
-            scalarEvolution.getSCEV(falseStore->getPointerOperand());
-    const auto unsafeSideEffect = [](const llvm::BasicBlock& arm,
-                                     const llvm::StoreInst* accepted) {
+    const bool samePointer = trueStore->getPointerOperand() == falseStore->getPointerOperand() ||
+                             scalarEvolution.getSCEV(trueStore->getPointerOperand()) ==
+                                 scalarEvolution.getSCEV(falseStore->getPointerOperand());
+    const auto unsafeSideEffect = [](const llvm::BasicBlock& arm, const llvm::StoreInst* accepted) {
       return std::ranges::any_of(arm, [&](const llvm::Instruction& instruction) {
         return &instruction != accepted && !instruction.isTerminator() &&
                instruction.mayHaveSideEffects();
@@ -790,8 +817,7 @@ void verifyLinearRegionStructure(const Selection& selection, const LLVMFrontendR
 }
 
 void verifyIfDataflow(const llvm::Module& module, const Selection& selection,
-                      const LLVMFrontendResult& result,
-                      LLVMFrontendVerificationReport& report) {
+                      const LLVMFrontendResult& result, LLVMFrontendVerificationReport& report) {
   auto slice = controlSlice(selection);
   removeRecurrenceProducerClosure(selection, slice);
   std::unordered_set<const llvm::Instruction*> mappedInstructions;
@@ -895,8 +921,8 @@ void verifyIfDataflow(const llvm::Module& module, const Selection& selection,
                    "Generic Store is not covered by memory/predication provenance");
     } else if (llvm::isa<llvm::LoadInst>(instruction)) {
       const auto loadType = valueType(*instruction);
-      const auto accessWidth = static_cast<std::uint32_t>(
-          instruction->getType()->getPrimitiveSizeInBits());
+      const auto accessWidth =
+          static_cast<std::uint32_t>(instruction->getType()->getPrimitiveSizeInBits());
       if (!loadType || node.opcode != ir::Opcode::Load || node.resultType != *loadType ||
           !node.memoryInfo || node.memoryInfo->accessWidthBits != accessWidth ||
           !plannedMemoryNodes.contains(node.id))
@@ -921,7 +947,9 @@ void verifyIfDataflow(const llvm::Module& module, const Selection& selection,
         if (llvmOperand >= instruction->getNumOperands() ||
             !providerMatches(result, instruction->getOperand(llvmOperand), node.id, operand))
           report.add("LLVM_FRONTEND_EDGE_PROVENANCE_INVALID",
-                     "Generic operand provider does not match its LLVM SSA operand");
+                     "Generic operand provider does not match LLVM operand " +
+                         std::to_string(llvmOperand) + " of " + valueSummary(*instruction) +
+                         " (value " + valueSummary(*instruction->getOperand(llvmOperand)) + ")");
       }
     }
   }
@@ -1047,8 +1075,7 @@ void verifyIfDataflow(const llvm::Module& module, const Selection& selection,
             !boundaryMatches(result, *result.dfg, recurrence, *info->boundary))
           report.add("LLVM_FRONTEND_RECURRENCE_EDGE_VERIFY_FAILED",
                      "recurrence PHI data use is missing its Generic edge for " +
-                         instruction->getName().str() + " operand " +
-                         std::to_string(operand));
+                         instruction->getName().str() + " operand " + std::to_string(operand));
       }
     }
   }
@@ -1067,7 +1094,7 @@ void verifyIfDataflow(const llvm::Module& module, const Selection& selection,
     const bool supportedPointerBridge = provenance->value->getType()->isPointerTy();
     const auto expectedType = supportedPointerBridge
                                   ? verifiedPointerBridgeType(module, selection, *provenance->value)
-                                                     : valueType(*provenance->value);
+                                  : valueType(*provenance->value);
     bool referenced = false;
     for (const auto& binding : result.dfg->externalBindings())
       if (const auto* reference = std::get_if<ir::ExternalValueRef>(&binding.source))
@@ -1081,9 +1108,8 @@ void verifyIfDataflow(const llvm::Module& module, const Selection& selection,
           referenced |= reference->value == external.id;
     }
     if ((definingInstruction && selection.loop->contains(definingInstruction)) ||
-        constantBits(*provenance->value) || !expectedType ||
-        external.type != *expectedType || !referenced ||
-        !externalValues.insert(provenance->value).second)
+        constantBits(*provenance->value) || !expectedType || external.type != *expectedType ||
+        !referenced || !externalValues.insert(provenance->value).second)
       report.add("LLVM_FRONTEND_EXTERNAL_PROVENANCE_INVALID",
                  "ExternalValue provenance is not a unique loop-external scalar/base");
   }
@@ -1116,7 +1142,7 @@ void verifyIfDataflow(const llvm::Module& module, const Selection& selection,
     for (const auto& instruction : *block) {
       const auto* load = llvm::dyn_cast<llvm::LoadInst>(&instruction);
       const auto* store = llvm::dyn_cast<llvm::StoreInst>(&instruction);
-      const llvm::Value* cursor = load ? load->getPointerOperand()
+      const llvm::Value* cursor = load    ? load->getPointerOperand()
                                   : store ? store->getPointerOperand()
                                           : nullptr;
       while (const auto* gep = llvm::dyn_cast_or_null<llvm::GetElementPtrInst>(cursor)) {
@@ -1223,8 +1249,8 @@ struct VerifiedPointerRoot {
   std::int64_t stepBytes = 0;
 };
 
-std::optional<VerifiedCollectedAddress>
-verifiedCollectAddress(const llvm::Value& address, const llvm::DataLayout& dataLayout) {
+std::optional<VerifiedCollectedAddress> verifiedCollectAddress(const llvm::Value& address,
+                                                               const llvm::DataLayout& dataLayout) {
   std::vector<const llvm::GetElementPtrInst*> chain;
   const llvm::Value* cursor = &address;
   while (const auto* gep = llvm::dyn_cast<llvm::GetElementPtrInst>(cursor)) {
@@ -1256,9 +1282,9 @@ verifiedCollectAddress(const llvm::Value& address, const llvm::DataLayout& dataL
   return result;
 }
 
-std::optional<VerifiedPointerRoot>
-verifiedPointerRoot(const llvm::Value& root, const llvm::Loop& loop,
-                    const llvm::DataLayout& dataLayout) {
+std::optional<VerifiedPointerRoot> verifiedPointerRoot(const llvm::Value& root,
+                                                       const llvm::Loop& loop,
+                                                       const llvm::DataLayout& dataLayout) {
   const auto* phi = llvm::dyn_cast<llvm::PHINode>(&root);
   if (!phi) {
     const auto* base = llvm::getUnderlyingObject(&root);
@@ -1308,8 +1334,7 @@ verifiedPointerRoot(const llvm::Value& root, const llvm::Loop& loop,
       backedge->getPointerOperand()->stripPointerCasts() != phi)
     return std::nullopt;
   const auto update = verifiedCollectAddress(*backedge, dataLayout);
-  if (!update || update->base != phi || !update->terms.empty() ||
-      update->constantBytes == 0)
+  if (!update || update->base != phi || !update->terms.empty() || update->constantBytes == 0)
     return std::nullopt;
   return VerifiedPointerRoot{initialBase, phi, mergePhi, backedge, update->constantBytes};
 }
@@ -1423,18 +1448,16 @@ VerifiedMemoryExpectations recomputeMemoryExpectations(const Selection& selectio
 
       const auto* accessedType = load ? load->getType() : store->getValueOperand()->getType();
       const auto alignment = load ? load->getAlign().value() : store->getAlign().value();
-      const bool scalarMemoryType = accessedType->isIntegerTy() || accessedType->isFloatTy() ||
-                                    accessedType->isDoubleTy();
+      const bool scalarMemoryType =
+          accessedType->isIntegerTy() || accessedType->isFloatTy() || accessedType->isDoubleTy();
       const auto accessWidthBits =
-          scalarMemoryType
-              ? static_cast<std::uint32_t>(accessedType->getPrimitiveSizeInBits())
-              : 0U;
+          scalarMemoryType ? static_cast<std::uint32_t>(accessedType->getPrimitiveSizeInBits())
+                           : 0U;
       const auto naturalAlignmentBytes = accessWidthBits / 8;
       if (!scalarMemoryType ||
           (accessWidthBits != 8 && accessWidthBits != 16 && accessWidthBits != 32 &&
            accessWidthBits != 64) ||
-          alignment < naturalAlignmentBytes ||
-          (load && (load->isVolatile() || load->isAtomic())) ||
+          alignment < naturalAlignmentBytes || (load && (load->isVolatile() || load->isAtomic())) ||
           (store && (store->isVolatile() || store->isAtomic()))) {
         result.error = "LLVM memory access is outside the verified typed scalar subset";
         return result;
@@ -1594,10 +1617,10 @@ VerifiedMemoryExpectations recomputeMemoryExpectations(const Selection& selectio
         continue;
       }
 
-      const auto conservativeMode =
-          lhs->addressMode == LLVMAddressMode::Dynamic || rhs->addressMode == LLVMAddressMode::Dynamic
-              ? VerifiedMemoryDependenceMode::DynamicConservative
-              : VerifiedMemoryDependenceMode::Conservative;
+      const auto conservativeMode = lhs->addressMode == LLVMAddressMode::Dynamic ||
+                                            rhs->addressMode == LLVMAddressMode::Dynamic
+                                        ? VerifiedMemoryDependenceMode::DynamicConservative
+                                        : VerifiedMemoryDependenceMode::Conservative;
       addVerifiedDependence(result, seen, lhs->id, rhs->id, verifiedDependenceKind(*lhs, *rhs), 0,
                             conservativeMode);
       addVerifiedDependence(result, seen, rhs->id, lhs->id, verifiedDependenceKind(*rhs, *lhs), 1,
@@ -1977,8 +2000,7 @@ LLVMFrontendVerificationReport verifyFrontendResult(const llvm::Module& module,
   if (!originalSelection)
     return report;
   const bool originalNeedsCanonicalEntry = originalSelection->loop->getLoopPreheader() == nullptr;
-  if (!result.metadata ||
-      result.metadata->loopEntryCanonicalized != originalNeedsCanonicalEntry) {
+  if (!result.metadata || result.metadata->loopEntryCanonicalized != originalNeedsCanonicalEntry) {
     report.add("LLVM_FRONTEND_LOOP_ENTRY_VERIFY_FAILED",
                "loop-entry canonicalization metadata does not match the original LLVM CFG");
   }
@@ -1987,8 +2009,8 @@ LLVMFrontendVerificationReport verifyFrontendResult(const llvm::Module& module,
                "entry canonicalization did not retain the normalized LLVM module");
     return report;
   }
-  if (result.metadata && result.metadata->coalescedStorePairs !=
-                             verifiedCoalescibleStorePairs(*originalSelection)) {
+  if (result.metadata &&
+      result.metadata->coalescedStorePairs != verifiedCoalescibleStorePairs(*originalSelection)) {
     report.add("LLVM_FRONTEND_STORE_COALESCING_VERIFY_FAILED",
                "Store-coalescing metadata does not match independently reconstructed branch arms");
   }
@@ -2070,8 +2092,8 @@ LLVMFrontendVerificationReport verifyFrontendResult(const llvm::Module& module,
                  "recurrence edge must have distance one and a boundary");
       continue;
     }
-    const auto llvmOperand = correspondingLLVMOperand(
-        result, *destination->instruction, info.dstOperand);
+    const auto llvmOperand =
+        correspondingLLVMOperand(result, *destination->instruction, info.dstOperand);
     const auto* recurrence =
         llvmOperand < destination->instruction->getNumOperands()
             ? recurrenceForEdge(result, source->instruction,
@@ -2104,18 +2126,16 @@ LLVMFrontendVerificationReport verifyFrontendResult(const llvm::Module& module,
       const auto* source = nodeProvenance(result, edge.src);
       const auto* destination = nodeProvenance(result, edge.dst);
       const auto* data = std::get_if<ir::DataEdgeInfo>(&edge.info);
-      const auto llvmOperand = data && destination && destination->instruction
-                                   ? correspondingLLVMOperand(
-                                         result, *destination->instruction, data->dstOperand)
-                                   : 0U;
+      const auto llvmOperand =
+          data && destination && destination->instruction
+              ? correspondingLLVMOperand(result, *destination->instruction, data->dstOperand)
+              : 0U;
       if (edge.kind() != ir::Edge::Kind::Data || edge.distance != 1 ||
           edge.dst != use.destination || !source || !destination ||
-          source->instruction != recurrence.backedge ||
-          !data || data->dstOperand != use.operand || !destination->instruction ||
-          llvmOperand >= destination->instruction->getNumOperands() ||
+          source->instruction != recurrence.backedge || !data || data->dstOperand != use.operand ||
+          !destination->instruction || llvmOperand >= destination->instruction->getNumOperands() ||
           destination->instruction->getOperand(llvmOperand) != recurrence.phiValue ||
-          !data->boundary ||
-          !boundaryMatches(result, *result.dfg, recurrence, *data->boundary)) {
+          !data->boundary || !boundaryMatches(result, *result.dfg, recurrence, *data->boundary)) {
         report.add("LLVM_FRONTEND_RECURRENCE_EDGE_VERIFY_FAILED",
                    "recurrence descriptor edge identity is inconsistent");
       }
@@ -2150,8 +2170,7 @@ LLVMFrontendVerificationReport verifyFrontendResult(const llvm::Module& module,
       const auto* instruction = llvm::dyn_cast<llvm::Instruction>(user);
       if (!instruction || !selection->loop->contains(instruction) || slice.contains(instruction) ||
           instruction->isTerminator() || llvm::isa<llvm::ICmpInst>(instruction) ||
-          llvm::isa<llvm::PHINode>(instruction) ||
-          ignored(*instruction))
+          llvm::isa<llvm::PHINode>(instruction) || ignored(*instruction))
         continue;
       const LLVMFrontendNodeProvenance* destination = nullptr;
       bool found = false;
@@ -2186,8 +2205,8 @@ LLVMFrontendVerificationReport verifyFrontendResult(const llvm::Module& module,
           const auto& info = std::get<ir::DataEdgeInfo>(edge.info);
           const auto* source = nodeProvenance(result, edge.src);
           if (source && source->instruction == recurrence.backedge &&
-              info.dstOperand == *genericOperand &&
-              info.boundary && boundaryMatches(result, *result.dfg, recurrence, *info.boundary)) {
+              info.dstOperand == *genericOperand && info.boundary &&
+              boundaryMatches(result, *result.dfg, recurrence, *info.boundary)) {
             found = true;
             break;
           }

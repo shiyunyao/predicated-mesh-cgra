@@ -744,6 +744,19 @@
         "result_source": "fu_pred_result"
       }
     },
+    "PXOR": {
+      "execution_class": "FU",
+      "operands": [{"role": "predicate"}, {"role": "predicate"}],
+      "result": {"role": "predicate"},
+      "issue_occupancy": 1,
+      "result_latency": 1,
+      "producer_output_ready_offset": 0,
+      "encoding": {"domain": "op", "symbol": "PXOR"},
+      "lowering": {
+        "operand_sinks": ["fu_pred_0", "fu_pred_1"],
+        "result_source": "fu_pred_result"
+      }
+    },
     "LOAD": {
       "execution_class": "LSU",
       "operands": [
