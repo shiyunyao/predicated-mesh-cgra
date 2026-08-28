@@ -1,4 +1,4 @@
-{
+  {
   "cases": [
     {
       "compile_flags": [],
@@ -435,8 +435,10 @@
       "enabled": true,
       "exclusion": null,
       "function": null,
-      "id": "kernels/susan/susan.c::auto",
-      "include_dirs": [],
+    "id": "kernels/susan/susan.c::auto",
+    "include_dirs": [
+      "../../benchmarks/cgra-bench/shims/susan"
+    ],
       "kernel": "susan",
       "language": "c",
       "loop_header": null,
