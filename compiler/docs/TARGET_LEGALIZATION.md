@@ -58,7 +58,7 @@ at least one enabled LSU tile, as reported by `TargetModel`.
 The current `cgra.target.v3` file requires this complete `operations` section.
 The older `ops` and `latencies` sections remain only as explicitly marked
 `legacy_compatibility_view` data for control/RTL consumers; they are not used
-to construct compiler operation semantics. A v2 target without the complete
+to construct compiler operation semantics. A v3 target without the complete
 section is rejected rather than silently receiving compiler defaults.
 
 The current one-to-one operation selection is:
