@@ -5,6 +5,7 @@
 #include "cgra/IR/DFGSerialization.h"
 #include "cgra/IR/DFGVerifier.h"
 
+#include <llvm/ADT/MapVector.h>
 #include <llvm/Analysis/AssumptionCache.h>
 #include <llvm/Analysis/LoopInfo.h>
 #include <llvm/Analysis/PostDominators.h>
@@ -358,6 +359,8 @@ std::optional<std::string> customOperationKey(const llvm::Instruction& instructi
     return "FPTRUNC";
   case llvm::Instruction::FPExt:
     return "FPEXT";
+  case llvm::Instruction::PtrToInt:
+    return "PTRTOINT";
   default:
     return std::nullopt;
   }
@@ -1039,9 +1042,8 @@ bool discoverIfRecurrences(IfLoweringState& state, const llvm::Module& module) {
                                            backedgePhi->getParent() == state.region.mergeBlock &&
                                            backedgePhi->getNumIncomingValues() == 2;
     const bool pointerRecurrence =
-        phi->getType()->isPointerTy() && llvm::isa_and_nonnull<llvm::GetElementPtrInst>(backedge);
-    const bool conditionalPointerRecurrence =
-        phi->getType()->isPointerTy() && conditionalSelectBackedge;
+        phi->getType()->isPointerTy() &&
+        llvm::isa_and_nonnull<llvm::GetElementPtrInst, llvm::SelectInst, llvm::PHINode>(backedge);
     if (!backedge || !state.selection.loop->contains(backedge) ||
         (!conditionalSelectBackedge && !pointerRecurrence &&
          !supportedRecurrenceProducer(*backedge)))
@@ -1058,9 +1060,8 @@ bool discoverIfRecurrences(IfLoweringState& state, const llvm::Module& module) {
     }
     if (!dataUse)
       continue;
-    const auto type = pointerRecurrence || conditionalPointerRecurrence
-                          ? addressValueType(module, *phi)
-                          : valueType(*phi);
+    const auto type =
+        phi->getType()->isPointerTy() ? addressValueType(module, *phi) : valueType(*phi);
     if (!type)
       continue;
     LLVMRecurrenceProvenance descriptor;
@@ -1097,8 +1098,11 @@ void promoteIfRecurrenceProducerClosure(IfLoweringState& state) {
       const auto* dependency = llvm::dyn_cast<llvm::Instruction>(operand.get());
       const auto* dependencyPhi = llvm::dyn_cast_or_null<llvm::PHINode>(dependency);
       const bool mergePhi = dependencyPhi && dependencyPhi->getParent() != state.selection.block;
+      const bool pointerExpression =
+          dependency && dependency->getType()->isPointerTy() &&
+          llvm::isa<llvm::GetElementPtrInst, llvm::SelectInst, llvm::PHINode>(dependency);
       if (!dependency || !state.selection.loop->contains(dependency) ||
-          (!mergePhi && !supportedRecurrenceProducer(*dependency)))
+          (!mergePhi && !pointerExpression && !supportedRecurrenceProducer(*dependency)))
         continue;
       work.push_back(dependency);
     }
@@ -1289,6 +1293,23 @@ std::optional<ir::ValueType> addressValueType(const llvm::Module& module,
   return valueType(address);
 }
 
+std::optional<std::int64_t> constantGEPOffsetUnits(const llvm::Module& module,
+                                                   const llvm::GetElementPtrInst& gep) {
+  const auto& dataLayout = module.getDataLayout();
+  const auto bitWidth = dataLayout.getIndexTypeSizeInBits(gep.getType());
+  llvm::MapVector<llvm::Value*, llvm::APInt> offsets;
+  llvm::APInt constant(bitWidth, 0, true);
+  if (!gep.collectOffset(dataLayout, bitWidth, offsets, constant) || !offsets.empty() ||
+      constant.getMinSignedBits() > 64)
+    return std::nullopt;
+  const auto primitiveBits = gep.getResultElementType()->getPrimitiveSizeInBits();
+  const std::int64_t unitBytes = primitiveBits > 0 && primitiveBits < 32 ? 1 : 4;
+  const auto bytes = constant.getSExtValue();
+  if (bytes % unitBytes != 0)
+    return std::nullopt;
+  return bytes / unitBytes;
+}
+
 std::optional<ir::ValueType> pointerTokenType(const llvm::Module& module,
                                               const LoopSelection& selection,
                                               const llvm::Value& pointer) {
@@ -1469,8 +1490,7 @@ LLVMFrontendResult lowerStructuredLoop(llvm::Module& module, const LLVMFrontendO
     ir::ValueType type;
     std::int64_t step = 0;
   };
-  std::unordered_map<const llvm::GetElementPtrInst*, PointerRecurrenceUpdate>
-      pointerRecurrenceUpdates;
+  std::unordered_map<const llvm::GetElementPtrInst*, PointerRecurrenceUpdate> pointerGEPUpdates;
   for (const auto& access : memoryAnalysis.accesses) {
     const llvm::Value* cursor = access.address;
     while (const auto* gep = llvm::dyn_cast_or_null<llvm::GetElementPtrInst>(cursor)) {
@@ -1489,7 +1509,7 @@ LLVMFrontendResult lowerStructuredLoop(llvm::Module& module, const LLVMFrontendO
                        LLVMFrontendDiagnosticCode::LLVM_FRONTEND_UNSUPPORTED_POINTER_BASE,
                        "pointer recurrence width is outside the Generic address contract",
                        &selection, access.pointerPhi);
-      const auto [iterator, inserted] = pointerRecurrenceUpdates.emplace(
+      const auto [iterator, inserted] = pointerGEPUpdates.emplace(
           access.pointerBackedge, PointerRecurrenceUpdate{*type, access.pointerStepWords});
       if (!inserted &&
           (iterator->second.type != *type || iterator->second.step != access.pointerStepWords))
@@ -1500,6 +1520,27 @@ LLVMFrontendResult lowerStructuredLoop(llvm::Module& module, const LLVMFrontendO
     }
   }
 
+  for (auto* block : selection.loop->getBlocks()) {
+    for (const auto& instruction : *block) {
+      const auto* gep = llvm::dyn_cast<llvm::GetElementPtrInst>(&instruction);
+      if (!gep || addressChainGEPs.contains(gep) || pointerGEPUpdates.contains(gep))
+        continue;
+      const bool pointerDataUse = std::ranges::any_of(gep->users(), [](const auto* user) {
+        return llvm::isa<llvm::SelectInst, llvm::ICmpInst, llvm::PHINode, llvm::GetElementPtrInst>(
+            user);
+      });
+      if (!pointerDataUse)
+        continue;
+      const auto type = addressValueType(module, *gep);
+      const auto offset = constantGEPOffsetUnits(module, *gep);
+      if (!type || !offset)
+        return failure(LLVMFrontendStatus::UnsupportedNonAffineAddress,
+                       LLVMFrontendDiagnosticCode::LLVM_FRONTEND_UNSUPPORTED_NON_AFFINE_ADDRESS,
+                       "pointer SSA GEP requires one constant DataLayout offset", &selection, gep);
+      pointerGEPUpdates.emplace(gep, PointerRecurrenceUpdate{*type, *offset});
+    }
+  }
+
   for (auto* block : blocks) {
     for (const auto& instruction : *block) {
       if (shouldSkip(instruction))
@@ -1507,8 +1548,7 @@ LLVMFrontendResult lowerStructuredLoop(llvm::Module& module, const LLVMFrontendO
       if (llvm::isa<llvm::StoreInst>(instruction))
         continue;
       if (const auto* gep = llvm::dyn_cast<llvm::GetElementPtrInst>(&instruction)) {
-        if (const auto update = pointerRecurrenceUpdates.find(gep);
-            update != pointerRecurrenceUpdates.end()) {
+        if (const auto update = pointerGEPUpdates.find(gep); update != pointerGEPUpdates.end()) {
           state.nodes.emplace(gep, builder.addNode(ir::Opcode::Add,
                                                    {update->second.type, update->second.type},
                                                    update->second.type));
@@ -1589,16 +1629,18 @@ LLVMFrontendResult lowerStructuredLoop(llvm::Module& module, const LLVMFrontendO
                        LLVMFrontendDiagnosticCode::LLVM_FRONTEND_UNSUPPORTED_IF_SIDE_EFFECT,
                        "calls and side-effecting intrinsics are outside T017 V0", &selection,
                        &instruction);
+      const bool safeToSpeculate = llvm::isa<llvm::PtrToIntInst>(instruction) ||
+                                   llvm::isSafeToSpeculativelyExecute(&instruction);
       if (!isPureInstruction(instruction) ||
           (discoveredRegion && !state.predicateSlice.contains(&instruction) &&
-           valueIsInBranch(instruction, state.region, *selection.loop) &&
-           !llvm::isSafeToSpeculativelyExecute(&instruction))) {
+           valueIsInBranch(instruction, state.region, *selection.loop) && !safeToSpeculate)) {
         return failure(LLVMFrontendStatus::UnsafeSpeculation,
                        LLVMFrontendDiagnosticCode::LLVM_FRONTEND_UNSAFE_SPECULATION,
                        "branch-local instruction is not safe to speculate", &selection,
                        &instruction);
       }
-      const auto type = valueType(instruction);
+      const auto type = instruction.getType()->isPointerTy() ? addressValueType(module, instruction)
+                                                             : valueType(instruction);
       if (!type && !llvm::isa<llvm::ICmpInst>(instruction))
         return failure(LLVMFrontendStatus::UnsupportedLLVMType,
                        LLVMFrontendDiagnosticCode::LLVM_FRONTEND_UNSUPPORTED_TYPE,
@@ -1610,8 +1652,12 @@ LLVMFrontendResult lowerStructuredLoop(llvm::Module& module, const LLVMFrontendO
           return failure(LLVMFrontendStatus::UnsupportedBranchCondition,
                          LLVMFrontendDiagnosticCode::LLVM_FRONTEND_UNSUPPORTED_BRANCH_CONDITION,
                          "ICmp predicate is outside the Generic subset", &selection, compare);
-        const auto lhsType = valueType(*compare->getOperand(0));
-        const auto rhsType = valueType(*compare->getOperand(1));
+        const auto lhsType = compare->getOperand(0)->getType()->isPointerTy()
+                                 ? addressValueType(module, *compare->getOperand(0))
+                                 : valueType(*compare->getOperand(0));
+        const auto rhsType = compare->getOperand(1)->getType()->isPointerTy()
+                                 ? addressValueType(module, *compare->getOperand(1))
+                                 : valueType(*compare->getOperand(1));
         if (!lhsType || !rhsType || *lhsType != *rhsType ||
             lhsType->kind == ir::ValueKind::Predicate)
           return failure(LLVMFrontendStatus::UnsupportedLLVMType,
@@ -1625,9 +1671,13 @@ LLVMFrontendResult lowerStructuredLoop(llvm::Module& module, const LLVMFrontendO
                             builder.addNode(ir::Opcode::ICmp, {*lhsType, *rhsType},
                                             ir::ValueType::predicate(), normalizedPredicate));
       } else if (const auto* select = llvm::dyn_cast<llvm::SelectInst>(&instruction)) {
-        const auto selectedType = valueType(*select->getTrueValue());
-        if (!selectedType || !valueType(*select->getFalseValue()) ||
-            *selectedType != *valueType(*select->getFalseValue()))
+        const auto selectedType = select->getTrueValue()->getType()->isPointerTy()
+                                      ? addressValueType(module, *select->getTrueValue())
+                                      : valueType(*select->getTrueValue());
+        const auto falseType = select->getFalseValue()->getType()->isPointerTy()
+                                   ? addressValueType(module, *select->getFalseValue())
+                                   : valueType(*select->getFalseValue());
+        if (!selectedType || !falseType || *selectedType != *falseType)
           return failure(LLVMFrontendStatus::UnsupportedControlMerge,
                          LLVMFrontendDiagnosticCode::LLVM_FRONTEND_UNSUPPORTED_CONTROL_MERGE,
                          "LLVM Select true and false values must have the same supported type",
@@ -1645,7 +1695,9 @@ LLVMFrontendResult lowerStructuredLoop(llvm::Module& module, const LLVMFrontendO
                          "instruction is outside the T017 scalar subset", &selection, &instruction);
         std::vector<ir::ValueType> operandTypes;
         for (const auto* operand : semanticOperands(instruction)) {
-          const auto operandType = valueType(*operand);
+          const auto operandType = operand->getType()->isPointerTy()
+                                       ? addressValueType(module, *operand)
+                                       : valueType(*operand);
           if (!operandType)
             return failure(LLVMFrontendStatus::UnsupportedLLVMType,
                            LLVMFrontendDiagnosticCode::LLVM_FRONTEND_UNSUPPORTED_TYPE,
@@ -1721,11 +1773,11 @@ LLVMFrontendResult lowerStructuredLoop(llvm::Module& module, const LLVMFrontendO
       return std::nullopt;
     }
     if (value.getType()->isPointerTy()) {
-      const auto* base = llvm::getUnderlyingObject(&value);
-      if (!base || !base->getType()->isPointerTy())
+      if (const auto* instruction = llvm::dyn_cast<llvm::Instruction>(&value);
+          instruction && selection.loop->contains(instruction))
         return std::nullopt;
       builder.bindExternal(destination, operand,
-                           getIfExternal(state, builder, *base, *addressValueType(module, value)));
+                           getIfExternal(state, builder, value, *addressValueType(module, value)));
       return std::nullopt;
     }
     const auto type = valueType(value);
@@ -1769,8 +1821,7 @@ LLVMFrontendResult lowerStructuredLoop(llvm::Module& module, const LLVMFrontendO
       if (llvm::isa<llvm::StoreInst>(instruction))
         continue;
       if (const auto* gep = llvm::dyn_cast<llvm::GetElementPtrInst>(&instruction)) {
-        if (const auto update = pointerRecurrenceUpdates.find(gep);
-            update != pointerRecurrenceUpdates.end()) {
+        if (const auto update = pointerGEPUpdates.find(gep); update != pointerGEPUpdates.end()) {
           provider(*gep->getPointerOperand(), destination->second, 0, false);
           builder.bindConstant(
               destination->second, 1,
@@ -2055,10 +2106,14 @@ LLVMFrontendResult lowerStructuredLoop(llvm::Module& module, const LLVMFrontendO
     const auto* instruction = llvm::dyn_cast<llvm::Instruction>(value);
     if (!instruction)
       continue;
+    const auto opcodeName =
+        llvm::isa<llvm::GetElementPtrInst>(instruction) &&
+                pointerGEPUpdates.contains(llvm::cast<llvm::GetElementPtrInst>(instruction))
+            ? "POINTER_GEP_UPDATE"
+            : instruction->getOpcodeName();
     state.provenance.nodes.push_back({node, selection.function->getName().str(),
                                       blockName(*selection.function, instruction->getParent()),
-                                      ordinals.at(instruction), instruction->getOpcodeName(),
-                                      instruction});
+                                      ordinals.at(instruction), opcodeName, instruction});
   }
   for (const auto& synthetic : state.syntheticAddressNodes) {
     state.provenance.nodes.push_back({synthetic.node, selection.function->getName().str(),
@@ -2072,7 +2127,9 @@ LLVMFrontendResult lowerStructuredLoop(llvm::Module& module, const LLVMFrontendO
                                       ordinals.at(value), "PHI_SELECT", value});
   }
   for (const auto& [value, id] : state.externals) {
-    const auto type = valueType(*value).value_or(ir::ValueType::i32());
+    const auto type = value->getType()->isPointerTy()
+                          ? addressValueType(module, *value).value_or(ir::ValueType::i32())
+                          : valueType(*value).value_or(ir::ValueType::i32());
     state.provenance.externals.push_back(
         {id, value->hasName() ? value->getName().str() : "", type.toString(), value});
   }

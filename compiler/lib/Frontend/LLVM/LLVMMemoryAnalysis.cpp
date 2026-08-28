@@ -112,6 +112,64 @@ const llvm::Value* stripPointerCastsPreservingGEPs(const llvm::Value* value) {
   return value;
 }
 
+const llvm::PHINode* findPointerRecurrencePhi(const llvm::Value* value, const llvm::Loop& loop,
+                                              std::unordered_set<const llvm::Value*>& visited) {
+  value = stripPointerCastsPreservingGEPs(value);
+  if (!value || !visited.insert(value).second)
+    return nullptr;
+  if (const auto* phi = llvm::dyn_cast<llvm::PHINode>(value)) {
+    if (phi->getParent() == loop.getHeader() && phi->getType()->isPointerTy())
+      return phi;
+    const llvm::PHINode* result = nullptr;
+    for (const auto& incoming : phi->incoming_values()) {
+      const auto* candidate = findPointerRecurrencePhi(incoming.get(), loop, visited);
+      if (candidate && result && candidate != result)
+        return nullptr;
+      if (candidate)
+        result = candidate;
+    }
+    return result;
+  }
+  if (const auto* gep = llvm::dyn_cast<llvm::GetElementPtrInst>(value))
+    return findPointerRecurrencePhi(gep->getPointerOperand(), loop, visited);
+  if (const auto* select = llvm::dyn_cast<llvm::SelectInst>(value)) {
+    const auto* truePhi = findPointerRecurrencePhi(select->getTrueValue(), loop, visited);
+    const auto* falsePhi = findPointerRecurrencePhi(select->getFalseValue(), loop, visited);
+    return truePhi && falsePhi && truePhi != falsePhi ? nullptr : (truePhi ? truePhi : falsePhi);
+  }
+  return nullptr;
+}
+
+bool validPointerRecurrenceExpression(const llvm::Value* value, const llvm::PHINode* phi,
+                                      const llvm::Value* initialBase, const llvm::Loop& loop,
+                                      std::unordered_set<const llvm::Value*>& visited) {
+  value = stripPointerCastsPreservingGEPs(value);
+  if (!value)
+    return false;
+  if (value == phi || value == initialBase)
+    return true;
+  if (!visited.insert(value).second)
+    return true;
+  if (const auto* gep = llvm::dyn_cast<llvm::GetElementPtrInst>(value))
+    return loop.contains(gep) && validPointerRecurrenceExpression(gep->getPointerOperand(), phi,
+                                                                  initialBase, loop, visited);
+  if (const auto* select = llvm::dyn_cast<llvm::SelectInst>(value))
+    return loop.contains(select) &&
+           validPointerRecurrenceExpression(select->getTrueValue(), phi, initialBase, loop,
+                                            visited) &&
+           validPointerRecurrenceExpression(select->getFalseValue(), phi, initialBase, loop,
+                                            visited);
+  if (const auto* merge = llvm::dyn_cast<llvm::PHINode>(value)) {
+    if (!loop.contains(merge) || merge == phi)
+      return false;
+    for (const auto& incoming : merge->incoming_values())
+      if (!validPointerRecurrenceExpression(incoming.get(), phi, initialBase, loop, visited))
+        return false;
+    return true;
+  }
+  return false;
+}
+
 std::optional<CollectedAddress>
 collectAddress(const llvm::Value& address, const llvm::DataLayout& dataLayout, std::string& error) {
   std::vector<const llvm::GetElementPtrInst*> chain;
@@ -164,6 +222,12 @@ std::optional<PointerRoot> resolvePointerRoot(const llvm::Value& root, const llv
         load && loop.contains(load) && load->getType()->isPointerTy() && !load->isVolatile() &&
         !load->isAtomic())
       return PointerRoot{load, nullptr, nullptr, nullptr, 0, true};
+    if (const auto* instruction = llvm::dyn_cast<llvm::Instruction>(&root);
+        instruction && loop.contains(instruction) && root.getType()->isPointerTy()) {
+      std::unordered_set<const llvm::Value*> visited;
+      if (const auto* recurrence = findPointerRecurrencePhi(&root, loop, visited))
+        return resolvePointerRoot(*recurrence, loop, dataLayout, error);
+    }
     const auto* base = llvm::getUnderlyingObject(&root);
     if (!base || !base->getType()->isPointerTy() ||
         (llvm::isa<llvm::Instruction>(base) &&
@@ -219,6 +283,11 @@ std::optional<PointerRoot> resolvePointerRoot(const llvm::Value& root, const llv
       error = "conditional pointer recurrence must select the prior pointer or one GEP update";
       return std::nullopt;
     }
+  }
+  if (!mergePhi && !backedge) {
+    std::unordered_set<const llvm::Value*> visited;
+    if (validPointerRecurrenceExpression(latchValue, phi, initialBase, loop, visited))
+      return PointerRoot{initialBase, phi, nullptr, nullptr, 0, true};
   }
   if (!backedge || !loop.contains(backedge) ||
       backedge->getPointerOperand()->stripPointerCasts() != phi) {

@@ -395,6 +395,49 @@ exit:
 }
 )IR";
 
+const char* kPointerToInteger = R"IR(
+define i64 @pointer_to_integer(i8* %base) {
+entry:
+  br label %header
+header:
+  %iv = phi i32 [ 0, %entry ], [ %next, %latch ]
+  br label %body
+body:
+  %address = ptrtoint i8* %base to i64
+  br label %latch
+latch:
+  %next = add i32 %iv, 1
+  %more = icmp ult i32 %next, 2
+  br i1 %more, label %header, label %exit
+exit:
+  %result = phi i64 [ %address, %latch ]
+  ret i64 %result
+}
+)IR";
+
+const char* kPointerSelectRecurrence = R"IR(
+define i32 @pointer_select_recurrence(i32* %base, i32 %limit) {
+entry:
+  br label %header
+header:
+  %ptr = phi i32* [ %base, %entry ], [ %next, %latch ]
+  %iv = phi i32 [ 0, %entry ], [ %inc, %latch ]
+  br label %body
+body:
+  %candidate = getelementptr i32, i32* %ptr, i32 1
+  %take = icmp ult i32 %iv, %limit
+  %next = select i1 %take, i32* %candidate, i32* %ptr
+  %loaded = load i32, i32* %next
+  br label %latch
+latch:
+  %inc = add i32 %iv, 1
+  %more = icmp ult i32 %inc, 2
+  br i1 %more, label %header, label %exit
+exit:
+  ret i32 %loaded
+}
+)IR";
+
 const char* kPureHelper = R"IR(
 define internal i32 @absolute(i32 %x) {
 entry:
@@ -1442,6 +1485,49 @@ void testBoundaryRejections() {
   expect(
       cgra::frontend::llvm_frontend::verifyFrontendResult(*fmaModule, fmaOptions, fmaResult).ok(),
       "independent verifier must accept FMA intrinsic lowering");
+
+  llvm::LLVMContext pointerCastContext;
+  auto pointerCastModule = parse(kPointerToInteger, pointerCastContext);
+  cgra::frontend::llvm_frontend::LLVMFrontendOptions pointerCastOptions;
+  pointerCastOptions.functionName = "pointer_to_integer";
+  const auto pointerCastResult =
+      cgra::frontend::llvm_frontend::lowerInnermostLoop(*pointerCastModule, pointerCastOptions);
+  expect(pointerCastResult.ok(), "ptrtoint must lower as typed address dataflow");
+  const auto pointerCastNode = std::ranges::find_if(pointerCastResult.dfg->nodes(), [](auto node) {
+    return node.operationKey == std::optional<std::string>{"PTRTOINT"};
+  });
+  expect(pointerCastNode != pointerCastResult.dfg->nodes().end() &&
+             pointerCastNode->operandTypes.size() == 1 &&
+             pointerCastNode->operandTypes.front() == cgra::ir::ValueType::integer(64) &&
+             pointerCastNode->resultType == cgra::ir::ValueType::integer(64),
+         "PTRTOINT must preserve pointer-width input and integer result types");
+  expect(cgra::frontend::llvm_frontend::verifyFrontendResult(*pointerCastModule, pointerCastOptions,
+                                                             pointerCastResult)
+             .ok(),
+         "independent verifier must accept PTRTOINT lowering");
+
+  llvm::LLVMContext pointerSelectContext;
+  auto pointerSelectModule = parse(kPointerSelectRecurrence, pointerSelectContext);
+  cgra::frontend::llvm_frontend::LLVMFrontendOptions pointerSelectOptions;
+  pointerSelectOptions.functionName = "pointer_select_recurrence";
+  const auto pointerSelectResult =
+      cgra::frontend::llvm_frontend::lowerInnermostLoop(*pointerSelectModule, pointerSelectOptions);
+  expect(pointerSelectResult.ok(),
+         "pointer PHI with a pure GEP/select backedge must lower as dynamic address dataflow");
+  expect(
+      std::ranges::any_of(pointerSelectResult.dfg->nodes(),
+                          [](const auto& node) { return node.opcode == cgra::ir::Opcode::Select; }),
+      "pointer recurrence select must remain a Generic Select node");
+  expect(std::ranges::any_of(pointerSelectResult.provenance.recurrences,
+                             [](const auto& recurrence) {
+                               return recurrence.phi == "%ptr" &&
+                                      recurrence.backedgeValue == "%next";
+                             }),
+         "pointer recurrence descriptor must retain the select backedge provenance");
+  expect(cgra::frontend::llvm_frontend::verifyFrontendResult(
+             *pointerSelectModule, pointerSelectOptions, pointerSelectResult)
+             .ok(),
+         "pointer select recurrence must pass independent frontend verification");
 
   llvm::LLVMContext helperContext;
   auto helperModule = parse(kPureHelper, helperContext);

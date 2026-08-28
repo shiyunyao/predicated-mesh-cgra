@@ -1153,6 +1153,20 @@
       "result_latency": 1,
       "producer_output_ready_offset": 0
     },
+    "PTRTOINT": {
+      "execution_class": "FU",
+      "operands": [
+        {
+          "role": "data"
+        }
+      ],
+      "result": {
+        "role": "data"
+      },
+      "issue_occupancy": 1,
+      "result_latency": 1,
+      "producer_output_ready_offset": 0
+    },
     "LOAD8": {
       "execution_class": "LSU",
       "operands": [
@@ -1270,7 +1284,8 @@
       "FPTOSI",
       "FPTOUI",
       "FPTRUNC",
-      "FPEXT"
+      "FPEXT",
+      "PTRTOINT"
     ],
     "overrides": []
   },

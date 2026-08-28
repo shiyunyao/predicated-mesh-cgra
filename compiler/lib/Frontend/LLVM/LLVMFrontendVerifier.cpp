@@ -175,6 +175,8 @@ std::optional<std::string> verifiedCustomOperationKey(const llvm::Instruction& i
     return "FPTRUNC";
   case llvm::Instruction::FPExt:
     return "FPEXT";
+  case llvm::Instruction::PtrToInt:
+    return "PTRTOINT";
   default:
     return std::nullopt;
   }
@@ -882,6 +884,11 @@ void verifyLinearRegionStructure(const Selection& selection, const LLVMFrontendR
                "linear-loop metadata does not match the selected LLVM loop");
 }
 
+std::optional<std::int64_t> verifiedConstantGEPOffsetUnits(const llvm::Module& module,
+                                                           const llvm::GetElementPtrInst& gep);
+bool constantBindingMatches(const ir::DFG& dfg, ir::NodeId node, std::uint32_t operand,
+                            const ir::ValueType& type, std::int64_t expected);
+
 void verifyIfDataflow(const llvm::Module& module, const Selection& selection,
                       const LLVMFrontendResult& result, LLVMFrontendVerificationReport& report) {
   auto slice = controlSlice(selection);
@@ -1000,6 +1007,7 @@ void verifyIfDataflow(const llvm::Module& module, const Selection& selection,
         report.add("LLVM_FRONTEND_MEMORY_NODE_SEMANTICS_MISMATCH",
                    "Generic Load does not match its LLVM memory access");
     } else if (llvm::isa<llvm::GetElementPtrInst>(instruction)) {
+      const bool pointerUpdate = provenance->opcode == "POINTER_GEP_UPDATE";
       const auto expectedOpcode =
           provenance->opcode == "GEP_SCALE" || provenance->opcode == "GEP_TERM_SCALE"
               ? ir::Opcode::Mul
@@ -1008,6 +1016,15 @@ void verifyIfDataflow(const llvm::Module& module, const Selection& selection,
       if (!addressType || node.opcode != expectedOpcode || node.resultType != *addressType)
         report.add("LLVM_FRONTEND_ADDRESS_SEMANTICS_MISMATCH",
                    "LLVM GEP must lower using the DataLayout pointer-width address type");
+      if (pointerUpdate) {
+        const auto offset = verifiedConstantGEPOffsetUnits(
+            module, *llvm::cast<llvm::GetElementPtrInst>(instruction));
+        if (!offset || node.operandTypes.size() != 2 ||
+            !providerMatches(result, instruction->getOperand(0), node.id, 0) ||
+            !constantBindingMatches(*result.dfg, node.id, 1, *addressType, *offset))
+          report.add("LLVM_FRONTEND_ADDRESS_SEMANTICS_MISMATCH",
+                     "pointer SSA GEP Add does not preserve its LLVM base and offset");
+      }
     } else if (!llvm::isa<llvm::ICmpInst>(instruction)) {
       report.add("LLVM_FRONTEND_NODE_SEMANTICS_MISMATCH",
                  "Generic node provenance names an unsupported LLVM instruction");
@@ -1312,6 +1329,23 @@ struct VerifiedCollectedAddress {
   std::vector<std::pair<const llvm::Value*, std::int64_t>> terms;
 };
 
+std::optional<std::int64_t> verifiedConstantGEPOffsetUnits(const llvm::Module& module,
+                                                           const llvm::GetElementPtrInst& gep) {
+  const auto& dataLayout = module.getDataLayout();
+  const auto bitWidth = dataLayout.getIndexTypeSizeInBits(gep.getType());
+  llvm::MapVector<llvm::Value*, llvm::APInt> offsets;
+  llvm::APInt constant(bitWidth, 0, true);
+  if (!gep.collectOffset(dataLayout, bitWidth, offsets, constant) || !offsets.empty() ||
+      constant.getMinSignedBits() > 64)
+    return std::nullopt;
+  const auto primitiveBits = gep.getResultElementType()->getPrimitiveSizeInBits();
+  const std::int64_t unitBytes = primitiveBits > 0 && primitiveBits < 32 ? 1 : 4;
+  const auto bytes = constant.getSExtValue();
+  if (bytes % unitBytes != 0)
+    return std::nullopt;
+  return bytes / unitBytes;
+}
+
 struct VerifiedPointerRoot {
   const llvm::Value* base = nullptr;
   const llvm::PHINode* phi = nullptr;
@@ -1320,6 +1354,65 @@ struct VerifiedPointerRoot {
   std::int64_t stepBytes = 0;
   bool dynamic = false;
 };
+
+const llvm::PHINode*
+verifiedFindPointerRecurrencePhi(const llvm::Value* value, const llvm::Loop& loop,
+                                 std::unordered_set<const llvm::Value*>& visited) {
+  value = stripPointerCastsPreservingGEPs(value);
+  if (!value || !visited.insert(value).second)
+    return nullptr;
+  if (const auto* phi = llvm::dyn_cast<llvm::PHINode>(value)) {
+    if (phi->getParent() == loop.getHeader() && phi->getType()->isPointerTy())
+      return phi;
+    const llvm::PHINode* result = nullptr;
+    for (const auto& incoming : phi->incoming_values()) {
+      const auto* candidate = verifiedFindPointerRecurrencePhi(incoming.get(), loop, visited);
+      if (candidate && result && candidate != result)
+        return nullptr;
+      if (candidate)
+        result = candidate;
+    }
+    return result;
+  }
+  if (const auto* gep = llvm::dyn_cast<llvm::GetElementPtrInst>(value))
+    return verifiedFindPointerRecurrencePhi(gep->getPointerOperand(), loop, visited);
+  if (const auto* select = llvm::dyn_cast<llvm::SelectInst>(value)) {
+    const auto* truePhi = verifiedFindPointerRecurrencePhi(select->getTrueValue(), loop, visited);
+    const auto* falsePhi = verifiedFindPointerRecurrencePhi(select->getFalseValue(), loop, visited);
+    return truePhi && falsePhi && truePhi != falsePhi ? nullptr : (truePhi ? truePhi : falsePhi);
+  }
+  return nullptr;
+}
+
+bool verifiedPointerRecurrenceExpression(const llvm::Value* value, const llvm::PHINode* phi,
+                                         const llvm::Value* initialBase, const llvm::Loop& loop,
+                                         std::unordered_set<const llvm::Value*>& visited) {
+  value = stripPointerCastsPreservingGEPs(value);
+  if (!value)
+    return false;
+  if (value == phi || value == initialBase)
+    return true;
+  if (!visited.insert(value).second)
+    return true;
+  if (const auto* gep = llvm::dyn_cast<llvm::GetElementPtrInst>(value))
+    return loop.contains(gep) && verifiedPointerRecurrenceExpression(gep->getPointerOperand(), phi,
+                                                                     initialBase, loop, visited);
+  if (const auto* select = llvm::dyn_cast<llvm::SelectInst>(value))
+    return loop.contains(select) &&
+           verifiedPointerRecurrenceExpression(select->getTrueValue(), phi, initialBase, loop,
+                                               visited) &&
+           verifiedPointerRecurrenceExpression(select->getFalseValue(), phi, initialBase, loop,
+                                               visited);
+  if (const auto* merge = llvm::dyn_cast<llvm::PHINode>(value)) {
+    if (!loop.contains(merge) || merge == phi)
+      return false;
+    for (const auto& incoming : merge->incoming_values())
+      if (!verifiedPointerRecurrenceExpression(incoming.get(), phi, initialBase, loop, visited))
+        return false;
+    return true;
+  }
+  return false;
+}
 
 std::optional<VerifiedCollectedAddress> verifiedCollectAddress(const llvm::Value& address,
                                                                const llvm::DataLayout& dataLayout) {
@@ -1363,6 +1456,12 @@ std::optional<VerifiedPointerRoot> verifiedPointerRoot(const llvm::Value& root,
         load && loop.contains(load) && load->getType()->isPointerTy() && !load->isVolatile() &&
         !load->isAtomic())
       return VerifiedPointerRoot{load, nullptr, nullptr, nullptr, 0, true};
+    if (const auto* instruction = llvm::dyn_cast<llvm::Instruction>(&root);
+        instruction && loop.contains(instruction) && root.getType()->isPointerTy()) {
+      std::unordered_set<const llvm::Value*> visited;
+      if (const auto* recurrence = verifiedFindPointerRecurrencePhi(&root, loop, visited))
+        return verifiedPointerRoot(*recurrence, loop, dataLayout);
+    }
     const auto* base = llvm::getUnderlyingObject(&root);
     if (!base || !base->getType()->isPointerTy() ||
         (llvm::isa<llvm::Instruction>(base) &&
@@ -1402,6 +1501,11 @@ std::optional<VerifiedPointerRoot> verifiedPointerRoot(const llvm::Value& root,
       }
       return std::nullopt;
     }
+  }
+  if (!mergePhi && !backedge) {
+    std::unordered_set<const llvm::Value*> visited;
+    if (verifiedPointerRecurrenceExpression(latchValue, phi, initialBase, loop, visited))
+      return VerifiedPointerRoot{initialBase, phi, nullptr, nullptr, 0, true};
   }
   if (!initialBase || initialBase != initial || !initialBase->getType()->isPointerTy() ||
       (llvm::isa<llvm::Instruction>(initialBase) &&
