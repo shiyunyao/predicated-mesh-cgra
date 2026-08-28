@@ -194,6 +194,7 @@
       "CMP_NE": 1,
       "CMP_ULT": 1,
       "CMP_ULE": 1,
+      "CMP_UGE": 1,
       "PPASS": 1,
       "PNOT": 1,
       "PAND": 1,
@@ -220,7 +221,8 @@
       "CMP_EQ",
       "CMP_NE",
       "CMP_ULT",
-      "CMP_ULE"
+      "CMP_ULE",
+      "CMP_UGE"
     ],
     "predicate": [
       "PPASS",
@@ -647,6 +649,17 @@
         ],
         "result_source": "fu_pred_result"
       }
+    },
+    "CMP_UGE": {
+      "execution_class": "FU",
+      "operands": [
+        {"role": "data"},
+        {"role": "data"}
+      ],
+      "result": {"role": "predicate"},
+      "issue_occupancy": 1,
+      "result_latency": 1,
+      "producer_output_ready_offset": 0
     },
     "CMP_SLT": {
       "execution_class": "FU",
@@ -1291,6 +1304,7 @@
       "CMP_NE",
       "CMP_ULT",
       "CMP_ULE",
+      "CMP_UGE",
       "CMP_SLT",
       "CMP_SLE",
       "CMP_SGT",
@@ -1402,6 +1416,7 @@
       "CMP_NE": 17,
       "CMP_ULT": 18,
       "CMP_ULE": 19,
+      "CMP_UGE": 20,
       "PPASS": 32,
       "PNOT": 33,
       "PAND": 34,
