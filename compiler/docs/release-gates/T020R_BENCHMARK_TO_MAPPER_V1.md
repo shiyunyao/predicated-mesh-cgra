@@ -47,7 +47,7 @@ The latest local research run used the pinned corpus and the `research64`
 profile on the native host. It accounted for 15 kernel directories, 34 source
 units, and 128 discovered loops; 134 terminal results were emitted with
 `UNKNOWN=0`, `TIMEOUT=0`, and reconciled source/loop accounting. The run
-reached 58 loops at the real Mapper call and produced 56 verified modulo
+reached 57 loops at the real Mapper call and produced 55 verified modulo
 mappings across 14 kernel directories. All seven required integer families
 (FIR-int, ReLU-int, GEMM-int, BiCG-int, FFT-int, DTW, and SpMV) produced a
 verified mapping. Two Susan loops have an analyzer MII above the bounded
@@ -56,7 +56,7 @@ larger budget.
 
 This native run is development evidence only. It is not the T020R release
 baseline: the required hosted audit must use the fixed `-m32` toolchain and
-the audited 101-loop denominator. The current local 58/60 Mapper-entry
+the audited 101-loop denominator. The current local 57/60 Mapper-entry
 result therefore remains an open integration gate until hosted evidence is
 available.
 
