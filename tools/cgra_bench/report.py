@@ -104,12 +104,16 @@ def _computational_family_gate(
         raise ValueError("computational family manifest must contain families")
     enforced = corpus.get("denominator", {}).get("scope") != "smoke subset"
     details = []
+    family_ids: set[str] = set()
     for family in families:
         family_id = family.get("id")
         source_glob = family.get("source_glob")
         function_glob = family.get("function_glob", "*")
         if not isinstance(family_id, str) or not isinstance(source_glob, str):
             raise ValueError("computational family needs string id and source_glob")
+        if family_id in family_ids:
+            raise ValueError(f"duplicate computational family id: {family_id}")
+        family_ids.add(family_id)
         minimum_tier = family.get("minimum_tier", "MAPPED")
         required_level = TIERS.get(minimum_tier)
         if required_level is None:
@@ -120,10 +124,13 @@ def _computational_family_gate(
             and fnmatch.fnmatchcase(str(item.get("source", "")), source_glob)
             and fnmatch.fnmatchcase(str(item.get("function", "")), function_glob)
         ]
-        mapped = [item for item in candidates if _mapping_verified(item)]
         tiered = [
             item for item in candidates
             if TIERS.get(item.get("tier", "DISCOVERED"), 0) >= required_level
+        ]
+        mapped = [
+            item for item in tiered
+            if _mapping_verified(item)
         ]
         details.append({
             "id": family_id,

@@ -473,6 +473,14 @@ def test_report_enforces_computational_family_mapping_gate(tmp_path: Path) -> No
     ], family_manifest)
     assert summary["computational_family_gate"]["pass"] is False
 
+    malformed = dict(base)
+    malformed["tier"] = "TARGET_LEGAL"
+    summary = report(tmp_path, corpus, [
+        {**malformed, "id": "fir", "kernel": "fir", "source": "kernels/fir/fir_int.cpp", "function": "kernel"},
+        {**base, "id": "relu", "kernel": "relu", "source": "kernels/relu/relu_int.cpp", "function": "kernel"},
+    ], family_manifest)
+    assert summary["computational_family_gate"]["pass"] is False
+
 
 def test_failure_evidence_contains_metrics_reproducer_and_stage_hashes(tmp_path: Path) -> None:
     out = tmp_path / "run"
