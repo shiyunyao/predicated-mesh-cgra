@@ -91,7 +91,10 @@ jobs:
             .t020r_mapping_research.mapper_entered >= 60 and
             .t020r_mapping_research.modulo_mapping_verified >= 20 and
             .t020r_mapping_research.mapper_entered_kernel_directories >= 12 and
-            .t020r_mapping_research.pass == true
+            .t020r_mapping_research.pass == true and
+            .computational_family_gate.enforced == true and
+            .computational_family_gate.required_family_count == 7 and
+            .computational_family_gate.pass == true
           ' "$summary" >/dev/null
       - name: Upload mapping-research audit
         if: always()

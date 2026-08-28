@@ -437,6 +437,43 @@ def test_report_separates_mapping_success_from_physical_failure(tmp_path: Path) 
     assert research["hardware_executable"] == 0
 
 
+def test_report_enforces_computational_family_mapping_gate(tmp_path: Path) -> None:
+    corpus = {
+        "denominator": {"kernel_directories": 2, "source_translation_units": 2},
+        "sources": [
+            {"path": "kernels/fir/fir_int.cpp", "enabled": True},
+            {"path": "kernels/relu/relu_int.cpp", "enabled": True},
+        ],
+    }
+    family_manifest = {
+        "schema": "cgra.cgra_bench.computational_families.v1",
+        "families": [
+            {"id": "FIR-int", "source_glob": "kernels/fir/fir_int.cpp", "function_glob": "kernel"},
+            {"id": "ReLU-int", "source_glob": "kernels/relu/relu_int.cpp", "function_glob": "kernel"},
+        ],
+    }
+    base = {
+        "tier": "MAPPED", "status": "PASS", "loop_header": "loop",
+        "category": "MAPPING", "owner": "MAPPER", "diagnostic_code": "MODULO_MAPPING_VERIFIED",
+        "backend": {"mapping_status": "success", "stats": {"mapper_invoked": True}},
+    }
+    summary = report(tmp_path, corpus, [
+        {**base, "id": "fir", "kernel": "fir", "source": "kernels/fir/fir_int.cpp", "function": "kernel"},
+        {**base, "id": "relu", "kernel": "relu", "source": "kernels/relu/relu_int.cpp", "function": "kernel"},
+    ], family_manifest)
+    gate = summary["computational_family_gate"]
+    assert gate["mapped_family_count"] == 2
+    assert gate["pass"]
+
+    failed = dict(base)
+    failed["backend"] = {"mapping_status": "not_available", "stats": {"mapper_invoked": False}}
+    summary = report(tmp_path, corpus, [
+        {**failed, "id": "fir", "kernel": "fir", "source": "kernels/fir/fir_int.cpp", "function": "kernel"},
+        {**base, "id": "relu", "kernel": "relu", "source": "kernels/relu/relu_int.cpp", "function": "kernel"},
+    ], family_manifest)
+    assert summary["computational_family_gate"]["pass"] is False
+
+
 def test_failure_evidence_contains_metrics_reproducer_and_stage_hashes(tmp_path: Path) -> None:
     out = tmp_path / "run"
     artifact = out / "cases" / "case"

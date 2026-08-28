@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import fnmatch
 import json
 import pathlib
 from collections import Counter, defaultdict
@@ -17,6 +18,7 @@ except ImportError:  # pragma: no cover - direct script execution
 
 
 TIERS = {"DISCOVERED": 0, "LLVM_BUILT": 1, "FRONTEND_DFG": 2, "TARGET_LEGAL": 3, "MAPPED": 4, "RF_COMPLETE": 5, "MANIFEST_COMPLETE": 6, "FUNCTIONAL_RTL_VALIDATED": 7}
+COMPUTATIONAL_FAMILY_SCHEMA = "cgra.cgra_bench.computational_families.v1"
 
 
 def target_contract_summary(operation_key: str, target_operations: dict[str, Any], opcode: str | None = None) -> str:
@@ -61,7 +63,92 @@ def _operation_histogram(item: dict[str, Any], out: pathlib.Path) -> dict[str, i
     }
 
 
-def report(out: pathlib.Path, corpus: dict[str, Any], results: list[dict[str, Any]]) -> dict[str, Any]:
+def _find_family_manifest(out: pathlib.Path) -> pathlib.Path | None:
+    """Find the repository audit contract without hard-coding the checkout."""
+    for parent in (out, *out.parents):
+        candidate = parent / "benchmarks/cgra-bench/computational_families.v1.json"
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _mapping_verified(item: dict[str, Any]) -> bool:
+    backend = item.get("backend")
+    if not isinstance(backend, dict):
+        return item.get("diagnostic_code") == "MODULO_MAPPING_VERIFIED"
+    return backend.get("mapping_status") == "success"
+
+
+def _computational_family_gate(
+    out: pathlib.Path, corpus: dict[str, Any], results: list[dict[str, Any]],
+    family_manifest: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Evaluate integration families from audit metadata, never compiler code."""
+    manifest_path = _find_family_manifest(out)
+    if family_manifest is None and manifest_path is not None:
+        family_manifest = read_json(manifest_path)
+    if family_manifest is None:
+        return {
+            "schema": COMPUTATIONAL_FAMILY_SCHEMA,
+            "configured": False,
+            "enforced": False,
+            "required_family_count": 0,
+            "mapped_family_count": 0,
+            "families": [],
+            "pass": True,
+        }
+    if family_manifest.get("schema") != COMPUTATIONAL_FAMILY_SCHEMA:
+        raise ValueError("computational family manifest schema mismatch")
+    families = family_manifest.get("families")
+    if not isinstance(families, list) or not families:
+        raise ValueError("computational family manifest must contain families")
+    enforced = corpus.get("denominator", {}).get("scope") != "smoke subset"
+    details = []
+    for family in families:
+        family_id = family.get("id")
+        source_glob = family.get("source_glob")
+        function_glob = family.get("function_glob", "*")
+        if not isinstance(family_id, str) or not isinstance(source_glob, str):
+            raise ValueError("computational family needs string id and source_glob")
+        minimum_tier = family.get("minimum_tier", "MAPPED")
+        required_level = TIERS.get(minimum_tier)
+        if required_level is None:
+            raise ValueError(f"unknown computational family tier: {minimum_tier}")
+        candidates = [
+            item for item in results
+            if item.get("loop_header") is not None
+            and fnmatch.fnmatchcase(str(item.get("source", "")), source_glob)
+            and fnmatch.fnmatchcase(str(item.get("function", "")), function_glob)
+        ]
+        mapped = [item for item in candidates if _mapping_verified(item)]
+        tiered = [
+            item for item in candidates
+            if TIERS.get(item.get("tier", "DISCOVERED"), 0) >= required_level
+        ]
+        details.append({
+            "id": family_id,
+            "source_glob": source_glob,
+            "function_glob": function_glob,
+            "minimum_tier": minimum_tier,
+            "candidate_count": len(candidates),
+            "minimum_tier_count": len(tiered),
+            "mapped_count": len(mapped),
+            "mapped_case_ids": [item["id"] for item in mapped],
+            "pass": bool(mapped),
+        })
+    mapped_count = sum(item["pass"] for item in details)
+    return {
+        "schema": COMPUTATIONAL_FAMILY_SCHEMA,
+        "configured": True,
+        "enforced": enforced,
+        "required_family_count": len(details),
+        "mapped_family_count": mapped_count,
+        "families": details,
+        "pass": not enforced or mapped_count == len(details),
+    }
+
+
+def report(out: pathlib.Path, corpus: dict[str, Any], results: list[dict[str, Any]], family_manifest: dict[str, Any] | None = None) -> dict[str, Any]:
     terminal = Counter(item.get("category", "INTERNAL") for item in results)
     tiers = Counter(item.get("tier", "DISCOVERED") for item in results)
     first_blockers = Counter(
@@ -194,6 +281,7 @@ def report(out: pathlib.Path, corpus: dict[str, Any], results: list[dict[str, An
         physical_statuses[status] += 1
         if physical.get("reason_code"):
             physical_reasons[physical["reason_code"]] += 1
+    computational_family_gate = _computational_family_gate(out, corpus, results, family_manifest)
     summary = {
         "schema": "cgra.cgra_bench.summary.v1",
         "denominator": {
@@ -278,6 +366,7 @@ def report(out: pathlib.Path, corpus: dict[str, Any], results: list[dict[str, An
             "pass": mapper_entered >= 60 and mapping_statuses.get("success", 0) >= 20 and
                     mapper_entered_kernel_directories >= 12,
         },
+        "computational_family_gate": computational_family_gate,
         "backend_metrics": {
             "cases_with_stats": len(backend_stats),
             "mii": [stats.get("mii") for stats in backend_stats if stats.get("mii") is not None],
@@ -322,7 +411,7 @@ def report(out: pathlib.Path, corpus: dict[str, Any], results: list[dict[str, An
         writer = csv.writer(stream)
         writer.writerow(["metric", "value"])
         writer.writerows([("candidate_loops", candidate_loop_count), ("terminal_results", len(results)), *sorted(tiers.items()), *sorted(terminal.items())])
-    lines = ["# CGRA-Bench Audit Summary", "", f"- Source units represented: {source_count}/{len(expected_sources)}", f"- Candidate loops represented: {len(represented_loops)}/{candidate_loop_count}", f"- Terminal results: {len(results)}", f"- UNKNOWN/unclassified: {summary['unknown_count']}", f"- Timeouts: {summary['timeout_count']}", f"- Reconciliation: {'PASS' if summary['reconciliation']['ok'] else 'FAIL'}", f"- Linear multi-block: candidates={summary['linear_multiblock']['candidate_count']}, frontend={summary['linear_multiblock']['frontend_dfg_count']}, mapped={summary['linear_multiblock']['mapped_count']}, shape-rejected={summary['linear_multiblock']['shape_rejection_count']}", f"- T020 outcome: frontend={frontend_dfg_or_higher}/10, mapped={mapped_or_higher}/8, mapped kernels={mapped_kernel_directories}/5 ({'PASS' if summary['t020_outcome']['pass'] else 'FAIL'})", f"- T020R research outcome: mapper entered={mapper_entered}/60, modulo mapped={mapping_statuses.get('success', 0)}/20, mapper-entered kernels={mapper_entered_kernel_directories}/12 ({'PASS' if summary['t020r_mapping_research']['pass'] else 'FAIL'})", "", "## Tiers", ""]
+    lines = ["# CGRA-Bench Audit Summary", "", f"- Source units represented: {source_count}/{len(expected_sources)}", f"- Candidate loops represented: {len(represented_loops)}/{candidate_loop_count}", f"- Terminal results: {len(results)}", f"- UNKNOWN/unclassified: {summary['unknown_count']}", f"- Timeouts: {summary['timeout_count']}", f"- Reconciliation: {'PASS' if summary['reconciliation']['ok'] else 'FAIL'}", f"- Linear multi-block: candidates={summary['linear_multiblock']['candidate_count']}, frontend={summary['linear_multiblock']['frontend_dfg_count']}, mapped={summary['linear_multiblock']['mapped_count']}, shape-rejected={summary['linear_multiblock']['shape_rejection_count']}", f"- T020 outcome: frontend={frontend_dfg_or_higher}/10, mapped={mapped_or_higher}/8, mapped kernels={mapped_kernel_directories}/5 ({'PASS' if summary['t020_outcome']['pass'] else 'FAIL'})", f"- T020R research outcome: mapper entered={mapper_entered}/60, modulo mapped={mapping_statuses.get('success', 0)}/20, mapper-entered kernels={mapper_entered_kernel_directories}/12 ({'PASS' if summary['t020r_mapping_research']['pass'] else 'FAIL'})", f"- Computational families: mapped={computational_family_gate['mapped_family_count']}/{computational_family_gate['required_family_count']} ({'PASS' if computational_family_gate['pass'] else 'FAIL'})", "", "## Tiers", ""]
     lines.extend(f"- {key}: {value}" for key, value in sorted(tiers.items()))
     lines.extend(["", "## First blockers", ""])
     lines.extend(f"- {key}: {value}" for key, value in sorted(first_blockers.items()))

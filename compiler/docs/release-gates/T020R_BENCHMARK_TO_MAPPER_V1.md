@@ -40,6 +40,9 @@ hardware, and full CGRA-Bench gates on the pinned 32-bit environment.
   byte-addressed and the runner passes unit `1`; the executable target remains
   word-addressed with unit `4`. Producer and independent verifier use the same
   declared unit, so access width can no longer silently change address meaning.
+- Added audit-only `computational_families.v1.json` selectors and a report gate
+  that requires each of the seven mandatory computational families to have a
+  verified modulo mapping; initialization loops cannot satisfy this gate.
 
 ## Local development evidence
 
