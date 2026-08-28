@@ -44,7 +44,7 @@ def test_smoke_mapping_profile_is_bounded_below_full_audit() -> None:
     }
     assert 0 < smoke["max_ii"] < baseline["max_ii"]
     assert research == {
-        "max_ii": 32,
+        "max_ii": 64,
         "max_node_candidates": 100000,
         "max_backtracks": 50000,
         "max_route_calls": 100000,

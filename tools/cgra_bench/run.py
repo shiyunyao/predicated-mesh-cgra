@@ -44,7 +44,7 @@ BASELINE_MAPPING_PROFILE = {
 MAPPING_PROFILES = {
     "baseline": BASELINE_MAPPING_PROFILE,
     "research": {
-        "max_ii": 32,
+        "max_ii": 64,
         "max_node_candidates": 100000,
         "max_backtracks": 50000,
         "max_route_calls": 100000,

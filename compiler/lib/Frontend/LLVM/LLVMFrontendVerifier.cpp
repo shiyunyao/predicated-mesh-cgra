@@ -71,6 +71,15 @@ bool ignored(const llvm::Instruction& instruction) {
   return false;
 }
 
+const llvm::Value* stripPointerCastsPreservingGEPs(const llvm::Value* value) {
+  while (const auto* cast = llvm::dyn_cast_or_null<llvm::CastInst>(value)) {
+    if (!llvm::isa<llvm::BitCastInst, llvm::AddrSpaceCastInst>(cast))
+      break;
+    value = cast->getOperand(0);
+  }
+  return value;
+}
+
 std::string valueSummary(const llvm::Value& value) {
   if (value.hasName())
     return "%" + value.getName().str();
@@ -210,7 +219,12 @@ std::optional<ir::ValueType> verifiedPointerBridgeType(const llvm::Module& modul
   std::optional<ir::ValueType> result;
   for (const auto* block : selection.loop->getBlocks()) {
     for (const auto& instruction : *block) {
-      const auto* gep = llvm::dyn_cast<llvm::GetElementPtrInst>(&instruction);
+      const auto* load = llvm::dyn_cast<llvm::LoadInst>(&instruction);
+      const auto* store = llvm::dyn_cast<llvm::StoreInst>(&instruction);
+      const auto* address = load    ? load->getPointerOperand()
+                            : store ? store->getPointerOperand()
+                                    : nullptr;
+      const auto* gep = llvm::dyn_cast_or_null<llvm::GetElementPtrInst>(address);
       if (!gep || llvm::getUnderlyingObject(gep) != &base)
         continue;
       const auto candidate = verifiedAddressValueType(module, *gep);
@@ -622,6 +636,58 @@ std::uint32_t verifiedCoalescibleStorePairs(const Selection& selection) {
   return count;
 }
 
+std::uint32_t verifiedForwardableBranchLoads(const Selection& selection) {
+  llvm::TargetLibraryInfoImpl libraryInfoImpl;
+  llvm::TargetLibraryInfo libraryInfo(libraryInfoImpl);
+  llvm::AssumptionCache assumptions(*selection.function);
+  llvm::ScalarEvolution scalarEvolution(*selection.function, libraryInfo, assumptions,
+                                        *selection.dominatorTree, *selection.loopInfo);
+  std::uint32_t count = 0;
+  for (auto* block : selection.loop->getBlocks()) {
+    const auto* branch = llvm::dyn_cast<llvm::BranchInst>(block->getTerminator());
+    auto* merge = branch && branch->isConditional() ? branchMerge(*branch) : nullptr;
+    if (!branch || !branch->isConditional() || !merge ||
+        !selection.loop->contains(branch->getSuccessor(0)) ||
+        !selection.loop->contains(branch->getSuccessor(1)))
+      continue;
+    std::vector<const llvm::LoadInst*> candidates;
+    for (const auto& instruction : *block) {
+      const auto* load = llvm::dyn_cast<llvm::LoadInst>(&instruction);
+      if (!load || load->isVolatile() || load->isAtomic())
+        continue;
+      bool writeAfter = false;
+      for (auto iterator = std::next(instruction.getIterator()); iterator != block->end();
+           ++iterator)
+        writeAfter |= iterator->mayWriteToMemory();
+      if (!writeAfter)
+        candidates.push_back(load);
+    }
+    std::vector<llvm::BasicBlock*> arms{branch->getSuccessor(0), branch->getSuccessor(1)};
+    std::ranges::sort(arms);
+    arms.erase(std::unique(arms.begin(), arms.end()), arms.end());
+    for (const auto* arm : arms) {
+      if (arm == block || arm == merge)
+        continue;
+      bool priorWrite = false;
+      for (const auto& instruction : *arm) {
+        const auto* load = llvm::dyn_cast<llvm::LoadInst>(&instruction);
+        if (load && !priorWrite && !load->isVolatile() && !load->isAtomic() &&
+            std::ranges::any_of(candidates, [&](const auto* candidate) {
+              return candidate->getType() == load->getType() &&
+                     (candidate->getPointerOperand() == load->getPointerOperand() ||
+                      scalarEvolution.getSCEV(
+                          const_cast<llvm::Value*>(candidate->getPointerOperand())) ==
+                          scalarEvolution.getSCEV(
+                              const_cast<llvm::Value*>(load->getPointerOperand())));
+            }))
+          ++count;
+        priorWrite |= instruction.mayWriteToMemory();
+      }
+    }
+  }
+  return count;
+}
+
 std::uint32_t correspondingLLVMOperand(const LLVMFrontendResult& result,
                                        const llvm::Instruction& instruction,
                                        std::uint32_t genericOperand) {
@@ -920,9 +986,14 @@ void verifyIfDataflow(const llvm::Module& module, const Selection& selection,
         report.add("LLVM_FRONTEND_STORE_SEMANTICS_MISMATCH",
                    "Generic Store is not covered by memory/predication provenance");
     } else if (llvm::isa<llvm::LoadInst>(instruction)) {
-      const auto loadType = valueType(*instruction);
+      const auto loadType = instruction->getType()->isPointerTy()
+                                ? verifiedPointerBridgeType(module, selection, *instruction)
+                                : valueType(*instruction);
       const auto accessWidth =
-          static_cast<std::uint32_t>(instruction->getType()->getPrimitiveSizeInBits());
+          instruction->getType()->isPointerTy()
+              ? static_cast<std::uint32_t>(module.getDataLayout().getPointerSizeInBits(
+                    llvm::cast<llvm::PointerType>(instruction->getType())->getAddressSpace()))
+              : static_cast<std::uint32_t>(instruction->getType()->getPrimitiveSizeInBits());
       if (!loadType || node.opcode != ir::Opcode::Load || node.resultType != *loadType ||
           !node.memoryInfo || node.memoryInfo->accessWidthBits != accessWidth ||
           !plannedMemoryNodes.contains(node.id))
@@ -1147,7 +1218,7 @@ void verifyIfDataflow(const llvm::Module& module, const Selection& selection,
                                           : nullptr;
       while (const auto* gep = llvm::dyn_cast_or_null<llvm::GetElementPtrInst>(cursor)) {
         coveredAddressGEPs.insert(gep);
-        cursor = gep->getPointerOperand()->stripPointerCasts();
+        cursor = stripPointerCastsPreservingGEPs(gep->getPointerOperand());
       }
     }
   }
@@ -1247,6 +1318,7 @@ struct VerifiedPointerRoot {
   const llvm::PHINode* mergePhi = nullptr;
   const llvm::GetElementPtrInst* backedge = nullptr;
   std::int64_t stepBytes = 0;
+  bool dynamic = false;
 };
 
 std::optional<VerifiedCollectedAddress> verifiedCollectAddress(const llvm::Value& address,
@@ -1255,7 +1327,7 @@ std::optional<VerifiedCollectedAddress> verifiedCollectAddress(const llvm::Value
   const llvm::Value* cursor = &address;
   while (const auto* gep = llvm::dyn_cast<llvm::GetElementPtrInst>(cursor)) {
     chain.push_back(gep);
-    cursor = gep->getPointerOperand()->stripPointerCasts();
+    cursor = stripPointerCastsPreservingGEPs(gep->getPointerOperand());
   }
   std::ranges::reverse(chain);
 
@@ -1287,6 +1359,10 @@ std::optional<VerifiedPointerRoot> verifiedPointerRoot(const llvm::Value& root,
                                                        const llvm::DataLayout& dataLayout) {
   const auto* phi = llvm::dyn_cast<llvm::PHINode>(&root);
   if (!phi) {
+    if (const auto* load = llvm::dyn_cast<llvm::LoadInst>(&root);
+        load && loop.contains(load) && load->getType()->isPointerTy() && !load->isVolatile() &&
+        !load->isAtomic())
+      return VerifiedPointerRoot{load, nullptr, nullptr, nullptr, 0, true};
     const auto* base = llvm::getUnderlyingObject(&root);
     if (!base || !base->getType()->isPointerTy() ||
         (llvm::isa<llvm::Instruction>(base) &&
@@ -1385,11 +1461,65 @@ std::optional<VerifiedAffineValue> verifiedAffineValue(const llvm::Value& value,
   return VerifiedAffineValue{0, 0, LLVMAddressMode::Dynamic, {}};
 }
 
+std::unordered_set<const llvm::Instruction*> verifiedControlOnlyLoads(const llvm::Loop& loop) {
+  std::unordered_set<const llvm::Instruction*> slice;
+  std::vector<const llvm::Value*> worklist;
+  for (const auto* block : loop.blocks()) {
+    const auto* branch = llvm::dyn_cast<llvm::BranchInst>(block->getTerminator());
+    if (!branch || !branch->isConditional())
+      continue;
+    if (!loop.contains(branch->getSuccessor(0)) || !loop.contains(branch->getSuccessor(1)))
+      worklist.push_back(branch->getCondition());
+  }
+  while (!worklist.empty()) {
+    const auto* value = worklist.back();
+    worklist.pop_back();
+    const auto* instruction = llvm::dyn_cast<llvm::Instruction>(value);
+    if (!instruction || !loop.contains(instruction) || !slice.insert(instruction).second)
+      continue;
+    for (const auto& operand : instruction->operands())
+      worklist.push_back(operand.get());
+  }
+
+  std::unordered_set<const llvm::Instruction*> result;
+  for (const auto* instruction : slice) {
+    if (!llvm::isa<llvm::LoadInst>(instruction))
+      continue;
+    const bool hasSemanticUse = std::ranges::any_of(instruction->users(), [&](const auto* user) {
+      const auto* use = llvm::dyn_cast<llvm::Instruction>(user);
+      return !use || !loop.contains(use) || !slice.contains(use);
+    });
+    if (!hasSemanticUse)
+      result.insert(instruction);
+  }
+  return result;
+}
+
+bool verifiedReachesWithinIteration(const llvm::BasicBlock& source,
+                                    const llvm::BasicBlock& destination, const llvm::Loop& loop) {
+  std::vector<const llvm::BasicBlock*> worklist{&source};
+  std::unordered_set<const llvm::BasicBlock*> visited{&source};
+  while (!worklist.empty()) {
+    const auto* block = worklist.back();
+    worklist.pop_back();
+    for (const auto* successor : llvm::successors(block)) {
+      if (!loop.contains(successor) || successor == loop.getHeader())
+        continue;
+      if (successor == &destination)
+        return true;
+      if (visited.insert(successor).second)
+        worklist.push_back(successor);
+    }
+  }
+  return false;
+}
+
 bool verifiedInstructionBefore(const llvm::Instruction& lhs, const llvm::Instruction& rhs,
-                               const llvm::DominatorTree& dominatorTree) {
+                               const llvm::DominatorTree& dominatorTree, const llvm::Loop& loop) {
   if (lhs.getParent() == rhs.getParent())
     return lhs.comesBefore(&rhs);
-  return dominatorTree.dominates(lhs.getParent(), rhs.getParent());
+  return dominatorTree.dominates(lhs.getParent(), rhs.getParent()) ||
+         verifiedReachesWithinIteration(*lhs.getParent(), *rhs.getParent(), loop);
 }
 
 bool verifiedIsStore(const VerifiedMemoryAccess& access) {
@@ -1437,6 +1567,7 @@ VerifiedMemoryExpectations recomputeMemoryExpectations(const Selection& selectio
   llvm::AAResults aliasAnalysis(libraryInfo);
   aliasAnalysis.addAAResult(basicAA);
 
+  const auto ignoredControlLoads = verifiedControlOnlyLoads(*selection.loop);
   for (auto& block : *function) {
     if (!selection.loop->contains(&block))
       continue;
@@ -1445,14 +1576,19 @@ VerifiedMemoryExpectations recomputeMemoryExpectations(const Selection& selectio
       const auto* store = llvm::dyn_cast<llvm::StoreInst>(&instruction);
       if (!load && !store)
         continue;
+      if (ignoredControlLoads.contains(&instruction))
+        continue;
 
       const auto* accessedType = load ? load->getType() : store->getValueOperand()->getType();
       const auto alignment = load ? load->getAlign().value() : store->getAlign().value();
-      const bool scalarMemoryType =
-          accessedType->isIntegerTy() || accessedType->isFloatTy() || accessedType->isDoubleTy();
+      const bool scalarMemoryType = accessedType->isIntegerTy() || accessedType->isFloatTy() ||
+                                    accessedType->isDoubleTy() || accessedType->isPointerTy();
       const auto accessWidthBits =
-          scalarMemoryType ? static_cast<std::uint32_t>(accessedType->getPrimitiveSizeInBits())
-                           : 0U;
+          accessedType->isPointerTy()
+              ? static_cast<std::uint32_t>(dataLayout.getPointerSizeInBits(
+                    llvm::cast<llvm::PointerType>(accessedType)->getAddressSpace()))
+          : scalarMemoryType ? static_cast<std::uint32_t>(accessedType->getPrimitiveSizeInBits())
+                             : 0U;
       const auto naturalAlignmentBytes = accessWidthBits / 8;
       if (!scalarMemoryType ||
           (accessWidthBits != 8 && accessWidthBits != 16 && accessWidthBits != 32 &&
@@ -1497,7 +1633,7 @@ VerifiedMemoryExpectations recomputeMemoryExpectations(const Selection& selectio
         access.pointerStepWords = root->stepBytes / addressUnitBytes;
         access.iterationStrideBytes = root->stepBytes;
         access.iterationStrideWords = access.pointerStepWords;
-        if (root->mergePhi) {
+        if (root->mergePhi || root->dynamic) {
           access.addressMode = LLVMAddressMode::Dynamic;
           access.iterationStrideBytes = 0;
           access.iterationStrideWords = 0;
@@ -1509,7 +1645,7 @@ VerifiedMemoryExpectations recomputeMemoryExpectations(const Selection& selectio
           return result;
         }
         access.constantOffsetWords = access.gepConstantOffsetWords;
-        if (!root->mergePhi)
+        if (!root->mergePhi && !root->dynamic)
           access.addressMode = LLVMAddressMode::ExactAffine;
         std::vector<std::string> invariantTerms;
         for (const auto& [index, scaleBytes] : collected->terms) {
@@ -1583,10 +1719,10 @@ VerifiedMemoryExpectations recomputeMemoryExpectations(const Selection& selectio
                                         llvm::MemoryLocation::get(rhs->instruction)) ==
                         llvm::AliasResult::NoAlias)
         continue;
-      if (!verifiedInstructionBefore(*lhs->instruction, *rhs->instruction,
-                                     *selection.dominatorTree)) {
+      if (!verifiedInstructionBefore(*lhs->instruction, *rhs->instruction, *selection.dominatorTree,
+                                     *selection.loop)) {
         if (verifiedInstructionBefore(*rhs->instruction, *lhs->instruction,
-                                      *selection.dominatorTree))
+                                      *selection.dominatorTree, *selection.loop))
           std::swap(lhs, rhs);
         else {
           result.error = "MayAlias accesses have no verified path-independent order";
@@ -2013,6 +2149,11 @@ LLVMFrontendVerificationReport verifyFrontendResult(const llvm::Module& module,
       result.metadata->coalescedStorePairs != verifiedCoalescibleStorePairs(*originalSelection)) {
     report.add("LLVM_FRONTEND_STORE_COALESCING_VERIFY_FAILED",
                "Store-coalescing metadata does not match independently reconstructed branch arms");
+  }
+  if (result.metadata &&
+      result.metadata->forwardedBranchLoads != verifiedForwardableBranchLoads(*originalSelection)) {
+    report.add("LLVM_FRONTEND_BRANCH_LOAD_FORWARDING_VERIFY_FAILED",
+               "branch-load forwarding metadata does not match the original LLVM memory flow");
   }
   const llvm::Module& verificationModule =
       result.normalizedModule ? *result.normalizedModule : module;

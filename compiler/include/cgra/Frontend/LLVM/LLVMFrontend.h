@@ -155,6 +155,7 @@ struct LLVMFrontendMetadata {
   std::string loopShape;
   bool loopEntryCanonicalized = false;
   std::uint32_t coalescedStorePairs = 0;
+  std::uint32_t forwardedBranchLoads = 0;
   std::uint32_t inlinedPureHelperCalls = 0;
 };
 

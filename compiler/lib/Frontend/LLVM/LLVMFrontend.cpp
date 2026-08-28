@@ -16,8 +16,10 @@
 #include <llvm/IR/Instructions.h>
 #include <llvm/IR/IntrinsicInst.h>
 #include <llvm/IR/Module.h>
+#include <llvm/IR/ReplaceConstant.h>
 #include <llvm/Support/raw_ostream.h>
 #include <llvm/Transforms/Utils/Cloning.h>
+#include <llvm/Transforms/Utils/Local.h>
 #include <llvm/Transforms/Utils/LoopUtils.h>
 
 #include <nlohmann/json.hpp>
@@ -48,6 +50,7 @@ struct LoopSelection {
   std::optional<LinearLoopRegionDescriptor> linearRegion;
   bool loopEntryCanonicalized = false;
   std::uint32_t coalescedStorePairs = 0;
+  std::uint32_t forwardedBranchLoads = 0;
   std::unique_ptr<llvm::DominatorTree> dominatorTree;
   std::unique_ptr<llvm::LoopInfo> loopInfo;
 };
@@ -122,6 +125,23 @@ std::uint32_t inlineSmallPureHelpers(llvm::Module& module) {
   return inlined;
 }
 
+void materializeConstantAddressExpressions(llvm::Module& module) {
+  std::vector<llvm::Instruction*> instructions;
+  for (auto& function : module)
+    for (auto& block : function)
+      for (auto& instruction : block)
+        instructions.push_back(&instruction);
+  for (auto* instruction : instructions) {
+    std::vector<llvm::ConstantExpr*> addresses;
+    for (auto& operand : instruction->operands())
+      if (auto* expression = llvm::dyn_cast<llvm::ConstantExpr>(operand.get());
+          expression && expression->getOpcode() == llvm::Instruction::GetElementPtr)
+        addresses.push_back(expression);
+    for (auto* address : addresses)
+      llvm::convertConstantExprsToInstructions(instruction, address);
+  }
+}
+
 bool sameAddress(const llvm::Value& lhs, const llvm::Value& rhs, LoopSelection& selection) {
   if (&lhs == &rhs)
     return true;
@@ -132,6 +152,56 @@ bool sameAddress(const llvm::Value& lhs, const llvm::Value& rhs, LoopSelection& 
                                         *selection.dominatorTree, *selection.loopInfo);
   return scalarEvolution.getSCEV(const_cast<llvm::Value*>(&lhs)) ==
          scalarEvolution.getSCEV(const_cast<llvm::Value*>(&rhs));
+}
+
+bool hasWriteAfter(const llvm::Instruction& instruction) {
+  for (auto iterator = std::next(instruction.getIterator());
+       iterator != instruction.getParent()->end(); ++iterator)
+    if (iterator->mayWriteToMemory())
+      return true;
+  return false;
+}
+
+bool hasWriteBefore(const llvm::Instruction& instruction) {
+  for (auto iterator = instruction.getParent()->begin(); iterator != instruction.getIterator();
+       ++iterator)
+    if (iterator->mayWriteToMemory())
+      return true;
+  return false;
+}
+
+void forwardRedundantBranchLoads(LoopSelection& selection, const BranchRegion& region) {
+  std::vector<llvm::LoadInst*> dominatingLoads;
+  for (auto& instruction : *region.conditionBlock)
+    if (auto* load = llvm::dyn_cast<llvm::LoadInst>(&instruction);
+        load && !load->isVolatile() && !load->isAtomic() && !hasWriteAfter(*load))
+      dominatingLoads.push_back(load);
+
+  std::vector<llvm::BasicBlock*> arms{region.trueBlock, region.falseBlock};
+  std::ranges::sort(arms);
+  arms.erase(std::unique(arms.begin(), arms.end()), arms.end());
+  for (auto* arm : arms) {
+    if (!arm || arm == region.conditionBlock || arm == region.mergeBlock)
+      continue;
+    std::vector<llvm::LoadInst*> redundantLoads;
+    for (auto& instruction : *arm) {
+      auto* load = llvm::dyn_cast<llvm::LoadInst>(&instruction);
+      if (!load || load->isVolatile() || load->isAtomic() || hasWriteBefore(*load))
+        continue;
+      const auto candidate = std::ranges::find_if(dominatingLoads, [&](const auto* dominating) {
+        return dominating->getType() == load->getType() &&
+               sameAddress(*dominating->getPointerOperand(), *load->getPointerOperand(), selection);
+      });
+      if (candidate == dominatingLoads.end())
+        continue;
+      load->replaceAllUsesWith(*candidate);
+      redundantLoads.push_back(load);
+    }
+    for (auto* load : redundantLoads) {
+      llvm::RecursivelyDeleteTriviallyDeadInstructions(load);
+      ++selection.forwardedBranchLoads;
+    }
+  }
 }
 
 void coalesceSameAddressStores(LoopSelection& selection, const BranchRegion& region) {
@@ -172,8 +242,12 @@ void coalesceSameAddressStores(LoopSelection& selection, const BranchRegion& reg
                                falseStore->getValueOperand(), "cgra.store.value", &*insertion);
   auto* mergedStore = new llvm::StoreInst(selected, trueStore->getPointerOperand(), &*insertion);
   mergedStore->setAlignment(std::min(trueStore->getAlign(), falseStore->getAlign()));
+  auto* trueAddress = trueStore->getPointerOperand();
+  auto* falseAddress = falseStore->getPointerOperand();
   trueStore->eraseFromParent();
   falseStore->eraseFromParent();
+  llvm::RecursivelyDeleteTriviallyDeadInstructions(trueAddress);
+  llvm::RecursivelyDeleteTriviallyDeadInstructions(falseAddress);
   ++selection.coalescedStorePairs;
 }
 
@@ -1215,6 +1289,29 @@ std::optional<ir::ValueType> addressValueType(const llvm::Module& module,
   return valueType(address);
 }
 
+std::optional<ir::ValueType> pointerTokenType(const llvm::Module& module,
+                                              const LoopSelection& selection,
+                                              const llvm::Value& pointer) {
+  std::optional<ir::ValueType> result;
+  for (const auto* block : selection.loop->getBlocks()) {
+    for (const auto& instruction : *block) {
+      const auto* load = llvm::dyn_cast<llvm::LoadInst>(&instruction);
+      const auto* store = llvm::dyn_cast<llvm::StoreInst>(&instruction);
+      const auto* address = load    ? load->getPointerOperand()
+                            : store ? store->getPointerOperand()
+                                    : nullptr;
+      const auto* gep = llvm::dyn_cast_or_null<llvm::GetElementPtrInst>(address);
+      if (!gep || llvm::getUnderlyingObject(gep) != &pointer)
+        continue;
+      const auto candidate = addressValueType(module, *gep);
+      if (!candidate || (result && *result != *candidate))
+        return std::nullopt;
+      result = candidate;
+    }
+  }
+  return result ? result : addressValueType(module, pointer);
+}
+
 LLVMFrontendResult lowerStructuredLoop(llvm::Module& module, const LLVMFrontendOptions& options,
                                        LoopSelection& selection,
                                        std::optional<BranchRegion> discoveredRegion) {
@@ -1378,7 +1475,12 @@ LLVMFrontendResult lowerStructuredLoop(llvm::Module& module, const LLVMFrontendO
     const llvm::Value* cursor = access.address;
     while (const auto* gep = llvm::dyn_cast_or_null<llvm::GetElementPtrInst>(cursor)) {
       addressChainGEPs.insert(gep);
-      cursor = gep->getPointerOperand()->stripPointerCasts();
+      cursor = gep->getPointerOperand();
+      while (const auto* cast = llvm::dyn_cast<llvm::CastInst>(cursor)) {
+        if (!llvm::isa<llvm::BitCastInst, llvm::AddrSpaceCastInst>(cast))
+          break;
+        cursor = cast->getOperand(0);
+      }
     }
     if (access.pointerBackedge) {
       const auto type = addressValueType(module, *access.pointerPhi);
@@ -1463,7 +1565,9 @@ LLVMFrontendResult lowerStructuredLoop(llvm::Module& module, const LLVMFrontendO
                          &selection, load);
         const auto access = std::ranges::find_if(
             memoryAnalysis.accesses, [&](const auto& item) { return item.instruction == load; });
-        const auto loadType = valueType(*load);
+        const auto loadType = load->getType()->isPointerTy()
+                                  ? pointerTokenType(module, selection, *load)
+                                  : valueType(*load);
         if (access == memoryAnalysis.accesses.end() || !loadType)
           return failure(LLVMFrontendStatus::UnsupportedMemoryType,
                          LLVMFrontendDiagnosticCode::LLVM_FRONTEND_UNSUPPORTED_MEMORY_TYPE,
@@ -1686,6 +1790,8 @@ LLVMFrontendResult lowerStructuredLoop(llvm::Module& module, const LLVMFrontendO
                          "GEP has no loop-invariant pointer root", &selection, gep);
         if (llvm::isa<llvm::PHINode>(access->addressRoot)) {
           provider(*access->addressRoot, addressNodes.address, 0, false);
+        } else if (state.nodes.contains(access->base)) {
+          provider(*access->base, addressNodes.address, 0, false);
         } else {
           builder.bindExternal(addressNodes.address, 0,
                                getIfExternal(state, builder, *access->base, addressNodes.type));
@@ -1795,7 +1901,9 @@ LLVMFrontendResult lowerStructuredLoop(llvm::Module& module, const LLVMFrontendO
   for (const auto* store : stores) {
     const bool conditional = discoveredRegion && isConditionalStore(*store, state.region);
     const auto addressType = addressValueType(module, *store->getPointerOperand());
-    const auto dataType = valueType(*store->getValueOperand());
+    const auto dataType = store->getValueOperand()->getType()->isPointerTy()
+                              ? pointerTokenType(module, selection, *store->getValueOperand())
+                              : valueType(*store->getValueOperand());
     if (!addressType || !dataType)
       return failure(LLVMFrontendStatus::DirectStoreAddressRequired,
                      LLVMFrontendDiagnosticCode::LLVM_FRONTEND_DIRECT_STORE_ADDRESS_REQUIRED,
@@ -1922,6 +2030,7 @@ LLVMFrontendResult lowerStructuredLoop(llvm::Module& module, const LLVMFrontendO
   metadata.loopShape = selection.linearRegion ? "linear_multiblock" : "structured";
   metadata.loopEntryCanonicalized = selection.loopEntryCanonicalized;
   metadata.coalescedStorePairs = selection.coalescedStorePairs;
+  metadata.forwardedBranchLoads = selection.forwardedBranchLoads;
   result.metadata = std::move(metadata);
   if (selection.linearRegion) {
     const auto& region = *selection.linearRegion;
@@ -2000,8 +2109,10 @@ LLVMFrontendResult lowerSelectedLoop(llvm::Module& module, const LLVMFrontendOpt
     auto region = discoverBranchRegion(*selected, error);
     if (hasInternalBranch && !region)
       return error;
-    if (region)
+    if (region) {
+      forwardRedundantBranchLoads(*selected, *region);
       coalesceSameAddressStores(*selected, *region);
+    }
     if (selected->loop->getBlocks().size() > 1 && !region) {
       const auto linear = discoverLinearLoopRegion(*selected->loop);
       if (!linear.ok()) {
@@ -2494,6 +2605,7 @@ std::string LLVMFrontendResult::toJson() const {
                         {"loop_shape", metadata->loopShape},
                         {"loop_entry_canonicalized", metadata->loopEntryCanonicalized},
                         {"coalesced_store_pairs", metadata->coalescedStorePairs},
+                        {"forwarded_branch_loads", metadata->forwardedBranchLoads},
                         {"inlined_pure_helper_calls", metadata->inlinedPureHelperCalls},
                         {"requires_trip_count", metadata->requiresTripCount}};
     if (metadata->staticTripCount)
@@ -2608,6 +2720,7 @@ LLVMFrontendResult lowerInnermostLoop(const llvm::Module& module,
                                       const LLVMFrontendOptions& options) {
   try {
     auto normalized = std::shared_ptr<llvm::Module>(llvm::CloneModule(module).release());
+    materializeConstantAddressExpressions(*normalized);
     const auto inlinedPureHelperCalls = inlineSmallPureHelpers(*normalized);
     auto result = lowerSelectedLoop(*normalized, options);
     if (result.ok()) {

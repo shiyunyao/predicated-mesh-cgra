@@ -11,6 +11,7 @@
 #include <llvm/Analysis/ScalarEvolutionExpressions.h>
 #include <llvm/Analysis/TargetLibraryInfo.h>
 #include <llvm/Analysis/ValueTracking.h>
+#include <llvm/IR/CFG.h>
 #include <llvm/IR/DataLayout.h>
 #include <llvm/IR/Dominators.h>
 #include <llvm/IR/Function.h>
@@ -23,6 +24,7 @@
 #include <optional>
 #include <set>
 #include <tuple>
+#include <unordered_set>
 
 namespace cgra::frontend::llvm_frontend {
 namespace {
@@ -98,16 +100,25 @@ struct PointerRoot {
   const llvm::PHINode* mergePhi = nullptr;
   const llvm::GetElementPtrInst* backedge = nullptr;
   std::int64_t stepBytes = 0;
+  bool dynamic = false;
 };
 
-std::optional<CollectedAddress> collectAddress(const llvm::Value& address,
-                                               const llvm::DataLayout& dataLayout,
-                                               std::string& error) {
+const llvm::Value* stripPointerCastsPreservingGEPs(const llvm::Value* value) {
+  while (const auto* cast = llvm::dyn_cast_or_null<llvm::CastInst>(value)) {
+    if (!llvm::isa<llvm::BitCastInst, llvm::AddrSpaceCastInst>(cast))
+      break;
+    value = cast->getOperand(0);
+  }
+  return value;
+}
+
+std::optional<CollectedAddress>
+collectAddress(const llvm::Value& address, const llvm::DataLayout& dataLayout, std::string& error) {
   std::vector<const llvm::GetElementPtrInst*> chain;
   const llvm::Value* cursor = &address;
   while (const auto* gep = llvm::dyn_cast<llvm::GetElementPtrInst>(cursor)) {
     chain.push_back(gep);
-    cursor = gep->getPointerOperand()->stripPointerCasts();
+    cursor = stripPointerCastsPreservingGEPs(gep->getPointerOperand());
   }
   if (chain.empty())
     return CollectedAddress{cursor, 0, {}};
@@ -121,8 +132,8 @@ std::optional<CollectedAddress> collectAddress(const llvm::Value& address,
     llvm::MapVector<llvm::Value*, llvm::APInt> offsets;
     llvm::APInt constant(bitWidth, 0, true);
     if (!gep->collectOffset(dataLayout, bitWidth, offsets, constant) ||
-        constant.getMinSignedBits() > 64 || !addScaled(result.constantBytes, 1,
-                                                       constant.getSExtValue())) {
+        constant.getMinSignedBits() > 64 ||
+        !addScaled(result.constantBytes, 1, constant.getSExtValue())) {
       error = "GEP chain byte offset is not representable as signed 64-bit";
       return std::nullopt;
     }
@@ -149,6 +160,10 @@ std::optional<PointerRoot> resolvePointerRoot(const llvm::Value& root, const llv
                                               std::string& error) {
   const auto* phi = llvm::dyn_cast<llvm::PHINode>(&root);
   if (!phi) {
+    if (const auto* load = llvm::dyn_cast<llvm::LoadInst>(&root);
+        load && loop.contains(load) && load->getType()->isPointerTy() && !load->isVolatile() &&
+        !load->isAtomic())
+      return PointerRoot{load, nullptr, nullptr, nullptr, 0, true};
     const auto* base = llvm::getUnderlyingObject(&root);
     if (!base || !base->getType()->isPointerTy() ||
         (llvm::isa<llvm::Instruction>(base) &&
@@ -174,7 +189,8 @@ std::optional<PointerRoot> resolvePointerRoot(const llvm::Value& root, const llv
     error = "pointer PHI must have one preheader and one latch incoming value";
     return std::nullopt;
   }
-  const auto* initial = phi->getIncomingValue(static_cast<unsigned>(initialIndex))->stripPointerCasts();
+  const auto* initial =
+      phi->getIncomingValue(static_cast<unsigned>(initialIndex))->stripPointerCasts();
   const auto* initialBase = llvm::getUnderlyingObject(initial);
   if (!initialBase || initialBase != initial || !initialBase->getType()->isPointerTy() ||
       (llvm::isa<llvm::Instruction>(initialBase) &&
@@ -262,9 +278,12 @@ std::optional<LLVMMemoryAccessDescriptor> analyzeAccess(const llvm::Instruction&
 
   const auto* valueType = load ? load->getType() : store->getValueOperand()->getType();
   const bool scalarMemoryType = valueType->isIntegerTy() || valueType->isFloatTy() ||
-                                valueType->isDoubleTy();
+                                valueType->isDoubleTy() || valueType->isPointerTy();
   const auto accessWidthBits =
-      scalarMemoryType ? static_cast<std::uint32_t>(valueType->getPrimitiveSizeInBits()) : 0U;
+      valueType->isPointerTy() ? static_cast<std::uint32_t>(dataLayout.getPointerSizeInBits(
+                                     llvm::cast<llvm::PointerType>(valueType)->getAddressSpace()))
+      : scalarMemoryType       ? static_cast<std::uint32_t>(valueType->getPrimitiveSizeInBits())
+                               : 0U;
   if (!scalarMemoryType || (accessWidthBits != 8 && accessWidthBits != 16 &&
                             accessWidthBits != 32 && accessWidthBits != 64)) {
     error = fail(LLVMMemoryAnalysisStatus::UnsupportedAccessType,
@@ -295,8 +314,7 @@ std::optional<LLVMMemoryAccessDescriptor> analyzeAccess(const llvm::Instruction&
   std::string collectionError;
   const auto collected = collectAddress(*address, dataLayout, collectionError);
   if (!collected) {
-    error = fail(LLVMMemoryAnalysisStatus::UnsupportedNonAffineAddress,
-                 std::move(collectionError));
+    error = fail(LLVMMemoryAnalysisStatus::UnsupportedNonAffineAddress, std::move(collectionError));
     return std::nullopt;
   }
   std::string rootError;
@@ -327,7 +345,7 @@ std::optional<LLVMMemoryAccessDescriptor> analyzeAccess(const llvm::Instruction&
   descriptor.pointerStepWords = pointerRoot->stepBytes / addressUnitBytes;
   descriptor.iterationStrideBytes = pointerRoot->stepBytes;
   descriptor.iterationStrideWords = descriptor.pointerStepWords;
-  if (pointerRoot->mergePhi) {
+  if (pointerRoot->mergePhi || pointerRoot->dynamic) {
     descriptor.addressMode = LLVMAddressMode::Dynamic;
     descriptor.exactAffine = false;
     descriptor.iterationStrideBytes = 0;
@@ -352,7 +370,7 @@ std::optional<LLVMMemoryAccessDescriptor> analyzeAccess(const llvm::Instruction&
 
   descriptor.constantOffsetWords = descriptor.gepConstantOffsetWords;
   descriptor.constantOffsetBytes = descriptor.gepConstantOffsetBytes;
-  if (!pointerRoot->mergePhi)
+  if (!pointerRoot->mergePhi && !pointerRoot->dynamic)
     descriptor.addressMode = LLVMAddressMode::ExactAffine;
   std::vector<std::string> invariantTerms;
   for (const auto& [index, scaleBytes] : collected->terms) {
@@ -363,9 +381,8 @@ std::optional<LLVMMemoryAccessDescriptor> analyzeAccess(const llvm::Instruction&
     }
     const auto scaleWords = scaleBytes / addressUnitBytes;
     if (!fitsAddressWord(scaleWords)) {
-      error = fail(
-          LLVMMemoryAnalysisStatus::UnsupportedNonAffineAddress,
-          "dynamic GEP scale is not representable by Generic address arithmetic");
+      error = fail(LLVMMemoryAnalysisStatus::UnsupportedNonAffineAddress,
+                   "dynamic GEP scale is not representable by Generic address arithmetic");
       return std::nullopt;
     }
     descriptor.dynamicTerms.push_back({index, scaleBytes, scaleWords});
@@ -384,8 +401,8 @@ std::optional<LLVMMemoryAccessDescriptor> analyzeAccess(const llvm::Instruction&
     else if (affine->mode == LLVMAddressMode::SymbolicAffine &&
              descriptor.addressMode != LLVMAddressMode::Dynamic) {
       descriptor.addressMode = LLVMAddressMode::SymbolicAffine;
-      invariantTerms.push_back(std::to_string(scaleBytes) + "*(" +
-                               affine->invariantExpression + ")");
+      invariantTerms.push_back(std::to_string(scaleBytes) + "*(" + affine->invariantExpression +
+                               ")");
     }
   }
   if (descriptor.dynamicTerms.size() == 1) {
@@ -403,11 +420,67 @@ std::optional<LLVMMemoryAccessDescriptor> analyzeAccess(const llvm::Instruction&
   return descriptor;
 }
 
+std::unordered_set<const llvm::Instruction*> controlOnlyLoads(const llvm::Loop& loop) {
+  std::unordered_set<const llvm::Instruction*> slice;
+  std::vector<const llvm::Value*> worklist;
+  for (const auto* block : loop.blocks()) {
+    const auto* branch = llvm::dyn_cast<llvm::BranchInst>(block->getTerminator());
+    if (!branch || !branch->isConditional())
+      continue;
+    const bool exitsLoop =
+        !loop.contains(branch->getSuccessor(0)) || !loop.contains(branch->getSuccessor(1));
+    if (exitsLoop)
+      worklist.push_back(branch->getCondition());
+  }
+  while (!worklist.empty()) {
+    const auto* value = worklist.back();
+    worklist.pop_back();
+    const auto* instruction = llvm::dyn_cast<llvm::Instruction>(value);
+    if (!instruction || !loop.contains(instruction) || !slice.insert(instruction).second)
+      continue;
+    for (const auto& operand : instruction->operands())
+      worklist.push_back(operand.get());
+  }
+
+  std::unordered_set<const llvm::Instruction*> result;
+  for (const auto* instruction : slice) {
+    if (!llvm::isa<llvm::LoadInst>(instruction))
+      continue;
+    const bool hasSemanticUse = std::ranges::any_of(instruction->users(), [&](const auto* user) {
+      const auto* use = llvm::dyn_cast<llvm::Instruction>(user);
+      return !use || !loop.contains(use) || !slice.contains(use);
+    });
+    if (!hasSemanticUse)
+      result.insert(instruction);
+  }
+  return result;
+}
+
+bool reachesWithinIteration(const llvm::BasicBlock& source, const llvm::BasicBlock& destination,
+                            const llvm::Loop& loop) {
+  std::vector<const llvm::BasicBlock*> worklist{&source};
+  std::unordered_set<const llvm::BasicBlock*> visited{&source};
+  while (!worklist.empty()) {
+    const auto* block = worklist.back();
+    worklist.pop_back();
+    for (const auto* successor : llvm::successors(block)) {
+      if (!loop.contains(successor) || successor == loop.getHeader())
+        continue;
+      if (successor == &destination)
+        return true;
+      if (visited.insert(successor).second)
+        worklist.push_back(successor);
+    }
+  }
+  return false;
+}
+
 bool instructionBefore(const llvm::Instruction& lhs, const llvm::Instruction& rhs,
-                       const llvm::DominatorTree& dominatorTree) {
+                       const llvm::DominatorTree& dominatorTree, const llvm::Loop& loop) {
   if (lhs.getParent() == rhs.getParent())
     return lhs.comesBefore(&rhs);
-  return dominatorTree.dominates(lhs.getParent(), rhs.getParent());
+  return dominatorTree.dominates(lhs.getParent(), rhs.getParent()) ||
+         reachesWithinIteration(*lhs.getParent(), *rhs.getParent(), loop);
 }
 
 void addDependence(LLVMMemoryAnalysisResult& result, std::set<DependenceKey>& seen,
@@ -499,11 +572,14 @@ LLVMMemoryAnalysisResult analyzeMemoryDependences(const llvm::Loop& loop,
 
   LLVMMemoryAnalysisResult result;
   result.status = LLVMMemoryAnalysisStatus::Success;
+  const auto ignoredControlLoads = controlOnlyLoads(loop);
   for (auto& block : *function) {
     if (!loop.contains(&block))
       continue;
     for (const auto& instruction : block) {
       if (!llvm::isa<llvm::LoadInst>(instruction) && !llvm::isa<llvm::StoreInst>(instruction))
+        continue;
+      if (ignoredControlLoads.contains(&instruction))
         continue;
       LLVMMemoryAnalysisResult error;
       auto descriptor = analyzeAccess(instruction, loop, dataLayout, scalarEvolution, error);
@@ -542,8 +618,8 @@ LLVMMemoryAnalysisResult analyzeMemoryDependences(const llvm::Loop& loop,
                         llvm::AliasResult::NoAlias)
         continue;
 
-      if (!instructionBefore(*lhs->instruction, *rhs->instruction, dominatorTree)) {
-        if (instructionBefore(*rhs->instruction, *lhs->instruction, dominatorTree))
+      if (!instructionBefore(*lhs->instruction, *rhs->instruction, dominatorTree, loop)) {
+        if (instructionBefore(*rhs->instruction, *lhs->instruction, dominatorTree, loop))
           std::swap(lhs, rhs);
         else
           return fail(LLVMMemoryAnalysisStatus::UnsupportedPathSensitiveOrder,
@@ -576,15 +652,13 @@ LLVMMemoryAnalysisResult analyzeMemoryDependences(const llvm::Loop& loop,
         continue;
       }
 
-      const auto conservativeMode =
-          lhs->addressMode == LLVMAddressMode::Dynamic || rhs->addressMode == LLVMAddressMode::Dynamic
-              ? LLVMMemoryDependenceMode::DynamicConservative
-              : LLVMMemoryDependenceMode::Conservative;
-      addDependence(result, seen, lhs->id, rhs->id, dependenceKind(*lhs, *rhs), 0,
-                    conservativeMode,
+      const auto conservativeMode = lhs->addressMode == LLVMAddressMode::Dynamic ||
+                                            rhs->addressMode == LLVMAddressMode::Dynamic
+                                        ? LLVMMemoryDependenceMode::DynamicConservative
+                                        : LLVMMemoryDependenceMode::Conservative;
+      addDependence(result, seen, lhs->id, rhs->id, dependenceKind(*lhs, *rhs), 0, conservativeMode,
                     "MayAlias program order within one iteration");
-      addDependence(result, seen, rhs->id, lhs->id, dependenceKind(*rhs, *lhs), 1,
-                    conservativeMode,
+      addDependence(result, seen, rhs->id, lhs->id, dependenceKind(*rhs, *lhs), 1, conservativeMode,
                     "MayAlias reverse order across iterations");
     }
   }

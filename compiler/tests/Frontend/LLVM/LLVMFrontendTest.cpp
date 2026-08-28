@@ -827,6 +827,36 @@ exit:
 }
 )IR";
 
+const char* kRedundantArmLoadStores = R"IR(
+target datalayout = "e-p:64:64"
+define void @redundant_arm_load_stores(i32* %in, i32* %out, i32 %limit) {
+entry:
+  br label %loop
+loop:
+  %iv = phi i32 [ 0, %entry ], [ %inc, %merge ]
+  %in.addr = getelementptr i32, i32* %in, i32 %iv
+  %value = load i32, i32* %in.addr, align 4
+  %p = icmp sgt i32 %value, 0
+  br i1 %p, label %then, label %else
+then:
+  %in.addr.again = getelementptr i32, i32* %in, i32 %iv
+  %value.again = load i32, i32* %in.addr.again, align 4
+  %out.then = getelementptr i32, i32* %out, i32 %iv
+  store i32 %value.again, i32* %out.then, align 4
+  br label %merge
+else:
+  %out.else = getelementptr i32, i32* %out, i32 %iv
+  store i32 0, i32* %out.else, align 4
+  br label %merge
+merge:
+  %inc = add i32 %iv, 1
+  %done = icmp ult i32 %inc, %limit
+  br i1 %done, label %loop, label %exit
+exit:
+  ret void
+}
+)IR";
+
 void expect(bool condition, const char* message) {
   if (!condition)
     throw std::runtime_error(message);
@@ -1481,9 +1511,11 @@ void testPredicationLowering() {
       });
   expect(predicateXor != predicateResult.dfg->nodes().end(),
          "i1 xor must retain predicate semantics as PXOR");
-  expect(std::ranges::any_of(predicateResult.dfg->nodes(), [](const auto& node) {
-           return node.opcode == cgra::ir::Opcode::Custom && node.operationKey == "PZEXT";
-         }),
+  expect(std::ranges::any_of(predicateResult.dfg->nodes(),
+                             [](const auto& node) {
+                               return node.opcode == cgra::ir::Opcode::Custom &&
+                                      node.operationKey == "PZEXT";
+                             }),
          "predicate extension must retain its predicate-to-data signature");
   expect(std::ranges::count_if(
              predicateResult.dfg->edges(),
@@ -1778,6 +1810,27 @@ void testPredicationLowering() {
   expect(sameAddressStoreVerification.ok(),
          ("normalized same-address Store semantics must verify independently: " +
           sameAddressStoreVerification.format())
+             .c_str());
+
+  auto redundantArmLoad = parse(kRedundantArmLoadStores, context);
+  options.functionName = "redundant_arm_load_stores";
+  const auto redundantArmLoadResult =
+      cgra::frontend::llvm_frontend::lowerInnermostLoop(*redundantArmLoad, options);
+  expect(redundantArmLoadResult.ok(),
+         "a branch-local exact redundant Load must forward before Store coalescing");
+  expect(redundantArmLoadResult.metadata &&
+             redundantArmLoadResult.metadata->forwardedBranchLoads == 1 &&
+             redundantArmLoadResult.metadata->coalescedStorePairs == 1,
+         "frontend metadata must disclose Load forwarding and Store coalescing");
+  expect(std::ranges::count_if(
+             redundantArmLoadResult.dfg->nodes(),
+             [](const auto& node) { return node.opcode == cgra::ir::Opcode::Load; }) == 1,
+         "redundant branch Load must not survive in the Generic DFG");
+  const auto redundantArmLoadVerification = cgra::frontend::llvm_frontend::verifyFrontendResult(
+      *redundantArmLoad, options, redundantArmLoadResult);
+  expect(redundantArmLoadVerification.ok(),
+         ("independent verifier must validate branch Load forwarding: " +
+          redundantArmLoadVerification.format())
              .c_str());
 }
 

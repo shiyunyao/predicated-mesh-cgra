@@ -112,8 +112,9 @@ LLVMFrontendResult lower(const std::string& text, const std::string& function,
   if (result.ok()) {
     const auto verification =
         cgra::frontend::llvm_frontend::verifyFrontendResult(*module, options, result);
-    expect(verification.ok(),
-           "memory frontend result must pass independent verification: " + verification.format());
+    expect(verification.ok(), function +
+                                  " memory frontend result must pass independent verification: " +
+                                  verification.format());
   }
   return result;
 }
@@ -576,6 +577,43 @@ exit:
 }
 )IR";
 
+const char* kConstantExpressionGEP = R"IR(
+target datalayout = "e-p:64:64"
+@matrix = global [4 x [4 x i32]] zeroinitializer, align 16
+define void @constant_expression_gep() {
+entry:
+  br label %loop
+loop:
+  %i = phi i32 [ 0, %entry ], [ %inc, %loop ]
+  %row = getelementptr [4 x i32], [4 x i32]* getelementptr ([4 x [4 x i32]], [4 x [4 x i32]]* @matrix, i64 0, i64 2), i64 0, i32 %i
+  store i32 %i, i32* %row, align 4
+  %inc = add i32 %i, 1
+  %done = icmp ult i32 %inc, 4
+  br i1 %done, label %loop, label %exit
+exit:
+  ret void
+}
+)IR";
+
+const char* kLoadedPointerAddress = R"IR(
+target datalayout = "e-p:64:64"
+define void @loaded_pointer_address(i32** %table) {
+entry:
+  br label %loop
+loop:
+  %i = phi i32 [ 0, %entry ], [ %inc, %loop ]
+  %base = load i32*, i32** %table, align 8
+  %addr = getelementptr i32, i32* %base, i32 %i
+  %value = load i32, i32* %addr, align 4
+  store i32 %value, i32* %addr, align 4
+  %inc = add i32 %i, 1
+  %done = icmp ult i32 %inc, 4
+  br i1 %done, label %loop, label %exit
+exit:
+  ret void
+}
+)IR";
+
 const char* kUnalignedLoad = R"IR(
 target datalayout = "e-p:64:64"
 define void @unaligned(i32* %A) {
@@ -892,10 +930,12 @@ void runSemanticCases() {
          "outer-loop/function-entry terms must remain symbolic with an exact selected-loop stride");
 
   const auto dynamic = lower(kDynamicLoadedIndexStore, "dynamic_loaded_index", context);
-  expect(dynamic.ok(), "loaded-index address dataflow must lower conservatively: " + dynamic.message);
-  expect(std::ranges::any_of(dynamic.provenance.memoryAccesses, [](const auto& access) {
-           return access.kind == "store" && access.addressMode == "dynamic";
-         }),
+  expect(dynamic.ok(),
+         "loaded-index address dataflow must lower conservatively: " + dynamic.message);
+  expect(std::ranges::any_of(dynamic.provenance.memoryAccesses,
+                             [](const auto& access) {
+                               return access.kind == "store" && access.addressMode == "dynamic";
+                             }),
          "indirect Store must retain dynamic address provenance");
   expect(countMemoryEdge(*dynamic.dfg, cgra::ir::MemoryDepKind::WAW, 1) == 1,
          "dynamic Store must conservatively order successive iterations");
@@ -917,12 +957,33 @@ void runNegativeCases() {
          "typed memory frontend must preserve a naturally aligned i16 Load");
 
   const auto wideFloat = lower(kWideFloatLoad, "wide_float", context);
-  expect(wideFloat.ok() && wideFloat.provenance.memoryAccesses.size() == 1 &&
-             wideFloat.provenance.memoryAccesses.front().accessWidthBits == 64 &&
-             wideFloat.provenance.memoryAccesses.front().strideBytes == 8 &&
-             wideFloat.dfg->node(wideFloat.provenance.memoryAccesses.front().memoryNode)
-                     .resultType == cgra::ir::ValueType::floating(64),
-         "typed memory frontend must retain f64 width and byte stride");
+  expect(
+      wideFloat.ok() && wideFloat.provenance.memoryAccesses.size() == 1 &&
+          wideFloat.provenance.memoryAccesses.front().accessWidthBits == 64 &&
+          wideFloat.provenance.memoryAccesses.front().strideBytes == 8 &&
+          wideFloat.dfg->node(wideFloat.provenance.memoryAccesses.front().memoryNode).resultType ==
+              cgra::ir::ValueType::floating(64),
+      "typed memory frontend must retain f64 width and byte stride");
+
+  const auto constantExpression = lower(kConstantExpressionGEP, "constant_expression_gep", context);
+  expect(constantExpression.ok() && constantExpression.provenance.memoryAccesses.size() == 1 &&
+             constantExpression.provenance.memoryAccesses.front().offsetBytes == 32 &&
+             constantExpression.provenance.memoryAccesses.front().offsetWords == 8 &&
+             constantExpression.provenance.memoryAccesses.front().strideBytes == 4,
+         "ConstantExpr GEP row offsets must be materialized before address analysis");
+
+  const auto loadedPointer = lower(kLoadedPointerAddress, "loaded_pointer_address", context);
+  expect(
+      loadedPointer.ok() && loadedPointer.provenance.memoryAccesses.size() == 3 &&
+          std::ranges::any_of(loadedPointer.dfg->nodes(),
+                              [](const auto& node) {
+                                return node.opcode == cgra::ir::Opcode::Load &&
+                                       node.resultType == cgra::ir::ValueType::i32() &&
+                                       node.memoryInfo && node.memoryInfo->accessWidthBits == 64;
+                              }) &&
+          std::ranges::any_of(loadedPointer.provenance.memoryAccesses,
+                              [](const auto& access) { return access.addressMode == "dynamic"; }),
+      "pointer-valued Load must feed a verified dynamic Generic address graph");
 
   const auto unaligned = lower(kUnalignedLoad, "unaligned", context);
   expect(!unaligned.ok() &&
@@ -1087,9 +1148,9 @@ void runVerifierCorruptionCases() {
   expectVerifierRejects(
       kImplicitGEPScaleOffset, "implicit_gep_scale_offset",
       [](auto& result) {
-        const auto scale = std::ranges::find_if(
-            result.provenance.nodes,
-            [](const auto& node) { return node.opcode == "GEP_TERM_SCALE"; });
+        const auto scale = std::ranges::find_if(result.provenance.nodes, [](const auto& node) {
+          return node.opcode == "GEP_TERM_SCALE";
+        });
         expect(scale != result.provenance.nodes.end(),
                "implicit GEP scale node exists before corruption");
         cgra::ir::DFGTestAccess::setConstantBindingBits(*result.dfg, scale->node, 1, 1);
