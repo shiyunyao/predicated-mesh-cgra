@@ -256,12 +256,15 @@ TargetLegalizationResult TargetLegalizer::legalize(const ir::DFG& generic,
     }
     bool operandSignatureValid = true;
     for (std::size_t operand = 0; operand < node.operandTypes.size(); ++operand) {
-      if (!roleMatches(operation->operands[operand].role, node.operandTypes[operand])) {
+      const auto& descriptor = operation->operands[operand];
+      if (!roleMatches(descriptor.role, node.operandTypes[operand]) ||
+          (descriptor.type && *descriptor.type != node.operandTypes[operand])) {
         operandSignatureValid = false;
         break;
       }
     }
-    if (!operandSignatureValid || !resultRoleMatches(operation->resultRole, node.resultType)) {
+    if (!operandSignatureValid || !resultRoleMatches(operation->resultRole, node.resultType) ||
+        (operation->declaredResultType && *operation->declaredResultType != node.resultType)) {
       addDiagnostic(
           result, LegalizationStatus::TargetContractError, "TLEG_INVALID_TARGET_OPERATION_DESC",
           "target operation " + operationName + " semantic signature does not match Generic DFG",

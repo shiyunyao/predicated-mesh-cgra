@@ -299,8 +299,23 @@ void testMappingResearchTarget() {
   expect(researchResult.ok() && researchResult.dfg &&
              researchResult.dfg->node(0).operation == "FADD",
          "typed custom operation must legalize on a declared abstract FU");
+  expect(research.operation("FADD").resultType == cgra::ir::ValueType::f32() &&
+             research.operation("FADD").operands[0].type == cgra::ir::ValueType::f32(),
+         "research target must retain the declared FADD type contract");
   expect(cgra::target::TargetDFGVerifier::verify(*researchResult.dfg, research, &graph).ok(),
          "typed abstract Target DFG must pass the independent target verifier");
+  cgra::ir::DFGBuilder wrongTypeBuilder("typed_fadd_mismatch");
+  const auto wrongInteger =
+      wrongTypeBuilder.addExternal("integer", cgra::ir::ValueType::i32());
+  const auto wrongFadd = wrongTypeBuilder.addCustomNode(
+      "FADD", {cgra::ir::ValueType::i32(), cgra::ir::ValueType::i32()},
+      cgra::ir::ValueType::i32());
+  wrongTypeBuilder.bindExternal(wrongFadd, 0, wrongInteger);
+  wrongTypeBuilder.bindExternal(wrongFadd, 1, wrongInteger);
+  const auto wrongTypeResult =
+      cgra::target::TargetLegalizer::legalize(wrongTypeBuilder.finish(), research);
+  expect(!wrongTypeResult.ok() && !wrongTypeResult.dfg,
+         "typed abstract FADD must reject an integer operation signature");
   const auto hardwareResult = cgra::target::TargetLegalizer::legalize(graph, hardware);
   expect(!hardwareResult.ok() && !hardwareResult.dfg,
          "mapping-only float support must not weaken the executable hardware target");

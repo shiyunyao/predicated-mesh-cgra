@@ -866,14 +866,17 @@
       "execution_class": "FU",
       "operands": [
         {
-          "role": "data"
+          "role": "data",
+          "type": "f64"
         },
         {
-          "role": "data"
+          "role": "data",
+          "type": "f64"
         }
       ],
       "result": {
-        "role": "data"
+        "role": "data",
+        "type": "f64"
       },
       "issue_occupancy": 1,
       "result_latency": 2,
@@ -883,14 +886,17 @@
       "execution_class": "FU",
       "operands": [
         {
-          "role": "data"
+          "role": "data",
+          "type": "f64"
         },
         {
-          "role": "data"
+          "role": "data",
+          "type": "f64"
         }
       ],
       "result": {
-        "role": "data"
+        "role": "data",
+        "type": "f64"
       },
       "issue_occupancy": 1,
       "result_latency": 2,
@@ -900,14 +906,17 @@
       "execution_class": "FU",
       "operands": [
         {
-          "role": "data"
+          "role": "data",
+          "type": "f64"
         },
         {
-          "role": "data"
+          "role": "data",
+          "type": "f64"
         }
       ],
       "result": {
-        "role": "data"
+        "role": "data",
+        "type": "f64"
       },
       "issue_occupancy": 1,
       "result_latency": 3,
@@ -917,17 +926,21 @@
       "execution_class": "FU",
       "operands": [
         {
-          "role": "data"
+          "role": "data",
+          "type": "f64"
         },
         {
-          "role": "data"
+          "role": "data",
+          "type": "f64"
         },
         {
-          "role": "data"
+          "role": "data",
+          "type": "f64"
         }
       ],
       "result": {
-        "role": "data"
+        "role": "data",
+        "type": "f64"
       },
       "issue_occupancy": 1,
       "result_latency": 3,
@@ -937,14 +950,17 @@
       "execution_class": "FU",
       "operands": [
         {
-          "role": "data"
+          "role": "data",
+          "type": "f64"
         },
         {
-          "role": "data"
+          "role": "data",
+          "type": "f64"
         }
       ],
       "result": {
-        "role": "data"
+        "role": "data",
+        "type": "f64"
       },
       "issue_occupancy": 4,
       "result_latency": 8,
@@ -954,11 +970,13 @@
       "execution_class": "FU",
       "operands": [
         {
-          "role": "data"
+          "role": "data",
+          "type": "f64"
         }
       ],
       "result": {
-        "role": "data"
+        "role": "data",
+        "type": "f64"
       },
       "issue_occupancy": 1,
       "result_latency": 1,

@@ -51,6 +51,7 @@ enum class TargetResultSource {
 struct TargetOperandDesc {
   TargetOperandRole role = TargetOperandRole::Data;
   bool optional = false;
+  std::optional<ir::ValueType> type;
 
   friend bool operator==(const TargetOperandDesc&, const TargetOperandDesc&) = default;
 };
@@ -86,6 +87,9 @@ struct TargetOperationDesc {
   std::optional<TargetEncodingRef> encoding;
   std::vector<std::pair<unsigned, TargetControlSink>> operandSinks;
   TargetResultSource resultSource = TargetResultSource::None;
+  // Research targets may constrain a Custom operation's result type without
+  // changing the role-based contract used by legacy hardware targets.
+  std::optional<ir::ValueType> declaredResultType;
 
   friend bool operator==(const TargetOperationDesc&, const TargetOperationDesc&) = default;
 };

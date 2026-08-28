@@ -19,11 +19,46 @@ except ImportError:  # pragma: no cover - direct script execution
 TIERS = {"DISCOVERED": 0, "LLVM_BUILT": 1, "FRONTEND_DFG": 2, "TARGET_LEGAL": 3, "MAPPED": 4, "RF_COMPLETE": 5, "MANIFEST_COMPLETE": 6, "FUNCTIONAL_RTL_VALIDATED": 7}
 
 
-def target_contract_summary(opcode: str, target_operations: dict[str, Any]) -> str:
+def target_contract_summary(operation_key: str, target_operations: dict[str, Any], opcode: str | None = None) -> str:
+    """Report the declared target operation for a Generic operation key.
+
+    Generic ``Custom`` nodes carry their concrete operation key (for example
+    ``FADD``), while ``ICmp`` is legalized to a predicate-specific ``CMP_*``
+    operation.  Keep this helper conservative and diagnostic-only: target
+    legalization remains the authority for whether a case is executable.
+    """
     names = {name.upper() for name in target_operations}
-    if opcode.upper() == "ICMP":
+    normalized_key = operation_key.upper()
+    normalized_opcode = (opcode or operation_key).upper()
+    if normalized_opcode == "ICMP" or normalized_key == "ICMP":
         return "predicate-dependent" if any(name.startswith("CMP_") for name in names) else "not-declared"
-    return "declared" if opcode.upper() in names else "not-declared"
+    return "declared" if normalized_key in names else "not-declared"
+
+
+def _operation_histogram(item: dict[str, Any], out: pathlib.Path) -> dict[str, int]:
+    """Read typed operation keys from a result, with an old-run fallback."""
+    summary = item.get("dfg", {}).get("operation_histogram")
+    if isinstance(summary, dict) and summary:
+        return {str(key): int(value) for key, value in summary.items()}
+    artifact_directory = item.get("artifact_directory")
+    if artifact_directory:
+        dfg_path = out / artifact_directory / "frontend" / "generic_dfg.json"
+        try:
+            dfg = read_json(dfg_path)
+        except (OSError, ValueError, json.JSONDecodeError):
+            dfg = None
+        if isinstance(dfg, dict):
+            histogram: Counter[str] = Counter()
+            for node in dfg.get("nodes", []):
+                opcode = node.get("opcode", "unknown")
+                key = node.get("operation_key") if opcode == "Custom" else opcode
+                histogram[str(key or opcode)] += 1
+            if histogram:
+                return dict(histogram)
+    return {
+        str(opcode): int(count)
+        for opcode, count in item.get("dfg", {}).get("opcode_histogram", {}).items()
+    }
 
 
 def report(out: pathlib.Path, corpus: dict[str, Any], results: list[dict[str, Any]]) -> dict[str, Any]:
@@ -39,7 +74,9 @@ def report(out: pathlib.Path, corpus: dict[str, Any], results: list[dict[str, An
     feature_predicates = Counter()
     feature_counts = Counter()
     isa = Counter()
-    for item in results:
+    operations = Counter()
+    operation_histograms = [_operation_histogram(item, out) for item in results]
+    for item, operation_histogram in zip(results, operation_histograms):
         for opcode, count in item.get("feature", {}).get("opcode_histogram", {}).items():
             features[opcode] += count
         for value_type, count in item.get("feature", {}).get("type_histogram", {}).items():
@@ -50,6 +87,8 @@ def report(out: pathlib.Path, corpus: dict[str, Any], results: list[dict[str, An
             feature_counts[construct] += count
         for opcode, count in item.get("dfg", {}).get("opcode_histogram", {}).items():
             isa[opcode] += count
+        for operation_key, count in operation_histogram.items():
+            operations[operation_key] += count
     target_operations: dict[str, Any] = {}
     environment_path = out / "environment.json"
     if environment_path.exists():
@@ -156,6 +195,7 @@ def report(out: pathlib.Path, corpus: dict[str, Any], results: list[dict[str, An
         "all_observed_icmp_predicates": dict(sorted(feature_predicates.items())),
         "all_observed_feature_counts": dict(sorted(feature_counts.items())),
         "generic_opcode_histogram": dict(sorted(isa.items())),
+        "generic_operation_histogram": dict(sorted(operations.items())),
         "generic_edge_kind_histogram": dict(sorted(dfg_edge_kinds.items())),
         "generic_distance_histogram": dict(sorted(dfg_distances.items(), key=lambda item: int(item[0]))),
         "linear_multiblock": {
@@ -273,24 +313,29 @@ def report(out: pathlib.Path, corpus: dict[str, Any], results: list[dict[str, An
         encoding="utf-8",
     )
     isa_details = []
-    for opcode, count in sorted(isa.items()):
-        observed = [item for item in results if opcode in item.get("dfg", {}).get("opcode_histogram", {})]
+    for operation_key, count in sorted(operations.items()):
+        observed = [
+            item for item, operation_histogram in zip(results, operation_histograms)
+            if operation_key in operation_histogram
+        ]
         target_legal = [item for item in observed if TIERS.get(item.get("tier", "DISCOVERED"), 0) >= 3]
         target_blocked = [item for item in observed if item.get("category") == "TARGET_ISA"]
+        opcode = "ICmp" if operation_key.upper() == "ICMP" else operation_key
         isa_details.append({
             "opcode": opcode,
+            "operation_key": operation_key,
             "observed_count": count,
             "case_count": len(observed),
-            "target_contract": target_contract_summary(opcode, target_operations),
+            "target_contract": target_contract_summary(operation_key, target_operations, opcode),
             "target_legal_case_count": len(target_legal),
             "target_blocked_case_count": len(target_blocked),
             "examples": [item["id"] for item in observed[:3]],
         })
-    isa_rows = [(item["opcode"], item["observed_count"], item["case_count"], item["target_contract"], item["target_legal_case_count"], item["target_blocked_case_count"]) for item in isa_details]
-    write_json(out / "isa_coverage.json", {"schema": "cgra.cgra_bench.isa_coverage.v1", "loop_count": candidate_loop_count, "generic_opcode_histogram": dict(sorted(isa.items())), "target_operations": sorted(target_operations), "operations": isa_details})
+    isa_rows = [(item["operation_key"], item["observed_count"], item["case_count"], item["target_contract"], item["target_legal_case_count"], item["target_blocked_case_count"]) for item in isa_details]
+    write_json(out / "isa_coverage.json", {"schema": "cgra.cgra_bench.isa_coverage.v1", "loop_count": candidate_loop_count, "generic_opcode_histogram": dict(sorted(isa.items())), "generic_operation_histogram": dict(sorted(operations.items())), "target_operations": sorted(target_operations), "operations": isa_details})
     with (out / "isa_coverage.csv").open("w", newline="", encoding="utf-8") as stream:
         writer = csv.writer(stream)
-        writer.writerow(["generic_op", "observed_count", "case_count", "target_contract", "target_legal_cases", "target_blocked_cases"])
+        writer.writerow(["generic_operation", "observed_count", "case_count", "target_contract", "target_legal_cases", "target_blocked_cases"])
         writer.writerows(isa_rows)
     (out / "isa_coverage.md").write_text(
         "# Target ISA Coverage\n\n"

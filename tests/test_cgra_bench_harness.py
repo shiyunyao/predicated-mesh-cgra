@@ -241,6 +241,41 @@ def test_target_contract_does_not_treat_icmp_as_literal_operation() -> None:
     assert target_contract_summary("ICmp", operations) == "predicate-dependent"
 
 
+def test_target_contract_reports_custom_operation_key() -> None:
+    operations = {"FADD": {}, "SDIV": {}}
+    assert target_contract_summary("FADD", operations, "Custom") == "declared"
+    assert target_contract_summary("Custom", operations) == "not-declared"
+
+
+def test_report_preserves_typed_custom_operation_histogram(tmp_path: Path) -> None:
+    corpus = {
+        "denominator": {"kernel_directories": 1, "source_translation_units": 1},
+        "sources": [{"path": "kernels/a/a.c", "enabled": True}],
+    }
+    summary = report(tmp_path, corpus, [{
+        "id": "kernels/a/a.c::kernel::loop",
+        "kernel": "a",
+        "source": "kernels/a/a.c",
+        "function": "kernel",
+        "loop_header": "loop",
+        "tier": "TARGET_LEGAL",
+        "status": "PASS",
+        "category": "MAPPING",
+        "owner": "MAPPER",
+        "diagnostic_code": "TARGET_LEGAL",
+        "dfg": {
+            "opcode_histogram": {"Custom": 2, "Add": 1},
+            "operation_histogram": {"FADD": 1, "SDIV": 1, "Add": 1},
+        },
+    }])
+    assert summary["generic_opcode_histogram"] == {"Add": 1, "Custom": 2}
+    assert summary["generic_operation_histogram"] == {"Add": 1, "FADD": 1, "SDIV": 1}
+    isa = json.loads((tmp_path / "isa_coverage.json").read_text())
+    by_key = {item["operation_key"]: item for item in isa["operations"]}
+    assert by_key["FADD"]["target_contract"] == "not-declared"
+    assert by_key["SDIV"]["target_contract"] == "not-declared"
+
+
 def test_report_reconciliation_exposes_missing_sources(tmp_path: Path) -> None:
     corpus = {
         "denominator": {

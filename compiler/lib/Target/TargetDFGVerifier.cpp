@@ -321,11 +321,16 @@ TargetDFGVerifier::verify(const TargetDFG& dfg, const TargetModel& target, const
                     "node operand type is not supported by TargetModel", node.id, std::nullopt,
                     operand});
       if (operand >= operation->operands.size() ||
-          !roleMatches(operation->operands[operand].role, node.operandTypes[operand]))
+          !roleMatches(operation->operands[operand].role, node.operandTypes[operand]) ||
+          (operand < operation->operands.size() && operation->operands[operand].type &&
+           *operation->operands[operand].type != node.operandTypes[operand]))
         report.add({TargetDFGDiagnosticCode::TDFG_OPERATION_OPERAND_INVALID,
                     "node operand type does not satisfy TargetModel operand role", node.id,
                     std::nullopt, operand});
     }
+    if (operation->declaredResultType && *operation->declaredResultType != node.resultType)
+      report.add({TargetDFGDiagnosticCode::TDFG_RESULT_TYPE_MISMATCH,
+                  "node result type does not satisfy TargetModel operation type", node.id});
     if (node.genericOrigins.empty())
       report.add({TargetDFGDiagnosticCode::TDFG_PROVENANCE_EMPTY,
                   "Target node must retain Generic provenance", node.id});

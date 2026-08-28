@@ -295,15 +295,22 @@ def run_case(case: dict[str, Any], root: pathlib.Path, corpus: pathlib.Path, out
                 continue
         edge_kinds: dict[str, int] = {}
         distances: dict[str, int] = {}
+        operation_histogram: dict[str, int] = {}
         for edge in dfg.get("edges", []):
             kind = edge.get("kind", "unknown")
             edge_kinds[kind] = edge_kinds.get(kind, 0) + 1
             distance = str(edge.get("distance", 0))
             distances[distance] = distances.get(distance, 0) + 1
+        for node in dfg.get("nodes", []):
+            opcode = node.get("opcode", "unknown")
+            operation_key = node.get("operation_key") if opcode == "Custom" else opcode
+            operation_key = operation_key or opcode
+            operation_histogram[operation_key] = operation_histogram.get(operation_key, 0) + 1
         base["dfg"] = {
             "node_count": len(dfg.get("nodes", [])), "edge_count": len(dfg.get("edges", [])),
             "external_values": len(dfg.get("external_values", [])), "liveouts": len(dfg.get("live_outs", [])),
             "opcode_histogram": {opcode: sum(node.get("opcode") == opcode for node in dfg.get("nodes", [])) for opcode in sorted({node.get("opcode") for node in dfg.get("nodes", [])})},
+            "operation_histogram": dict(sorted(operation_histogram.items())),
             "edge_kind_histogram": dict(sorted(edge_kinds.items())),
             "distance_histogram": dict(sorted(distances.items(), key=lambda item: int(item[0]))),
             "recurrence_edges": sum(edge.get("distance", 0) > 0 and edge.get("kind") in {"data", "predicate"} for edge in dfg.get("edges", [])),

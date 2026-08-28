@@ -190,6 +190,34 @@ std::uint64_t tileKey(unsigned row, unsigned col) {
   return (static_cast<std::uint64_t>(row) << 32) | col;
 }
 
+bool dataValueType(const ir::ValueType& type) {
+  return type.kind == ir::ValueKind::Integer || type.kind == ir::ValueKind::Float;
+}
+
+bool operandTypeMatchesRole(TargetOperandRole role, const ir::ValueType& type) {
+  switch (role) {
+  case TargetOperandRole::Data:
+    return dataValueType(type);
+  case TargetOperandRole::Predicate:
+    return type == ir::ValueType::predicate();
+  case TargetOperandRole::Address:
+    return type.kind == ir::ValueKind::Integer;
+  }
+  return false;
+}
+
+bool resultTypeMatchesRole(TargetResultRole role, const ir::ValueType& type) {
+  switch (role) {
+  case TargetResultRole::Data:
+    return dataValueType(type);
+  case TargetResultRole::Predicate:
+    return type == ir::ValueType::predicate();
+  case TargetResultRole::Void:
+    return type == ir::ValueType::voidTy();
+  }
+  return false;
+}
+
 } // namespace
 
 TargetModel TargetModel::loadFromFile(const std::filesystem::path& path) {
@@ -379,6 +407,16 @@ TargetModel TargetModel::loadFromFile(const std::filesystem::path& path) {
       }
       if (operandJson[index].contains("optional"))
         operand.optional = required<bool>(operandJson[index], "optional", operandContext);
+      if (operandJson[index].contains("type")) {
+        try {
+          operand.type = ir::ValueType::fromString(
+              required<std::string>(operandJson[index], "type", operandContext));
+        } catch (const std::exception& error) {
+          fail(operandContext + ".type", error.what());
+        }
+        if (!operandTypeMatchesRole(operand.role, *operand.type))
+          fail(operandContext + ".type", "declared type is incompatible with operand role");
+      }
       if (operand.optional)
         optionalSeen = true;
       else if (optionalSeen)
@@ -403,6 +441,17 @@ TargetModel TargetModel::loadFromFile(const std::filesystem::path& path) {
           required<std::string>(resultJson, "role", context + ".result"));
     } catch (const std::exception& error) {
       fail(context + ".result.role", error.what());
+    }
+    std::optional<ir::ValueType> declaredResultType;
+    if (resultJson.contains("type")) {
+      try {
+        declaredResultType = ir::ValueType::fromString(
+            required<std::string>(resultJson, "type", context + ".result"));
+      } catch (const std::exception& error) {
+        fail(context + ".result.type", error.what());
+      }
+      if (!resultTypeMatchesRole(resultRole, *declaredResultType))
+        fail(context + ".result.type", "declared type is incompatible with result role");
     }
     std::vector<std::pair<unsigned, TargetControlSink>> operandSinks;
     std::unordered_set<TargetControlSink> usedSinks;
@@ -521,21 +570,17 @@ TargetModel TargetModel::loadFromFile(const std::filesystem::path& path) {
     if (!validResultSource)
       fail(context + ".lowering.result_source",
            "result source is incompatible with result role and execution class");
-    if (resultRole == TargetResultRole::Data)
-      model.operations_.push_back({name, executionClass, std::move(operands), resultRole,
-                                   ir::ValueType::integer(model.array_.dataWidth), issueOccupancy,
-                                   resultLatency, outputReadyOffset, accessWidth, encoding,
-                                   std::move(operandSinks), resultSource});
-    else if (resultRole == TargetResultRole::Predicate)
-      model.operations_.push_back({name, executionClass, std::move(operands), resultRole,
-                                   ir::ValueType::predicate(), issueOccupancy, resultLatency,
-                                   outputReadyOffset, accessWidth, encoding,
-                                   std::move(operandSinks), resultSource});
-    else
-      model.operations_.push_back({name, executionClass, std::move(operands), resultRole,
-                                   ir::ValueType::voidTy(), issueOccupancy, resultLatency,
-                                   outputReadyOffset, accessWidth, encoding,
-                                   std::move(operandSinks), resultSource});
+    const auto defaultResultType =
+        resultRole == TargetResultRole::Data
+            ? ir::ValueType::integer(model.array_.dataWidth)
+            : resultRole == TargetResultRole::Predicate ? ir::ValueType::predicate()
+                                                        : ir::ValueType::voidTy();
+    TargetOperationDesc operation{
+        name, executionClass, std::move(operands), resultRole,
+        declaredResultType.value_or(defaultResultType), issueOccupancy, resultLatency,
+        outputReadyOffset, accessWidth, encoding, std::move(operandSinks), resultSource,
+        declaredResultType};
+    model.operations_.push_back(std::move(operation));
     model.operationIndices_.emplace(name, model.operations_.size() - 1);
   }
   for (const auto& operation : model.operations_)
