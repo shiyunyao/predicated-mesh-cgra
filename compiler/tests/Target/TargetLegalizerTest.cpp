@@ -325,12 +325,16 @@ void testMappingResearchTarget() {
       cgra::ir::ValueType::predicate());
   predicateBuilder.addPredicateEdge(compare, predicateXor, 0);
   predicateBuilder.addPredicateEdge(compare, predicateXor, 1);
+  const auto predicateExtend = predicateBuilder.addCustomNode(
+      "PZEXT", {cgra::ir::ValueType::predicate()}, cgra::ir::ValueType::i32());
+  predicateBuilder.addPredicateEdge(predicateXor, predicateExtend, 0);
   const auto predicateGraph = predicateBuilder.finish();
   const auto predicateResult =
       cgra::target::TargetLegalizer::legalize(predicateGraph, research64);
   expect(predicateResult.ok() && predicateResult.dfg &&
              predicateResult.dfg->node(0).operation == "CMP_SLT" &&
-             predicateResult.dfg->node(1).operation == "PXOR",
+             predicateResult.dfg->node(1).operation == "PXOR" &&
+             predicateResult.dfg->node(2).operation == "PZEXT",
          "abstract mapping target must declare signed compare and predicate logic FUs");
   expect(!cgra::target::TargetLegalizer::legalize(predicateGraph, hardware).ok(),
          "abstract predicate capabilities must not weaken the hardware target");

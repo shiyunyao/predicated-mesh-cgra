@@ -151,7 +151,7 @@ std::optional<std::string> verifiedCustomOperationKey(const llvm::Instruction& i
   case llvm::Instruction::Trunc:
     return "TRUNC";
   case llvm::Instruction::ZExt:
-    return "ZEXT";
+    return instruction.getOperand(0)->getType()->isIntegerTy(1) ? "PZEXT" : "ZEXT";
   case llvm::Instruction::SExt:
     return "SEXT";
   case llvm::Instruction::SIToFP:

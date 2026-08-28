@@ -1481,6 +1481,10 @@ void testPredicationLowering() {
       });
   expect(predicateXor != predicateResult.dfg->nodes().end(),
          "i1 xor must retain predicate semantics as PXOR");
+  expect(std::ranges::any_of(predicateResult.dfg->nodes(), [](const auto& node) {
+           return node.opcode == cgra::ir::Opcode::Custom && node.operationKey == "PZEXT";
+         }),
+         "predicate extension must retain its predicate-to-data signature");
   expect(std::ranges::count_if(
              predicateResult.dfg->edges(),
              [](const auto& edge) { return edge.kind() == cgra::ir::Edge::Kind::Predicate; }) == 3,
