@@ -2,6 +2,8 @@
 #pragma once
 
 #include <cstdint>
+#include <map>
+#include <string>
 
 namespace cgra::mapping {
 
@@ -23,7 +25,10 @@ struct ModuloMapperStats {
   std::uint64_t postMappingRejected = 0;
   std::uint64_t stageRejected = 0;
   std::uint64_t rfRejected = 0;
+  std::uint64_t rfBudgetExceeded = 0;
   std::uint64_t postMappingAbort = 0;
+  std::map<std::uint32_t, std::uint64_t> rfRejectedByII;
+  std::map<std::string, std::uint64_t> rfRejectedByReason;
 };
 
 } // namespace cgra::mapping

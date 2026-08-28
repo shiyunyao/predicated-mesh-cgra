@@ -17,9 +17,12 @@ hardware, and full CGRA-Bench gates on the pinned 32-bit environment.
 - Research profiles use explicit byte-addressed Generic memory units. The
   frontend runner passes `--address-unit-bytes 1`; the hardware lane passes
   the native four-byte unit. Address units are independent of access width.
-- A mapping-research result is L4 only after `ModuloMappingVerifier` passes.
-  RF/stage feasibility is a separate observation and never changes mapping
-  success into mapping infeasibility.
+- A route candidate is L4 (`ROUTE_MAPPED`) only after
+  `ModuloMappingVerifier` passes. The release mapping result is L5
+  (`RF_CONSTRAINED_MAPPED`) and additionally requires the finite
+  `StageScheduler`, `StageAssignmentVerifier`, `RFAllocator`, and
+  `RFAllocationVerifier` checks. RF rejection is reported separately and
+  never gets promoted to a mapped result.
 
 ## Implemented changes
 
@@ -42,20 +45,28 @@ hardware, and full CGRA-Bench gates on the pinned 32-bit environment.
   declared unit, so access width can no longer silently change address meaning.
 - Added audit-only `computational_families.v1.json` selectors and a report gate
   that requires each of the seven mandatory computational families to have a
-  verified modulo mapping; initialization loops cannot satisfy this gate.
+  finite-RF verified modulo mapping; initialization loops cannot satisfy this
+  gate.
+- Enabled the finite stage/RF completion checker in mapping-research mode. Raw
+  modulo candidates, RF-rejected candidates, per-II RF rejection, and accepted
+  RF-constrained mappings are now reported independently.
+- Decoupled abstract memory address value types from data width and moved
+  alignment policy to the target contract. The front end preserves LLVM's
+  observed alignment while targets decide legality.
+- Preserved checked-in benchmark case overrides when inventory regenerates the
+  base manifest, including the Susan header shim.
+- Rejected unsupported PHI-to-PHI conditional recurrence before Generic DFG
+  construction so producer success cannot emit an invalid DFG.
 
 ## Local development evidence
 
-The latest local research run used the pinned corpus and the `research64`
-profile on the native host. It accounted for 15 kernel directories, 34 source
-units, and 128 discovered loops; 134 terminal results were emitted with
-`UNKNOWN=0`, `TIMEOUT=0`, and reconciled source/loop accounting. The run
-reached 57 loops at the real Mapper call and produced 55 verified modulo
-mappings across 14 kernel directories. All seven required integer families
-(FIR-int, ReLU-int, GEMM-int, BiCG-int, FFT-int, DTW, and SpMV) produced a
-verified mapping. Two Susan loops have an analyzer MII above the bounded
-research profile and are recorded as profile-limited, not silently granted a
-larger budget.
+The earlier local research checkpoint (before finite-RF acceptance was made
+the release definition) accounted for 15 kernel directories, 34 source units,
+and 128 discovered loops. Its 57 Mapper entries and 55 route-verified
+candidates remain development evidence only; they must not be reported as
+RF-constrained mappings. A fresh hosted run is required to record the raw
+candidate count, RF rejection breakdown, accepted L5 count, and per-II
+outcomes under the fixed `-m32` environment.
 
 This native run is development evidence only. It is not the T020R release
 baseline: the required hosted audit must use the fixed `-m32` toolchain and

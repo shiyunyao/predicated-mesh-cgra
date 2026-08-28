@@ -17,7 +17,20 @@ except ImportError:  # pragma: no cover - direct script execution
     from schemas import read_json, write_json
 
 
-TIERS = {"DISCOVERED": 0, "LLVM_BUILT": 1, "FRONTEND_DFG": 2, "TARGET_LEGAL": 3, "MAPPED": 4, "RF_COMPLETE": 5, "MANIFEST_COMPLETE": 6, "FUNCTIONAL_RTL_VALIDATED": 7}
+TIERS = {
+    "DISCOVERED": 0,
+    "LLVM_BUILT": 1,
+    "FRONTEND_DFG": 2,
+    "TARGET_LEGAL": 3,
+    # MAPPED/RF_COMPLETE are retained as compatibility aliases for existing
+    # audit manifests. New research results use the more precise names.
+    "ROUTE_MAPPED": 4,
+    "MAPPED": 4,
+    "RF_CONSTRAINED_MAPPED": 5,
+    "RF_COMPLETE": 5,
+    "MANIFEST_COMPLETE": 6,
+    "FUNCTIONAL_RTL_VALIDATED": 7,
+}
 COMPUTATIONAL_FAMILY_SCHEMA = "cgra.cgra_bench.computational_families.v1"
 
 
@@ -76,7 +89,7 @@ def _mapping_verified(item: dict[str, Any]) -> bool:
     backend = item.get("backend")
     if not isinstance(backend, dict):
         return item.get("diagnostic_code") == "MODULO_MAPPING_VERIFIED"
-    return backend.get("mapping_status") == "success"
+    return backend.get("mapping_status") in {"rf_constrained_success", "success"}
 
 
 def _computational_family_gate(
@@ -265,7 +278,9 @@ def report(out: pathlib.Path, corpus: dict[str, Any], results: list[dict[str, An
         stats = backend.get("stats", {})
         if isinstance(stats, dict) and "mapper_invoked" in stats:
             return bool(stats["mapper_invoked"])
-        return backend.get("mapping_status") == "success"
+        return backend.get("mapping_status") in {
+            "route_mapped_rf_budget", "route_mapped_rf_infeasible", "rf_constrained_success", "success"
+        }
 
     mapper_entered = sum(mapper_was_invoked(item) for item in results)
     mapper_entered_kernel_directories = len({
@@ -278,6 +293,42 @@ def report(out: pathlib.Path, corpus: dict[str, Any], results: list[dict[str, An
         for item in results
         if isinstance(item.get("backend"), dict)
     )
+    def raw_mapping_observed(item: dict[str, Any]) -> bool:
+        backend = item.get("backend")
+        if not isinstance(backend, dict):
+            return False
+        if "raw_mapping_found" in backend:
+            return bool(backend["raw_mapping_found"])
+        return backend.get("mapping_status") in {
+            "route_mapped_rf_infeasible", "rf_constrained_success", "success"
+        }
+
+    def strict_mapping_observed(item: dict[str, Any]) -> bool:
+        backend = item.get("backend")
+        if not isinstance(backend, dict):
+            return False
+        if "rf_constrained_mapping_found" in backend:
+            return bool(backend["rf_constrained_mapping_found"])
+        return backend.get("mapping_status") in {"rf_constrained_success", "success"}
+
+    completed_modulo_mappings = sum(
+        int(stats.get("completed_modulo_mappings", 0)) for stats in backend_stats
+    )
+    rf_rejected_mappings = sum(int(stats.get("rf_rejected", 0)) for stats in backend_stats)
+    rf_constrained_mappings = sum(
+        int(stats.get("rf_constrained_mappings", 0)) for stats in backend_stats
+    )
+    rf_rejected_by_ii: Counter[str] = Counter()
+    rf_rejected_by_reason: Counter[str] = Counter()
+    for stats in backend_stats:
+        per_ii = stats.get("rf_rejected_by_ii", {})
+        if isinstance(per_ii, dict):
+            rf_rejected_by_ii.update({str(ii): int(count) for ii, count in per_ii.items()})
+        per_reason = stats.get("rf_rejected_by_reason", {})
+        if isinstance(per_reason, dict):
+            rf_rejected_by_reason.update(
+                {str(reason): int(count) for reason, count in per_reason.items()}
+            )
     physical_statuses = Counter()
     physical_reasons = Counter()
     for item in results:
@@ -357,7 +408,17 @@ def report(out: pathlib.Path, corpus: dict[str, Any], results: list[dict[str, An
         },
         "t020r_mapping_research": {
             "mapper_entered": mapper_entered,
-            "modulo_mapping_verified": mapping_statuses.get("success", 0),
+            "raw_modulo_verified": sum(raw_mapping_observed(item) for item in results),
+            "completed_modulo_mappings": completed_modulo_mappings,
+            "rf_rejected_mappings": rf_rejected_mappings,
+            "rf_constrained_mapped": rf_constrained_mappings or sum(
+                strict_mapping_observed(item) for item in results
+            ),
+            # Historical key retained for consumers; it now means the strict
+            # RF-constrained result rather than a route-only candidate.
+            "modulo_mapping_verified": rf_constrained_mappings or sum(
+                strict_mapping_observed(item) for item in results
+            ),
             "mapper_entered_kernel_directories": mapper_entered_kernel_directories,
             "hardware_executable": sum(
                 bool(item.get("backend", {}).get("hardware_executable"))
@@ -370,7 +431,10 @@ def report(out: pathlib.Path, corpus: dict[str, Any], results: list[dict[str, An
             "required_mapper_entered": 60,
             "required_modulo_mapping_verified": 20,
             "required_mapper_entered_kernel_directories": 12,
-            "pass": mapper_entered >= 60 and mapping_statuses.get("success", 0) >= 20 and
+            "pass": mapper_entered >= 60 and
+                    (rf_constrained_mappings or sum(
+                        strict_mapping_observed(item) for item in results
+                    )) >= 20 and
                     mapper_entered_kernel_directories >= 12,
         },
         "computational_family_gate": computational_family_gate,
@@ -392,6 +456,10 @@ def report(out: pathlib.Path, corpus: dict[str, Any], results: list[dict[str, An
             "route_state_expansions": sum(stats.get("route_state_expansions", 0) for stats in backend_stats),
             "completed_modulo_mappings": sum(stats.get("completed_modulo_mappings", 0) for stats in backend_stats),
             "rf_rejected": sum(stats.get("rf_rejected", 0) for stats in backend_stats),
+            "rf_budget_exceeded": sum(stats.get("rf_budget_exceeded", 0) for stats in backend_stats),
+            "rf_constrained_mappings": rf_constrained_mappings,
+            "rf_rejected_by_ii": dict(sorted(rf_rejected_by_ii.items())),
+            "rf_rejected_by_reason": dict(sorted(rf_rejected_by_reason.items())),
             "totals": dict(sorted(backend_totals.items())),
             "per_case": [
                 {"id": item["id"], **item["backend"]["stats"]}
@@ -418,7 +486,7 @@ def report(out: pathlib.Path, corpus: dict[str, Any], results: list[dict[str, An
         writer = csv.writer(stream)
         writer.writerow(["metric", "value"])
         writer.writerows([("candidate_loops", candidate_loop_count), ("terminal_results", len(results)), *sorted(tiers.items()), *sorted(terminal.items())])
-    lines = ["# CGRA-Bench Audit Summary", "", f"- Source units represented: {source_count}/{len(expected_sources)}", f"- Candidate loops represented: {len(represented_loops)}/{candidate_loop_count}", f"- Terminal results: {len(results)}", f"- UNKNOWN/unclassified: {summary['unknown_count']}", f"- Timeouts: {summary['timeout_count']}", f"- Reconciliation: {'PASS' if summary['reconciliation']['ok'] else 'FAIL'}", f"- Linear multi-block: candidates={summary['linear_multiblock']['candidate_count']}, frontend={summary['linear_multiblock']['frontend_dfg_count']}, mapped={summary['linear_multiblock']['mapped_count']}, shape-rejected={summary['linear_multiblock']['shape_rejection_count']}", f"- T020 outcome: frontend={frontend_dfg_or_higher}/10, mapped={mapped_or_higher}/8, mapped kernels={mapped_kernel_directories}/5 ({'PASS' if summary['t020_outcome']['pass'] else 'FAIL'})", f"- T020R research outcome: mapper entered={mapper_entered}/60, modulo mapped={mapping_statuses.get('success', 0)}/20, mapper-entered kernels={mapper_entered_kernel_directories}/12 ({'PASS' if summary['t020r_mapping_research']['pass'] else 'FAIL'})", f"- Computational families: mapped={computational_family_gate['mapped_family_count']}/{computational_family_gate['required_family_count']} ({'PASS' if computational_family_gate['pass'] else 'FAIL'})", "", "## Tiers", ""]
+    lines = ["# CGRA-Bench Audit Summary", "", f"- Source units represented: {source_count}/{len(expected_sources)}", f"- Candidate loops represented: {len(represented_loops)}/{candidate_loop_count}", f"- Terminal results: {len(results)}", f"- UNKNOWN/unclassified: {summary['unknown_count']}", f"- Timeouts: {summary['timeout_count']}", f"- Reconciliation: {'PASS' if summary['reconciliation']['ok'] else 'FAIL'}", f"- Linear multi-block: candidates={summary['linear_multiblock']['candidate_count']}, frontend={summary['linear_multiblock']['frontend_dfg_count']}, mapped={summary['linear_multiblock']['mapped_count']}, shape-rejected={summary['linear_multiblock']['shape_rejection_count']}", f"- T020 outcome: frontend={frontend_dfg_or_higher}/10, mapped={mapped_or_higher}/8, mapped kernels={mapped_kernel_directories}/5 ({'PASS' if summary['t020_outcome']['pass'] else 'FAIL'})", f"- T020R research outcome: mapper entered={mapper_entered}/60, raw route cases={summary['t020r_mapping_research']['raw_modulo_verified']}, RF-constrained mapped={summary['t020r_mapping_research']['rf_constrained_mapped']}/20, mapper-entered kernels={mapper_entered_kernel_directories}/12 ({'PASS' if summary['t020r_mapping_research']['pass'] else 'FAIL'})", f"- Computational families: mapped={computational_family_gate['mapped_family_count']}/{computational_family_gate['required_family_count']} ({'PASS' if computational_family_gate['pass'] else 'FAIL'})", "", "## Tiers", ""]
     lines.extend(f"- {key}: {value}" for key, value in sorted(tiers.items()))
     lines.extend(["", "## First blockers", ""])
     lines.extend(f"- {key}: {value}" for key, value in sorted(first_blockers.items()))

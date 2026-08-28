@@ -45,7 +45,7 @@ def check(run: pathlib.Path, baseline_path: pathlib.Path) -> list[str]:
             failures.append(f"{case_id}: unclassified terminal result")
     for entry in expected:
         case_id = entry["id"] if isinstance(entry, dict) else entry
-        minimum = entry.get("minimum_tier", "MAPPED") if isinstance(entry, dict) else "MAPPED"
+        minimum = entry.get("minimum_tier", "RF_CONSTRAINED_MAPPED") if isinstance(entry, dict) else "RF_CONSTRAINED_MAPPED"
         if minimum not in TIERS:
             failures.append(f"{case_id}: unknown minimum tier {minimum}")
             continue

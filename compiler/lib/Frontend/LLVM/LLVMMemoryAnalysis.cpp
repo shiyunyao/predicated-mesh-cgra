@@ -365,12 +365,6 @@ analyzeAccess(const llvm::Instruction& instruction, const llvm::Loop& loop,
     return std::nullopt;
   }
   const auto alignment = load ? load->getAlign().value() : store->getAlign().value();
-  const auto naturalAlignmentBytes = accessWidthBits / 8;
-  if (alignment < naturalAlignmentBytes) {
-    error = fail(LLVMMemoryAnalysisStatus::UnsupportedAlignment,
-                 "memory access does not satisfy its natural scalar alignment");
-    return std::nullopt;
-  }
 
   const auto* address = pointerOperand(instruction);
   const auto* pointerType = llvm::dyn_cast<llvm::PointerType>(address->getType());
@@ -403,6 +397,7 @@ analyzeAccess(const llvm::Instruction& instruction, const llvm::Loop& loop,
   descriptor.pointerBackedge = pointerRoot->backedge;
   descriptor.pointerStepBytes = pointerRoot->stepBytes;
   descriptor.accessWidthBits = accessWidthBits;
+  descriptor.alignmentBytes = static_cast<std::uint32_t>(alignment);
   descriptor.exactAffine = true;
   if (addressUnitBytes == 0 || pointerRoot->stepBytes % addressUnitBytes != 0) {
     error = fail(LLVMMemoryAnalysisStatus::UnsupportedNonAffineAddress,

@@ -386,6 +386,10 @@ private:
           ++result_.stats.stageRejected;
         if (check.reasonCode.starts_with("rf"))
           ++result_.stats.rfRejected;
+        if (check.reasonCode.starts_with("rf"))
+          ++result_.stats.rfRejectedByII[ii_];
+        if (check.reasonCode.starts_with("rf"))
+          ++result_.stats.rfRejectedByReason[check.reasonCode];
         addDiagnostic(result_, ModuloMapperDiagnosticCode::MAP_POST_MAPPING_REJECTED,
                       check.reasonCode + (check.message.empty() ? "" : ": " + check.message), ii_);
         mapping_.reset();
@@ -393,6 +397,8 @@ private:
       }
       if (check.decision == CompleteMappingDecision::Abort) {
         ++result_.stats.postMappingAbort;
+        if (check.reasonCode == "budget_rf")
+          ++result_.stats.rfBudgetExceeded;
         addDiagnostic(result_, ModuloMapperDiagnosticCode::MAP_INTERNAL_ERROR,
                       check.reasonCode + (check.message.empty() ? "" : ": " + check.message), ii_);
         mapping_.reset();
@@ -536,6 +542,10 @@ std::string ModuloMapperResult::format() const {
          << "\nII attempts: " << stats.iiAttempts
          << "\nnode candidate attempts: " << stats.nodeCandidateAttempts
          << "\nroute searches: " << stats.routeSearchCalls << "\nbacktracks: " << stats.backtracks;
+  output << "\ncompleted modulo mappings: " << stats.completedModuloMappings
+         << "\npost-mapping rejected: " << stats.postMappingRejected
+         << "\nRF rejected: " << stats.rfRejected
+         << "\nRF budget exceeded: " << stats.rfBudgetExceeded;
   for (const auto& diagnostic : diagnostics)
     output << '\n' << toString(diagnostic.code) << ": " << diagnostic.message;
   return output.str();
@@ -562,6 +572,9 @@ std::string ModuloMapperResult::toJson() const {
                  {"post_mapping_rejected", stats.postMappingRejected},
                  {"stage_rejected", stats.stageRejected},
                  {"rf_rejected", stats.rfRejected},
+                 {"rf_budget_exceeded", stats.rfBudgetExceeded},
+                 {"rf_rejected_by_ii", Json::object()},
+                 {"rf_rejected_by_reason", Json::object()},
                  {"post_mapping_abort", stats.postMappingAbort}}},
                {"diagnostics", Json::array()}};
   if (mapping)
@@ -576,6 +589,10 @@ std::string ModuloMapperResult::toJson() const {
       value["edge"] = *diagnostic.edge;
     root["diagnostics"].push_back(std::move(value));
   }
+  for (const auto& [ii, count] : stats.rfRejectedByII)
+    root["stats"]["rf_rejected_by_ii"][std::to_string(ii)] = count;
+  for (const auto& [reason, count] : stats.rfRejectedByReason)
+    root["stats"]["rf_rejected_by_reason"][reason] = count;
   return root.dump(2) + '\n';
 }
 

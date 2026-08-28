@@ -257,6 +257,7 @@ struct LLVMMemoryAccessProvenance {
   std::int64_t offsetWords = 0;
   std::int64_t strideWords = 0;
   std::uint32_t accessWidthBits = 0;
+  std::uint32_t alignmentBytes = 0;
   ir::NodeId memoryNode = 0;
   ir::NodeId addressProvider = 0;
   const llvm::Instruction* instruction = nullptr;

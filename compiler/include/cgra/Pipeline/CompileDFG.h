@@ -10,6 +10,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <map>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -47,6 +48,8 @@ enum class CompileDFGStatus {
   TargetDFGVerificationFailure,
   MIIAnalysisFailure,
   MappingFailure,
+  RFConstrainedMappingFailure,
+  RFConstrainedMappingBudgetFailure,
   ModuloMappingVerificationFailure,
   StageSchedulingFailure,
   StageVerificationFailure,
@@ -86,6 +89,10 @@ struct CompileDFGStats {
   std::uint64_t postMappingRejected = 0;
   std::uint64_t stageRejected = 0;
   std::uint64_t rfRejected = 0;
+  std::uint64_t rfBudgetExceeded = 0;
+  std::map<std::uint32_t, std::uint64_t> rfRejectedByII;
+  std::map<std::string, std::uint64_t> rfRejectedByReason;
+  std::uint64_t rfConstrainedMappings = 0;
   std::uint64_t postMappingAbort = 0;
   std::uint64_t maxStage = 0;
   std::uint64_t storageSegments = 0;

@@ -7,6 +7,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -80,6 +81,12 @@ struct MemoryDesc {
   std::string sameAddressPolicy;
   bool runtimeStall = false;
   bool runtimeArbitration = false;
+  // Address values are separate from the memory data token width.  Research
+  // targets may accept both 32- and 64-bit address values while retaining a
+  // finite scratchpad address space.
+  std::vector<ir::ValueType> addressValueTypes;
+  unsigned scratchpadAddressWidthBits = 0;
+  std::unordered_map<unsigned, unsigned> minimumAlignmentBytes;
 };
 
 struct LoopExecutionDesc {
@@ -130,6 +137,8 @@ public:
   bool isOperationExecutable(std::string_view name) const noexcept;
   bool isOperationExecutable(const TargetOperationDesc& operation) const noexcept;
   unsigned memoryDependenceSeparation(ir::MemoryDepKind kind) const noexcept;
+  bool supportsAddressType(const ir::ValueType& type) const noexcept;
+  std::optional<unsigned> minimumMemoryAlignment(unsigned accessWidthBits) const noexcept;
 
   bool tileHasLSU(unsigned row, unsigned col) const noexcept;
   bool tileSupportsOperation(unsigned row, unsigned col, std::string_view operation) const noexcept;

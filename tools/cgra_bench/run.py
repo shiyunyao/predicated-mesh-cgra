@@ -103,7 +103,9 @@ def tier_from_compile(artifact_dir: pathlib.Path, frontend_ok: bool) -> tuple[st
         status = backend.get("status", result.get("status", ""))
         if status == "success":
             if backend.get("mode") == "mapping_research":
-                return "MAPPED", "S10_MODULO_MAPPING"
+                if backend.get("mapping_status") in {"rf_constrained_success", "success"}:
+                    return "RF_CONSTRAINED_MAPPED", "S12_RF_ALLOCATION"
+                return "ROUTE_MAPPED", "S10_MODULO_MAPPING"
             return "MANIFEST_COMPLETE", "SUCCESS"
         if status == "invalid_invocation":
             return "FRONTEND_DFG", "S7_ABI_BIND"
@@ -115,6 +117,14 @@ def tier_from_compile(artifact_dir: pathlib.Path, frontend_ok: bool) -> tuple[st
             return "FRONTEND_DFG", "S8_TARGET_LEGALIZE"
         if "mii" in status:
             return "TARGET_LEGAL", "S9_MII_ANALYSIS"
+        if status in {"rf_constrained_mapping_failure", "rf_constrained_mapping_budget_failure"}:
+            # A completed route candidate is still an L4 observation even if
+            # every candidate was rejected by finite stage/RF feasibility.
+            if backend.get("raw_mapping_found"):
+                return "ROUTE_MAPPED", "S10_MODULO_MAPPING"
+            return "TARGET_LEGAL", "S10_MODULO_MAPPING"
+        if "rf_constrained" in status:
+            return "TARGET_LEGAL", "S10_MODULO_MAPPING"
         if "mapping" in status:
             return "TARGET_LEGAL", "S10_MODULO_MAPPING"
         if "stage" in status:
@@ -161,16 +171,15 @@ def backend_observation(artifact_dir: pathlib.Path) -> dict[str, Any]:
                 "mii_witness": report.get("recurrence_witness"),
             })
         elif filename == "06_mapper_report.json":
-            stats.update({
-                "ii_attempts": report_stats.get("ii_attempts"),
-                "backtracks": report_stats.get("backtracks"),
-                "route_search_calls": report_stats.get("route_search_calls"),
-                "route_no_paths": report_stats.get("route_no_paths"),
-                "route_budget_exceeded": report_stats.get("route_budget_exceeded"),
-                "successful_placements": report_stats.get("successful_placements"),
-                "rejected_placements": report_stats.get("rejected_placements"),
-                "mapping_diagnostics": len(report.get("diagnostics", [])),
-            })
+            for key in (
+                "completed_modulo_mappings", "post_mapping_rejected", "stage_rejected",
+                "rf_rejected", "rf_rejected_by_ii", "rf_rejected_by_reason", "ii_attempts", "backtracks",
+                "route_search_calls", "route_no_paths", "route_budget_exceeded",
+                "successful_placements", "rejected_placements",
+            ):
+                if key in report_stats:
+                    stats[key] = report_stats[key]
+            stats["mapping_diagnostics"] = len(report.get("diagnostics", []))
         elif filename == "12_rf_report.json":
             stats.update({f"rf_{key}": value for key, value in report_stats.items()})
         else:
@@ -179,6 +188,8 @@ def backend_observation(artifact_dir: pathlib.Path) -> dict[str, Any]:
         "status": backend.get("status", result.get("status")),
         "mode": backend.get("mode", "hardware_executable"),
         "mapping_status": backend.get("mapping_status", "not_available"),
+        "raw_mapping_found": bool(backend.get("raw_mapping_found", stats.get("completed_modulo_mappings", 0))),
+        "rf_constrained_mapping_found": bool(backend.get("rf_constrained_mapping_found", stats.get("rf_constrained_mappings", 0))),
         "hardware_executable": bool(backend.get("hardware_executable", False)),
         "physical_realizability": backend.get("physical_realizability", {"status": "not_run"}),
         "message": backend.get("message", result.get("message", ""))[-4000:],
@@ -382,7 +393,19 @@ def run_case(case: dict[str, Any], root: pathlib.Path, corpus: pathlib.Path, out
             failure = classify(stage, classification_message, rc)
             results.append({**base, "tier": tier, "terminal_stage": stage, "stages": [*base["stages"], {"stage": "S4_FRONTEND_LOWER", "status": "PASS"}, {"stage": "S5_GENERIC_VERIFY", "status": "PASS"}, {"stage": stage, "status": "FAIL"}], "message": (stderr or stdout)[-4000:], "stdout": stdout[-4000:], "stderr": stderr[-4000:], "duration_ms": {**base["duration_ms"], "abi_backend": compile_duration}, "backend": backend, **failure})
         elif pipeline_lane == "mapping-research":
-            results.append({**base, "tier": "MAPPED", "terminal_stage": "S10_MODULO_MAPPING", "status": "PASS", "stages": [*base["stages"], {"stage": "S4_FRONTEND_LOWER", "status": "PASS"}, {"stage": "S5_GENERIC_VERIFY", "status": "PASS"}, {"stage": "S7_ABI_BIND", "status": "PASS"}, {"stage": "S8_TARGET_LEGALIZE", "status": "PASS"}, {"stage": "S9_MII_ANALYSIS", "status": "PASS"}, {"stage": "S10_MODULO_MAPPING", "status": "PASS"}], "diagnostic_code": "MODULO_MAPPING_VERIFIED", "category": "MAPPING", "owner": "MAPPER", "message": stdout[-2000:], "duration_ms": {**base["duration_ms"], "abi_backend": compile_duration}, "backend": backend, "artifacts": [str(path) for path in abi_out.rglob("*") if path.is_file()]})
+            strict_mapping = backend.get("mapping_status") in {"rf_constrained_success", "success"}
+            results.append({**base,
+                            "tier": "RF_CONSTRAINED_MAPPED" if strict_mapping else "ROUTE_MAPPED",
+                            "terminal_stage": "S12_RF_ALLOCATION" if strict_mapping else "S10_MODULO_MAPPING",
+                            "status": "PASS",
+                            "stages": [*base["stages"], {"stage": "S4_FRONTEND_LOWER", "status": "PASS"}, {"stage": "S5_GENERIC_VERIFY", "status": "PASS"}, {"stage": "S7_ABI_BIND", "status": "PASS"}, {"stage": "S8_TARGET_LEGALIZE", "status": "PASS"}, {"stage": "S9_MII_ANALYSIS", "status": "PASS"}, {"stage": "S10_MODULO_MAPPING", "status": "PASS"}, {"stage": "S11_STAGE_SCHEDULE", "status": "PASS" if strict_mapping else "NOT_RUN"}, {"stage": "S12_RF_ALLOCATION", "status": "PASS" if strict_mapping else "NOT_RUN"}],
+                            "diagnostic_code": "RF_CONSTRAINED_MAPPING_VERIFIED" if strict_mapping else "ROUTE_MAPPING_VERIFIED",
+                            "category": "MAPPING" if strict_mapping else "MAPPING",
+                            "owner": "MAPPER",
+                            "message": stdout[-2000:],
+                            "duration_ms": {**base["duration_ms"], "abi_backend": compile_duration},
+                            "backend": backend,
+                            "artifacts": [str(path) for path in abi_out.rglob("*") if path.is_file()]})
         else:
             results.append({**base, "tier": tier, "terminal_stage": "S15_MANIFEST_VERIFY", "status": "PASS", "stages": [*base["stages"], {"stage": "S4_FRONTEND_LOWER", "status": "PASS"}, {"stage": "S5_GENERIC_VERIFY", "status": "PASS"}, {"stage": "S7_ABI_BIND", "status": "PASS"}, {"stage": "S8_TARGET_LEGALIZE", "status": "PASS"}, {"stage": "S15_MANIFEST_VERIFY", "status": "PASS"}], "diagnostic_code": "SUCCESS", "category": "MANIFEST", "owner": "LOWERING", "message": stdout[-2000:], "duration_ms": {**base["duration_ms"], "abi_backend": compile_duration}, "backend": backend, "artifacts": [str(path) for path in abi_out.rglob("*") if path.is_file()]})
     return results
@@ -486,7 +509,13 @@ def main() -> int:
             parser.error("--all is required for an audit run")
         lock_path = root / "benchmarks/cgra-bench/corpus.lock.json"
         if not lock_path.exists():
-            inventory(corpus, lock_path, cases_path)
+            inventory(
+                corpus,
+                lock_path,
+                cases_path,
+                root / "benchmarks/cgra-bench/cases.overrides.v1.json",
+                root / "benchmarks/cgra-bench/cases.base.v1.json",
+            )
         lock = read_json(lock_path)
         if lock.get("commit") != PIN:
             raise ValueError("corpus lock commit does not match pinned upstream")

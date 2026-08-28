@@ -1,6 +1,6 @@
 {
   "cases": [],
-  "note": "Generated from a completed audit. An empty list means that no case reached L4 MAPPED in that exact environment.",
+  "note": "Generated from a completed audit. An empty list means that no case reached L5 RF_CONSTRAINED_MAPPED in that exact environment.",
   "schema": "cgra.cgra_bench.known_supported.v1",
   "source": {
     "corpus_sha": "6729aaf225d0320e4e0d3b419e20483069a5a69b",

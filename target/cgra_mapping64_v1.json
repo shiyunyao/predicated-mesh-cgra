@@ -108,6 +108,8 @@
     "address_unit": "byte",
     "depth": 16777216,
     "width_bits": 64,
+    "address_value_types": ["i32", "i64"],
+    "minimum_alignment_bytes": {"8": 1, "16": 2, "32": 4, "64": 4},
     "ports": 4,
     "load_latency": 2,
     "max_issue_per_lsu_per_cycle": 1,
@@ -869,7 +871,8 @@
       "execution_class": "LSU",
       "operands": [
         {
-          "role": "address"
+          "role": "address",
+          "types": ["i32", "i64"]
         }
       ],
       "result": {
@@ -894,7 +897,8 @@
       "execution_class": "LSU",
       "operands": [
         {
-          "role": "address"
+          "role": "address",
+          "types": ["i32", "i64"]
         },
         {
           "role": "data"
@@ -1497,7 +1501,7 @@
       "operands": [
         {
           "role": "address",
-          "type": "i64"
+          "types": ["i32", "i64"]
         }
       ],
       "result": {
@@ -1514,7 +1518,7 @@
       "operands": [
         {
           "role": "address",
-          "type": "i64"
+          "types": ["i32", "i64"]
         }
       ],
       "result": {
@@ -1531,7 +1535,7 @@
       "operands": [
         {
           "role": "address",
-          "type": "i64"
+          "types": ["i32", "i64"]
         },
         {
           "role": "data",
@@ -1553,7 +1557,7 @@
       "operands": [
         {
           "role": "address",
-          "type": "i64"
+          "types": ["i32", "i64"]
         },
         {
           "role": "data",
@@ -1575,7 +1579,7 @@
       "operands": [
         {
           "role": "address",
-          "type": "i64"
+          "types": ["i32", "i64"]
         }
       ],
       "result": {
@@ -1595,7 +1599,7 @@
       "operands": [
         {
           "role": "address",
-          "type": "i64"
+          "types": ["i32", "i64"]
         },
         {
           "role": "data",
@@ -1620,7 +1624,7 @@
       "operands": [
         {
           "role": "address",
-          "type": "i64"
+          "types": ["i32", "i64"]
         }
       ],
       "result": {
@@ -1640,7 +1644,7 @@
       "operands": [
         {
           "role": "address",
-          "type": "i64"
+          "types": ["i32", "i64"]
         },
         {
           "role": "data",

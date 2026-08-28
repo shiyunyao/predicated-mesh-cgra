@@ -26,11 +26,15 @@ BackendFeasibilityChecker::check(const target::TargetDFG& dfg, const TargetModel
       register_allocation::RFAllocator::allocate(dfg, target, *stage.mapping, rfOptions_);
   switch (rf.status) {
   case register_allocation::RFAllocationStatus::FixedRegisterSelfOverlap:
+    return {mapping::CompleteMappingDecision::Reject, "rf_fixed_register_self_overlap", rf.format()};
   case register_allocation::RFAllocationStatus::ReadPortConflict:
+    return {mapping::CompleteMappingDecision::Reject, "rf_read_port_conflict", rf.format()};
   case register_allocation::RFAllocationStatus::WritePortConflict:
+    return {mapping::CompleteMappingDecision::Reject, "rf_write_port_conflict", rf.format()};
   case register_allocation::RFAllocationStatus::SameAddressRWConflict:
+    return {mapping::CompleteMappingDecision::Reject, "rf_same_address_rw_conflict", rf.format()};
   case register_allocation::RFAllocationStatus::RegisterDepthInfeasible:
-    return {mapping::CompleteMappingDecision::Reject, "rf_infeasible", rf.format()};
+    return {mapping::CompleteMappingDecision::Reject, "rf_register_depth_infeasible", rf.format()};
   case register_allocation::RFAllocationStatus::BudgetExceeded:
     return {mapping::CompleteMappingDecision::Abort, "budget_rf", rf.format()};
   case register_allocation::RFAllocationStatus::Success:

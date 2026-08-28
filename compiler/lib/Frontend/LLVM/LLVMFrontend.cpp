@@ -1022,7 +1022,8 @@ struct IfLoweringState {
   LLVMFrontendProvenance provenance;
 };
 
-bool discoverIfRecurrences(IfLoweringState& state, const llvm::Module& module) {
+bool discoverIfRecurrences(IfLoweringState& state, const llvm::Module& module,
+                           LLVMFrontendResult& error) {
   auto* preheader = state.selection.loop->getLoopPreheader();
   auto* latch = state.selection.loop->getLoopLatch();
   if (!preheader || !latch)
@@ -1044,6 +1045,14 @@ bool discoverIfRecurrences(IfLoweringState& state, const llvm::Module& module) {
     const bool pointerRecurrence =
         phi->getType()->isPointerTy() &&
         llvm::isa_and_nonnull<llvm::GetElementPtrInst, llvm::SelectInst, llvm::PHINode>(backedge);
+    if (backedgePhi && !conditionalSelectBackedge) {
+      recurrenceFailure(
+          error, LLVMFrontendStatus::ConditionalRecurrenceUnsupported,
+          LLVMFrontendDiagnosticCode::LLVM_FRONTEND_CONDITIONAL_RECURRENCE_UNSUPPORTED,
+          "conditional recurrence backedge is not a supported structured Select", state.selection,
+          phi);
+      return false;
+    }
     if (!backedge || !state.selection.loop->contains(backedge) ||
         (!conditionalSelectBackedge && !pointerRecurrence &&
          !supportedRecurrenceProducer(*backedge)))
@@ -1343,7 +1352,8 @@ LLVMFrontendResult lowerStructuredLoop(llvm::Module& module, const LLVMFrontendO
     state.region = *discoveredRegion;
   collectTerminationSlice(state);
 
-  discoverIfRecurrences(state, module);
+  if (!discoverIfRecurrences(state, module, error))
+    return error;
   promoteIfRecurrenceProducerClosure(state);
 
   const auto memoryAnalysis = analyzeMemoryDependences(
@@ -1615,7 +1625,8 @@ LLVMFrontendResult lowerStructuredLoop(llvm::Module& module, const LLVMFrontendO
         state.nodes.emplace(
             load, builder.addNode(
                       ir::Opcode::Load, {*addressValueType(module, *load->getPointerOperand())},
-                      *loadType, std::nullopt, ir::MemoryOpInfo{access->accessWidthBits, false}));
+                      *loadType, std::nullopt,
+                      ir::MemoryOpInfo{access->accessWidthBits, false, access->alignmentBytes}));
         continue;
       }
       if (isMemoryInstruction(instruction)) {
@@ -1970,7 +1981,7 @@ LLVMFrontendResult lowerStructuredLoop(llvm::Module& module, const LLVMFrontendO
         ir::Opcode::Store, std::move(storeOperands), ir::ValueType::voidTy(), std::nullopt,
         ir::MemoryOpInfo{static_cast<std::uint32_t>(
                              store->getValueOperand()->getType()->getPrimitiveSizeInBits()),
-                         false});
+                         false, static_cast<std::uint32_t>(store->getAlign().value())});
     state.nodes.emplace(store, storeNode);
     provider(*store->getPointerOperand(), storeNode, 0, false);
     const auto dataEdge = provider(*store->getValueOperand(), storeNode, 1, false);
@@ -2000,7 +2011,7 @@ LLVMFrontendResult lowerStructuredLoop(llvm::Module& module, const LLVMFrontendO
         {access.id, std::string(toString(access.kind)), valueSummary(*access.base),
          std::string(toString(access.addressMode)), access.invariantExpression,
          access.constantOffsetBytes, access.iterationStrideBytes, access.constantOffsetWords,
-         access.iterationStrideWords, access.accessWidthBits, memoryNode,
+         access.iterationStrideWords, access.accessWidthBits, access.alignmentBytes, memoryNode,
          addressNode == state.nodes.end() ? memoryNode : addressNode->second, access.instruction,
          access.base});
   }
@@ -2756,6 +2767,7 @@ std::string LLVMFrontendResult::toJson() const {
          {"offset_words", access.offsetWords},
          {"stride_words", access.strideWords},
          {"access_width_bits", access.accessWidthBits},
+         {"alignment_bytes", access.alignmentBytes},
          {"memory_node", access.memoryNode},
          {"address_provider", access.addressProvider}});
   for (const auto& dependence : provenance.memoryDependences)

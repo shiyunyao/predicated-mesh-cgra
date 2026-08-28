@@ -1,5 +1,4 @@
 {
-  "base_schema": "cgra.cgra_bench.cases.base.v1",
   "cases": [
     {
       "compile_flags": [],
@@ -437,9 +436,7 @@
       "exclusion": null,
       "function": null,
       "id": "kernels/susan/susan.c::auto",
-      "include_dirs": [
-        "../../benchmarks/cgra-bench/shims/susan"
-      ],
+      "include_dirs": [],
       "kernel": "susan",
       "language": "c",
       "loop_header": null,
@@ -447,6 +444,5 @@
     }
   ],
   "corpus_sha": "6729aaf225d0320e4e0d3b419e20483069a5a69b",
-  "override_schema": "cgra.cgra_bench.case_overrides.v1",
-  "schema": "cgra.cgra_bench.cases.v1"
+  "schema": "cgra.cgra_bench.cases.base.v1"
 }

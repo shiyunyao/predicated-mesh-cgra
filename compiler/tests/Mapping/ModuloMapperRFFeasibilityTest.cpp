@@ -164,18 +164,24 @@ int main() {
         cgra::test::TestArtifacts::forCase("mapping_research_fixed_rf_overlap").root();
     options.mode = cgra::pipeline::CompileDFGMode::MappingResearch;
     options.mapper.minII = 1;
-    options.mapper.maxII = 8;
+    options.mapper.maxII = 2;
+    options.mapper.budget.maxNodeCandidateAttempts = 500;
+    options.mapper.budget.maxBacktracks = 500;
+    options.mapper.budget.maxRouteSearchCalls = 1000;
+    options.mapper.budget.perRouteBudget.maxStateExpansions = 1000;
+    options.mapper.budget.perRouteBudget.maxQueuePushes = 2000;
     const auto research =
         cgra::pipeline::compileGenericDFG(fixedRegisterOverlapCandidate(), target, options);
-    expect(research.ok(), "mapping research must preserve a verified modulo mapping: " +
-                              research.message);
-    expect(research.moduloMapping.has_value(), "mapping research returned no modulo mapping");
+    expect(!research.ok() &&
+               research.status == cgra::pipeline::CompileDFGStatus::RFConstrainedMappingFailure,
+           "RF-constrained research must reject a mapping with no legal finite-RF realization");
+    expect(!research.moduloMapping.has_value() && research.stats.completedModuloMappings > 0 &&
+               research.stats.rfRejected > 0,
+           "raw candidates and RF rejections must remain observable separately");
+    expect(research.stats.rfRejectedByII.contains(2) &&
+               research.stats.rfRejectedByReason.at("rf_fixed_register_self_overlap") > 0,
+           "RF-constrained rejection telemetry must retain II and reason breakdowns");
     expect(!research.manifest.has_value(), "mapping research must not emit a hardware manifest");
-    expect(research.physicalRealizability.status ==
-               cgra::pipeline::PhysicalRealizabilityStatus::Infeasible,
-           "fixed-RF overlap must remain visible as physical infeasibility");
-    expect(research.physicalRealizability.reasonCode == "rf_infeasible",
-           "mapping research lost the RF failure reason");
     expect(research.stats.mapperInvoked,
            "mapping research must record that the modulo mapper was invoked");
 

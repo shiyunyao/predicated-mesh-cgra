@@ -101,6 +101,8 @@ LLVM_FRONTEND_OPT ?= opt-14
 LLVM_CMAKE_ARG := $(if $(LLVM_DIR),-DLLVM_DIR=$(LLVM_DIR),)
 CGRA_BENCH_CORPUS ?= third_party/CGRA-Bench
 CGRA_BENCH_CASES ?= benchmarks/cgra-bench/cases.v1.json
+CGRA_BENCH_CASE_OVERRIDES ?= benchmarks/cgra-bench/cases.overrides.v1.json
+CGRA_BENCH_BASE_CASES ?= benchmarks/cgra-bench/cases.base.v1.json
 CGRA_BENCH_OUT ?= build/cgra-bench/run
 CGRA_BENCH_FRONTEND_BUILD ?= build/compiler-llvm
 CGRA_BENCH_FRONTEND_BIN := $(CGRA_BENCH_FRONTEND_BUILD)/bin/cgra-llvm-loop-lower
@@ -425,7 +427,7 @@ llvm-linear-loop-reachability-e2e:
 	jq -e 'any(.edges[]; .kind == "data" and .distance == 1)' "$$case_dir/recurrence/frontend/generic_dfg.json" >/dev/null
 
 cgra-bench-inventory:
-	python3 tools/cgra_bench/inventory.py --corpus "$(CGRA_BENCH_CORPUS)" --out benchmarks/cgra-bench/corpus.lock.json --cases-out "$(CGRA_BENCH_CASES)"
+	python3 tools/cgra_bench/inventory.py --corpus "$(CGRA_BENCH_CORPUS)" --out benchmarks/cgra-bench/corpus.lock.json --cases-out "$(CGRA_BENCH_CASES)" --overrides "$(CGRA_BENCH_CASE_OVERRIDES)" --base-cases-out "$(CGRA_BENCH_BASE_CASES)"
 
 cgra-bench-smoke: cgra-bench-inventory
 	@set -eu; \

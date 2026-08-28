@@ -35,6 +35,12 @@ def classify(stage: str, message: str, returncode: int = 1) -> dict[str, str]:
         return {"category": "TIMEOUT", "owner": "HARNESS", "diagnostic_code": "STAGE_TIMEOUT"}
     if "mapping" in text and "verif" in text:
         return {"category": "MAPPING_VERIFY", "owner": "MAPPER", "diagnostic_code": "MAPPING_VERIFICATION_FAILED"}
+    if "rf_constrained_mapping_failure" in text or "rf constrained mapping" in text:
+        return {"category": "RF", "owner": "RF", "diagnostic_code": "RF_CONSTRAINED_MAPPING_FAILED"}
+    if "rf_budget" in text or "rf budget" in text:
+        return {"category": "RF", "owner": "RF", "diagnostic_code": "RF_BUDGET"}
+    if "mapping" in text and "budget" in text:
+        return {"category": "MAPPING_BUDGET", "owner": "MAPPER", "diagnostic_code": "MAPPING_BUDGET_EXCEEDED"}
     diagnostic = re.search(r"\b(?:LLVM_FRONTEND|ABI|RFA|TARGET|MAPPING|MAP|RF|MEMORY|GENERIC|MII|STAGE|MANIFEST)_[A-Z0-9_]+\b", message)
     if diagnostic:
         code = diagnostic.group(0)

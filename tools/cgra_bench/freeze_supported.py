@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Freeze the L4-or-higher CGRA-Bench cases from one completed audit."""
+"""Freeze the finite-RF mapped CGRA-Bench cases from one completed audit."""
 
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ def freeze(results: list[dict[str, Any]], environment: dict[str, Any]) -> dict[s
         {
             result["id"]
             for result in results
-            if TIERS.get(result.get("tier", "DISCOVERED"), 0) >= TIERS["MAPPED"]
+            if TIERS.get(result.get("tier", "DISCOVERED"), 0) >= TIERS["RF_CONSTRAINED_MAPPED"]
         }
     )
     return {
@@ -33,12 +33,12 @@ def freeze(results: list[dict[str, Any]], environment: dict[str, Any]) -> dict[s
             "target_sha256": environment.get("target_sha256"),
             "profile": environment.get("profile", {}).get("name"),
         },
-        "cases": [{"id": case_id, "minimum_tier": "MAPPED"} for case_id in mapped],
+        "cases": [{"id": case_id, "minimum_tier": "RF_CONSTRAINED_MAPPED"} for case_id in mapped],
         "note": (
             "Generated from a completed audit. An empty list means that no case "
-            "reached L4 MAPPED in that exact environment."
+            "reached L5 RF_CONSTRAINED_MAPPED in that exact environment."
             if not mapped
-            else "Generated from a completed audit; listed cases must not regress below L4 MAPPED."
+            else "Generated from a completed audit; listed cases must not regress below L5 RF_CONSTRAINED_MAPPED."
         ),
     }
 

@@ -62,9 +62,19 @@ jobs:
           path: build/cgra-bench/run/full/**
 
   mapping-research:
-    name: cgra-bench-mapping-research
+    name: cgra-bench-mapping-research (${{ matrix.name }})
     runs-on: ubuntu-24.04
     timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: research32
+            target: target/cgra_mapping32_v1.json
+            enforce_coverage: false
+          - name: research64
+            target: target/cgra_mapping64_v1.json
+            enforce_coverage: true
     steps:
       - uses: actions/checkout@v4
         with:
@@ -78,28 +88,31 @@ jobs:
           test "$(git -C third_party/CGRA-Bench rev-parse HEAD)" = "$(jq -r .commit benchmarks/cgra-bench/corpus.lock.json)"
           test -z "$(git -C third_party/CGRA-Bench status --porcelain)"
       - name: Run typed abstract mapping audit
-        run: make cgra-bench-research-audit
+        run: >-
+          make cgra-bench-research-audit
+          CGRA_BENCH_RESEARCH_TARGET=${{ matrix.target }}
+          CGRA_BENCH_RESEARCH_OUT=build/cgra-bench/run/${{ matrix.name }}
       - name: Verify mapping-research reconciliation and coverage
         run: |
           set -euo pipefail
-          summary=build/cgra-bench/run/research/summary.json
-          test -s build/cgra-bench/run/research/results.jsonl
-          jq -e '
-            .reconciliation.ok == true and
-            .unknown_count == 0 and
-            .timeout_count == 0 and
-            .t020r_mapping_research.mapper_entered >= 60 and
-            .t020r_mapping_research.modulo_mapping_verified >= 20 and
-            .t020r_mapping_research.mapper_entered_kernel_directories >= 12 and
-            .t020r_mapping_research.pass == true and
-            .computational_family_gate.enforced == true and
-            .computational_family_gate.required_family_count == 7 and
-            .computational_family_gate.pass == true
-          ' "$summary" >/dev/null
+          summary=build/cgra-bench/run/${{ matrix.name }}/summary.json
+          test -s "build/cgra-bench/run/${{ matrix.name }}/results.jsonl"
+          jq -e '.reconciliation.ok == true and .unknown_count == 0 and .timeout_count == 0' "$summary" >/dev/null
+          if [[ "${{ matrix.enforce_coverage }}" == "true" ]]; then
+            jq -e '
+              .t020r_mapping_research.mapper_entered >= 60 and
+              .t020r_mapping_research.rf_constrained_mapped >= 20 and
+              .t020r_mapping_research.mapper_entered_kernel_directories >= 12 and
+              .t020r_mapping_research.pass == true and
+              .computational_family_gate.enforced == true and
+              .computational_family_gate.required_family_count == 7 and
+              .computational_family_gate.pass == true
+            ' "$summary" >/dev/null
+          fi
       - name: Upload mapping-research audit
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: cgra-bench-mapping-research
+          name: cgra-bench-mapping-research-${{ matrix.name }}
           if-no-files-found: error
-          path: build/cgra-bench/run/research/**
+          path: build/cgra-bench/run/${{ matrix.name }}/**

@@ -332,6 +332,47 @@ TargetModel TargetModel::loadFromFile(const std::filesystem::path& path) {
   model.memory_.sameAddressPolicy = required<std::string>(memory, "same_address_policy", "memory");
   model.memory_.runtimeStall = required<bool>(memory, "runtime_stall", "memory");
   model.memory_.runtimeArbitration = required<bool>(memory, "runtime_arbitration", "memory");
+  if (memory.contains("address_value_types")) {
+    const auto& addressTypes = requiredArray(memory, "address_value_types", "memory");
+    if (addressTypes.empty())
+      fail("memory.address_value_types", "must not be empty");
+    for (std::size_t index = 0; index < addressTypes.size(); ++index) {
+      if (!addressTypes[index].is_string())
+        fail("memory.address_value_types[" + std::to_string(index) + "]", "must be a type string");
+      ir::ValueType type;
+      try {
+        type = ir::ValueType::fromString(addressTypes[index].get<std::string>());
+      } catch (const std::exception& error) {
+        fail("memory.address_value_types[" + std::to_string(index) + "]", error.what());
+      }
+      if (type.kind != ir::ValueKind::Integer || type.bitWidth == 0)
+        fail("memory.address_value_types[" + std::to_string(index) + "]",
+             "address value types must be integer types");
+      if (std::ranges::find(model.memory_.addressValueTypes, type) !=
+          model.memory_.addressValueTypes.end())
+        fail("memory.address_value_types", "contains a duplicate type");
+      model.memory_.addressValueTypes.push_back(type);
+    }
+  } else {
+    // Legacy v2/v3 contracts had an implicit 32-bit address value.  Keep that
+    // compatibility while making the width explicit for new research targets.
+    model.memory_.addressValueTypes.push_back(ir::ValueType::integer(32));
+  }
+  if (memory.contains("minimum_alignment_bytes")) {
+    const auto& alignments = requiredObject(memory, "minimum_alignment_bytes", "memory");
+    for (const auto& [width, value] : alignments.items()) {
+      unsigned widthBits = 0;
+      try {
+        widthBits = static_cast<unsigned>(std::stoul(width));
+      } catch (...) {
+        fail("memory.minimum_alignment_bytes", "width keys must be unsigned integers");
+      }
+      const auto alignmentBytes = required<unsigned>(alignments, width, "memory.minimum_alignment_bytes");
+      if (widthBits == 0 || alignmentBytes == 0)
+        fail("memory.minimum_alignment_bytes", "width and alignment must be positive");
+      model.memory_.minimumAlignmentBytes.emplace(widthBits, alignmentBytes);
+    }
+  }
   if (model.memory_.model != "shared_multiport_scratchpad")
     fail("memory.model", "unsupported memory model");
   if (model.memory_.addressUnit != "word" &&
@@ -897,6 +938,20 @@ TargetModel TargetModel::loadFromFile(const std::filesystem::path& path) {
   }
 
   const auto& params = requiredObject(root, "parameters", "");
+  if (params.contains("scratchpad_addr_width"))
+    model.memory_.scratchpadAddressWidthBits =
+        positiveUnsigned(params, "scratchpad_addr_width", "parameters");
+  else if (params.contains("scratchpad_addr_width_bits"))
+    model.memory_.scratchpadAddressWidthBits =
+        positiveUnsigned(params, "scratchpad_addr_width_bits", "parameters");
+  else
+    model.memory_.scratchpadAddressWidthBits = 32;
+  for (const auto& type : model.memory_.addressValueTypes)
+    if (type.bitWidth < model.memory_.scratchpadAddressWidthBits)
+      fail("memory.address_value_types", "address type is narrower than scratchpad address width");
+  if (model.memory_.minimumAlignmentBytes.empty())
+    model.memory_.minimumAlignmentBytes[model.memory_.widthBits] =
+        std::max(1U, model.memory_.widthBits / 8U);
   requireEqual(model.array_.rows, positiveUnsigned(params, "array_rows", "parameters"),
                "parameters.array_rows");
   requireEqual(model.array_.cols, positiveUnsigned(params, "array_cols", "parameters"),
@@ -990,6 +1045,20 @@ unsigned TargetModel::memoryDependenceSeparation(ir::MemoryDepKind kind) const n
     return memory_.wawDependenceSeparation;
   }
   return 0;
+}
+
+bool TargetModel::supportsAddressType(const ir::ValueType& type) const noexcept {
+  return std::ranges::find(memory_.addressValueTypes, type) != memory_.addressValueTypes.end() &&
+         type.kind == ir::ValueKind::Integer &&
+         type.bitWidth >= memory_.scratchpadAddressWidthBits;
+}
+
+std::optional<unsigned>
+TargetModel::minimumMemoryAlignment(unsigned accessWidthBits) const noexcept {
+  const auto it = memory_.minimumAlignmentBytes.find(accessWidthBits);
+  if (it == memory_.minimumAlignmentBytes.end())
+    return std::nullopt;
+  return it->second;
 }
 
 bool TargetModel::supportsValueType(const ir::ValueType& type) const noexcept {

@@ -1029,10 +1029,11 @@ void runNegativeCases() {
       "pointer-valued Load must feed a verified dynamic Generic address graph");
 
   const auto unaligned = lower(kUnalignedLoad, "unaligned", context);
-  expect(!unaligned.ok() &&
-             unaligned.status ==
-                 cgra::frontend::llvm_frontend::LLVMFrontendStatus::UnsupportedMemoryAlignment,
-         "unaligned i32 memory access must be rejected");
+  expect(unaligned.ok() && unaligned.provenance.memoryAccesses.size() == 1 &&
+             unaligned.provenance.memoryAccesses.front().alignmentBytes == 1 &&
+             unaligned.dfg->node(unaligned.provenance.memoryAccesses.front().memoryNode)
+                     .memoryInfo->alignmentBytes == 1,
+         "frontend must preserve observed alignment for target-driven validation");
 
   const auto oversized = lower(kOversizedGEPOffset, "oversized_gep_offset", context);
   expect(!oversized.ok() &&

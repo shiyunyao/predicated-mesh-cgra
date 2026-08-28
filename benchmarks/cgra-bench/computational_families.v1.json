@@ -9,43 +9,43 @@
       "id": "FIR-int",
       "source_glob": "kernels/fir/fir_int.cpp",
       "function_glob": "_Z6kernelPiS_S_",
-      "minimum_tier": "MAPPED"
+      "minimum_tier": "RF_CONSTRAINED_MAPPED"
     },
     {
       "id": "ReLU-int",
       "source_glob": "kernels/relu/relu_int.cpp",
       "function_glob": "_Z6kernelPiS_",
-      "minimum_tier": "MAPPED"
+      "minimum_tier": "RF_CONSTRAINED_MAPPED"
     },
     {
       "id": "GEMM-int",
       "source_glob": "kernels/gemm/gemm_int.c",
       "function_glob": "kernel_int",
-      "minimum_tier": "MAPPED"
+      "minimum_tier": "RF_CONSTRAINED_MAPPED"
     },
     {
       "id": "BiCG-int",
       "source_glob": "kernels/bicg/bicg_int.c",
       "function_glob": "kernel_bicg_int",
-      "minimum_tier": "MAPPED"
+      "minimum_tier": "RF_CONSTRAINED_MAPPED"
     },
     {
       "id": "FFT-int",
       "source_glob": "kernels/fft/fft_int.c",
       "function_glob": "kernel",
-      "minimum_tier": "MAPPED"
+      "minimum_tier": "RF_CONSTRAINED_MAPPED"
     },
     {
       "id": "DTW",
       "source_glob": "kernels/dtw/dtw.cpp",
       "function_glob": "_Z6kerneli",
-      "minimum_tier": "MAPPED"
+      "minimum_tier": "RF_CONSTRAINED_MAPPED"
     },
     {
       "id": "SpMV",
       "source_glob": "kernels/spmv/spmv.c",
       "function_glob": "kernel",
-      "minimum_tier": "MAPPED"
+      "minimum_tier": "RF_CONSTRAINED_MAPPED"
     }
   ]
 }

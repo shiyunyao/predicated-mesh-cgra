@@ -56,7 +56,8 @@ Json nodeJson(const Node& node) {
     value["icmp_predicate"] = toString(*node.icmpPredicate);
   if (node.memoryInfo)
     value["memory"] = {{"access_width_bits", node.memoryInfo->accessWidthBits},
-                       {"volatile", node.memoryInfo->isVolatile}};
+                       {"volatile", node.memoryInfo->isVolatile},
+                       {"alignment_bytes", node.memoryInfo->alignmentBytes}};
   if (node.source)
     value["source"] = {{"label", node.source->label}};
   if (node.operationKey)
@@ -240,7 +241,10 @@ DFG parse(std::string_view jsonText) {
     if (value.contains("memory")) {
       const auto& memoryJson = value.at("memory");
       memory = MemoryOpInfo{required<std::uint32_t>(memoryJson, "access_width_bits", "node.memory"),
-                            required<bool>(memoryJson, "volatile", "node.memory")};
+                            required<bool>(memoryJson, "volatile", "node.memory"),
+                            memoryJson.contains("alignment_bytes")
+                                ? memoryJson.at("alignment_bytes").get<std::uint32_t>()
+                                : 0U};
     }
     std::optional<SourceInfo> source;
     if (value.contains("source"))

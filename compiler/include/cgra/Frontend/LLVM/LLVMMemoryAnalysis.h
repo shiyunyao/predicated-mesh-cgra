@@ -74,6 +74,7 @@ struct LLVMMemoryAccessDescriptor {
   std::int64_t constantOffsetWords = 0;
   std::int64_t iterationStrideWords = 0;
   std::uint32_t accessWidthBits = 0;
+  std::uint32_t alignmentBytes = 0;
   bool exactAffine = false;
 };
 

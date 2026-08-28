@@ -1,0 +1,10 @@
+{
+  "schema": "cgra.cgra_bench.case_overrides.v1",
+  "corpus_sha": "6729aaf225d0320e4e0d3b419e20483069a5a69b",
+  "overrides": [
+    {
+      "source": "kernels/susan/susan.c",
+      "include_dirs": ["../../benchmarks/cgra-bench/shims/susan"]
+    }
+  ]
+}

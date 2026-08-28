@@ -71,7 +71,7 @@ def test_source_abi_profiles_never_silently_fallback() -> None:
     assert SOURCE_ABI_FLAGS == {"m32": ["-m32"], "native": []}
 
 
-def test_mapping_research_success_is_mapped_not_manifest_complete(tmp_path: Path) -> None:
+def test_mapping_research_success_is_rf_constrained_not_manifest_complete(tmp_path: Path) -> None:
     artifact = tmp_path / "abi"
     backend = artifact / "backend" / "backend"
     backend.mkdir(parents=True)
@@ -82,22 +82,22 @@ def test_mapping_research_success_is_mapped_not_manifest_complete(tmp_path: Path
             "schema": "cgra.compiler_pipeline.result.v1",
             "mode": "mapping_research",
             "status": "success",
-            "mapping_status": "success",
+            "mapping_status": "rf_constrained_success",
             "hardware_executable": False,
             "physical_realizability": {
-                "status": "infeasible",
-                "reason_code": "rf_infeasible",
-                "message": "fixed register overlap",
+                "status": "feasible",
+                "reason_code": "rf_constrained_mapping_accepted",
+                "message": "finite RF accepted",
             },
             "stats": {"mii": 1, "mapped_ii": 2},
         },
     }))
 
-    assert tier_from_compile(artifact, True) == ("MAPPED", "S10_MODULO_MAPPING")
+    assert tier_from_compile(artifact, True) == ("RF_CONSTRAINED_MAPPED", "S12_RF_ALLOCATION")
     observation = backend_observation(artifact)
-    assert observation["mapping_status"] == "success"
+    assert observation["mapping_status"] == "rf_constrained_success"
     assert observation["hardware_executable"] is False
-    assert observation["physical_realizability"]["reason_code"] == "rf_infeasible"
+    assert observation["physical_realizability"]["reason_code"] == "rf_constrained_mapping_accepted"
 
 
 def functional_spec(
@@ -160,12 +160,43 @@ def test_inventory_is_pinned_and_complete(tmp_path: Path) -> None:
     assert len(cases["cases"]) == 34
 
 
+def test_inventory_preserves_case_overrides_and_is_idempotent(tmp_path: Path) -> None:
+    overrides = tmp_path / "cases.overrides.v1.json"
+    overrides.write_text(json.dumps({
+        "schema": "cgra.cgra_bench.case_overrides.v1",
+        "corpus_sha": PIN,
+        "overrides": [{
+            "source": "kernels/susan/susan.c",
+            "include_dirs": ["../../benchmarks/cgra-bench/shims/susan"],
+        }],
+    }))
+    first = tmp_path / "cases.first.json"
+    base = tmp_path / "cases.base.v1.json"
+    inventory(ROOT / "third_party/CGRA-Bench", tmp_path / "corpus.json", first, overrides, base)
+    first_bytes = first.read_bytes()
+    generated_base = json.loads(base.read_text())
+    merged = json.loads(first.read_text())
+    base_susan = next(item for item in generated_base["cases"] if item["source"] == "kernels/susan/susan.c")
+    merged_susan = next(item for item in merged["cases"] if item["source"] == "kernels/susan/susan.c")
+    assert base_susan["include_dirs"] == []
+    assert merged_susan["include_dirs"] == ["../../benchmarks/cgra-bench/shims/susan"]
+
+    second = tmp_path / "cases.second.json"
+    inventory(ROOT / "third_party/CGRA-Bench", tmp_path / "corpus-again.json", second, overrides, base)
+    assert second.read_bytes() == first_bytes
+
+
 def test_classifier_preserves_budget_vs_infeasible() -> None:
     result = classify("S10_MODULO_MAPPING", "mapping budget exhausted")
     assert result == {
         "category": "MAPPING_BUDGET",
         "owner": "MAPPER",
         "diagnostic_code": "MAPPING_BUDGET_EXCEEDED",
+    }
+    assert classify("S12_RF_ALLOCATION", "RF_BUDGET: coloring budget exhausted") == {
+        "category": "RF",
+        "owner": "RF",
+        "diagnostic_code": "RF_BUDGET",
     }
     result = classify("S10_MODULO_MAPPING", "no legal mapping exists")
     assert result["category"] == "MAPPING_INFEASIBLE"
@@ -391,6 +422,10 @@ def test_report_tracks_linear_multiblock_outcomes(tmp_path: Path) -> None:
     assert summary["t020r_mapping_research"] == {
         "mapper_entered": 0,
         "modulo_mapping_verified": 0,
+        "raw_modulo_verified": 0,
+        "completed_modulo_mappings": 0,
+        "rf_rejected_mappings": 0,
+        "rf_constrained_mapped": 0,
         "mapper_entered_kernel_directories": 0,
         "hardware_executable": 0,
         "mapping_status": {"not_available": 1},
@@ -403,7 +438,7 @@ def test_report_tracks_linear_multiblock_outcomes(tmp_path: Path) -> None:
     }
 
 
-def test_report_separates_mapping_success_from_physical_failure(tmp_path: Path) -> None:
+def test_report_counts_only_rf_constrained_mapping_success(tmp_path: Path) -> None:
     corpus = {
         "denominator": {"kernel_directories": 1, "source_translation_units": 1},
         "sources": [{"path": "kernels/a/a.c", "enabled": True}],
@@ -414,27 +449,44 @@ def test_report_separates_mapping_success_from_physical_failure(tmp_path: Path) 
         "source": "kernels/a/a.c",
         "function": "kernel",
         "loop_header": "loop",
-        "tier": "MAPPED",
+        "tier": "RF_CONSTRAINED_MAPPED",
         "status": "PASS",
         "category": "MAPPING",
         "owner": "MAPPER",
         "diagnostic_code": "MODULO_MAPPING_VERIFIED",
         "backend": {
-            "mapping_status": "success",
+            "mapping_status": "rf_constrained_success",
+            "raw_mapping_found": True,
+            "rf_constrained_mapping_found": True,
             "hardware_executable": False,
-            "stats": {"mapper_invoked": True},
+            "stats": {
+                "mapper_invoked": True,
+                "completed_modulo_mappings": 2,
+                "rf_rejected": 1,
+                "rf_rejected_by_ii": {"4": 1},
+                "rf_rejected_by_reason": {"rf_fixed_register_self_overlap": 1},
+                "rf_constrained_mappings": 1,
+            },
             "physical_realizability": {
-                "status": "infeasible",
-                "reason_code": "rf_infeasible",
+                "status": "feasible",
+                "reason_code": "rf_constrained_mapping_accepted",
             },
         },
     }])
     research = summary["t020r_mapping_research"]
     assert research["modulo_mapping_verified"] == 1
-    assert research["mapping_status"] == {"success": 1}
-    assert research["physical_status"] == {"infeasible": 1}
-    assert research["physical_failure_reasons"] == {"rf_infeasible": 1}
+    assert research["mapping_status"] == {"rf_constrained_success": 1}
+    assert research["raw_modulo_verified"] == 1
+    assert research["rf_constrained_mapped"] == 1
+    assert research["physical_status"] == {"feasible": 1}
+    assert research["physical_failure_reasons"] == {"rf_constrained_mapping_accepted": 1}
     assert research["hardware_executable"] == 0
+    assert research["completed_modulo_mappings"] == 2
+    assert research["rf_rejected_mappings"] == 1
+    assert summary["backend_metrics"]["rf_rejected_by_ii"] == {"4": 1}
+    assert summary["backend_metrics"]["rf_rejected_by_reason"] == {
+        "rf_fixed_register_self_overlap": 1
+    }
 
 
 def test_report_enforces_computational_family_mapping_gate(tmp_path: Path) -> None:
@@ -547,11 +599,11 @@ def test_smoke_expectations_reject_classification_drift(tmp_path: Path) -> None:
     assert check_expectations(run, expectations) == []
 
 
-def test_freeze_supported_retains_only_l4_or_higher_cases() -> None:
+def test_freeze_supported_retains_only_rf_constrained_cases() -> None:
     frozen = freeze(
         [
             {"id": "case-z", "tier": "MANIFEST_COMPLETE"},
-            {"id": "case-a", "tier": "MAPPED"},
+            {"id": "case-a", "tier": "ROUTE_MAPPED"},
             {"id": "case-b", "tier": "TARGET_LEGAL"},
         ],
         {
@@ -568,8 +620,7 @@ def test_freeze_supported_retains_only_l4_or_higher_cases() -> None:
         "profile": "baseline",
     }
     assert frozen["cases"] == [
-        {"id": "case-a", "minimum_tier": "MAPPED"},
-        {"id": "case-z", "minimum_tier": "MAPPED"},
+        {"id": "case-z", "minimum_tier": "RF_CONSTRAINED_MAPPED"},
     ]
 
 

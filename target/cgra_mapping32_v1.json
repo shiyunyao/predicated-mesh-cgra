@@ -108,6 +108,8 @@
     "address_unit": "byte",
     "depth": 16777216,
     "width_bits": 32,
+    "address_value_types": ["i32"],
+    "minimum_alignment_bytes": {"8": 1, "16": 2, "32": 4},
     "ports": 4,
     "load_latency": 2,
     "max_issue_per_lsu_per_cycle": 1,

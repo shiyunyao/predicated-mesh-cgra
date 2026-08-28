@@ -1,7 +1,7 @@
 {
   "cases": [
     {
-      "diagnostic_codes": ["RFA_FIXED_REGISTER_SELF_OVERLAP"],
+      "diagnostic_codes": ["RF_CONSTRAINED_MAPPING_FAILED", "RFA_FIXED_REGISTER_SELF_OVERLAP"],
       "id": "kernels/fir/fir_int.cpp::_Z6kernelPiS_S_::for.cond",
       "terminal_stage": "S10_MODULO_MAPPING"
     },

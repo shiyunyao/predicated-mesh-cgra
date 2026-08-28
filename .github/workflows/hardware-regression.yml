@@ -14,6 +14,7 @@ on:
       - compiler/memory-dependence-v0
       - compiler/cgra-bench-audit-v0
       - compiler/linear-multiblock-loop-v0
+      - compiler/benchmark-to-mapper-v1
   workflow_dispatch:
 
 permissions:

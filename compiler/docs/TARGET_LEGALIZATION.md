@@ -103,8 +103,11 @@ latency, issue occupancy, and a compatible tile/resource capability.
 
 The mapping-research pipeline runs Generic DFG verification, target
 legalization, Target DFG verification, MII analysis, modulo mapping, and
-`ModuloMappingVerifier`, then stops. A verified modulo mapping is reported as
-`mapping_status=success`; physical realization results are recorded
+`ModuloMappingVerifier`, then applies the same finite stage and RF completion
+checks as the hardware lane. A route candidate is reported as
+`route_mapped_rf_infeasible` when it is rejected by finite realization; only
+`mapping_status=rf_constrained_success` is an accepted research mapping.
+Raw candidates, RF rejection reasons, and accepted mappings are recorded
 separately. The output is always `hardware_executable=false` and cannot
 produce a program manifest.
 

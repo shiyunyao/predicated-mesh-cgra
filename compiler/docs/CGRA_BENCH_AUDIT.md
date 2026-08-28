@@ -22,9 +22,11 @@ make cgra-bench-research-audit
 ```
 
 It uses `target/cgra_mapping64_v1.json`, passes the target's explicit
-byte-address unit to the LLVM frontend, and stops after
-`ModuloMappingVerifier`. Its output is mapping evidence only: it never emits
-an executable manifest or claims RTL support.
+byte-address unit to the LLVM frontend, and accepts a mapping only after
+`ModuloMappingVerifier`, `StageScheduler`, `RFAllocator`, and their independent
+verifiers pass. L4 route candidates and L5 finite-RF mappings are reported
+separately. Its output is mapping evidence only: it never emits an executable
+manifest or claims RTL support.
 
 After a completed **hosted** full audit, freeze its mapped-case contract with:
 
@@ -33,8 +35,9 @@ make cgra-bench-freeze-supported
 ```
 
 This command reads the exact `results.jsonl` and `environment.json` from the
-selected full-audit directory. It does not invent a supported benchmark when
-no case reached L4.
+selected full-audit directory. It freezes only L5
+`RF_CONSTRAINED_MAPPED` cases; it does not invent a supported benchmark when
+no case reached finite-RF mapping.
 
 The smoke gate uses the fixed six-source manifest:
 
@@ -99,7 +102,8 @@ reconciles enabled corpus sources and every discovered innermost loop against
 terminal results. Failures are reproduced from the saved canonical LLVM,
 exact command, pinned target and compiler hashes; source semantics are never
 rewritten by the harness. `known_supported.v1.json` is checked after smoke and
-full runs so an established L4-or-higher case cannot silently regress.
+full runs so an established L5 finite-RF case cannot silently regress. Raw L4
+route candidates are intentionally not part of this baseline.
 
 ## Functional validation
 

@@ -128,6 +128,10 @@ std::string_view toString(LegalizationStatus status) {
     return "unsupported_compare_predicate";
   case LegalizationStatus::UnsupportedMemoryAccessWidth:
     return "unsupported_memory_access_width";
+  case LegalizationStatus::UnsupportedAddressType:
+    return "unsupported_address_type";
+  case LegalizationStatus::UnsupportedMemoryAlignment:
+    return "unsupported_memory_alignment";
   case LegalizationStatus::NoCompatibleExecutionResource:
     return "no_compatible_execution_resource";
   case LegalizationStatus::TargetContractError:
@@ -229,6 +233,24 @@ TargetLegalizationResult TargetLegalizer::legalize(const ir::DFG& generic,
                     "target does not provide operation " + operationName, node.id);
       continue;
     }
+    if (node.opcode == ir::Opcode::Load || node.opcode == ir::Opcode::Store) {
+      bool addressTypeValid = true;
+      for (std::size_t operand = 0; operand < node.operandTypes.size() &&
+                                     operand < operation->operands.size();
+           ++operand) {
+        if (operation->operands[operand].role == TargetOperandRole::Address &&
+            !target.supportsAddressType(node.operandTypes[operand])) {
+          addDiagnostic(result, LegalizationStatus::UnsupportedAddressType,
+                        "TLEG_UNSUPPORTED_ADDRESS_TYPE",
+                        "memory address type " + node.operandTypes[operand].toString() +
+                            " is not supported by target address contract",
+                        node.id);
+          addressTypeValid = false;
+        }
+      }
+      if (!addressTypeValid)
+        continue;
+    }
     if (!target.isOperationExecutable(*operation)) {
       addDiagnostic(result, LegalizationStatus::NoCompatibleExecutionResource,
                     "TLEG_NO_COMPATIBLE_EXECUTION_RESOURCE",
@@ -243,6 +265,16 @@ TargetLegalizationResult TargetLegalizer::legalize(const ir::DFG& generic,
                     "TLEG_UNSUPPORTED_MEMORY_ACCESS_WIDTH",
                     "memory operation width is not supported by target", node.id);
       continue;
+    }
+    if ((node.opcode == ir::Opcode::Load || node.opcode == ir::Opcode::Store) &&
+        node.memoryInfo && node.memoryInfo->alignmentBytes != 0) {
+      const auto minimum = target.minimumMemoryAlignment(node.memoryInfo->accessWidthBits);
+      if (!minimum || node.memoryInfo->alignmentBytes < *minimum) {
+        addDiagnostic(result, LegalizationStatus::UnsupportedMemoryAlignment,
+                      "TLEG_UNSUPPORTED_MEMORY_ALIGNMENT",
+                      "memory alignment is below target minimum for access width", node.id);
+        continue;
+      }
     }
     const auto requiredOperands = static_cast<std::size_t>(
         std::count_if(operation->operands.begin(), operation->operands.end(),

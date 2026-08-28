@@ -26,6 +26,10 @@ struct SourceInfo {
 struct MemoryOpInfo {
   std::uint32_t accessWidthBits = 0;
   bool isVolatile = false;
+  // Zero means legacy hand-authored DFGs did not provide an alignment fact.
+  // LLVM frontends preserve the observed byte alignment here; target
+  // legalization owns the supported-alignment policy.
+  std::uint32_t alignmentBytes = 0;
 
   friend bool operator==(const MemoryOpInfo&, const MemoryOpInfo&) = default;
 };

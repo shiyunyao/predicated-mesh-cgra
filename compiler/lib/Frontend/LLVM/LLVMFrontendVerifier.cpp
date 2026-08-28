@@ -1283,6 +1283,7 @@ struct VerifiedMemoryAccess {
   std::int64_t constantOffsetWords = 0;
   std::int64_t iterationStrideWords = 0;
   std::uint32_t accessWidthBits = 0;
+  std::uint32_t alignmentBytes = 0;
 };
 
 struct VerifiedMemoryDependence {
@@ -1698,11 +1699,10 @@ VerifiedMemoryExpectations recomputeMemoryExpectations(const Selection& selectio
                     llvm::cast<llvm::PointerType>(accessedType)->getAddressSpace()))
           : scalarMemoryType ? static_cast<std::uint32_t>(accessedType->getPrimitiveSizeInBits())
                              : 0U;
-      const auto naturalAlignmentBytes = accessWidthBits / 8;
       if (!scalarMemoryType ||
           (accessWidthBits != 8 && accessWidthBits != 16 && accessWidthBits != 32 &&
            accessWidthBits != 64) ||
-          alignment < naturalAlignmentBytes || (load && (load->isVolatile() || load->isAtomic())) ||
+          (load && (load->isVolatile() || load->isAtomic())) ||
           (store && (store->isVolatile() || store->isAtomic()))) {
         result.error = "LLVM memory access is outside the verified typed scalar subset";
         return result;
@@ -1731,6 +1731,7 @@ VerifiedMemoryExpectations recomputeMemoryExpectations(const Selection& selectio
       access.pointerBackedge = root->backedge;
       access.pointerStepBytes = root->stepBytes;
       access.accessWidthBits = accessWidthBits;
+      access.alignmentBytes = static_cast<std::uint32_t>(alignment);
 
       {
         if (collected->constantBytes % addressUnitBytes != 0 ||
@@ -1994,6 +1995,7 @@ void verifyMemoryDataflow(const Selection& selection, const LLVMFrontendOptions&
         actual->offsetWords != descriptor.constantOffsetWords ||
         actual->strideWords != descriptor.iterationStrideWords ||
         actual->accessWidthBits != descriptor.accessWidthBits ||
+        actual->alignmentBytes != descriptor.alignmentBytes ||
         !result.dfg->containsNode(actual->memoryNode)) {
       report.add("LLVM_FRONTEND_MEMORY_ACCESS_VERIFY_FAILED",
                  "memory descriptor does not match independent LLVM affine analysis");
@@ -2003,7 +2005,8 @@ void verifyMemoryDataflow(const Selection& selection, const LLVMFrontendOptions&
     const auto expectedOpcode =
         descriptor.kind == VerifiedMemoryAccessKind::Load ? ir::Opcode::Load : ir::Opcode::Store;
     if (memoryNode.opcode != expectedOpcode || !memoryNode.memoryInfo ||
-        memoryNode.memoryInfo->accessWidthBits != descriptor.accessWidthBits)
+        memoryNode.memoryInfo->accessWidthBits != descriptor.accessWidthBits ||
+        memoryNode.memoryInfo->alignmentBytes != descriptor.alignmentBytes)
       report.add("LLVM_FRONTEND_MEMORY_NODE_SEMANTICS_MISMATCH",
                  "Generic memory node opcode/width does not match LLVM");
 

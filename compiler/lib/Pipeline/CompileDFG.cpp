@@ -92,6 +92,10 @@ std::string_view toString(CompileDFGStatus status) noexcept {
     return "mii_analysis_failure";
   case CompileDFGStatus::MappingFailure:
     return "mapping_failure";
+  case CompileDFGStatus::RFConstrainedMappingFailure:
+    return "rf_constrained_mapping_failure";
+  case CompileDFGStatus::RFConstrainedMappingBudgetFailure:
+    return "rf_constrained_mapping_budget_failure";
   case CompileDFGStatus::ModuloMappingVerificationFailure:
     return "modulo_mapping_verification_failure";
   case CompileDFGStatus::StageSchedulingFailure:
@@ -149,7 +153,12 @@ std::string CompileDFGResult::toJson() const {
              {"mode", toString(mode)},
              {"status", toString(status)},
              {"message", message},
-             {"mapping_status", moduloMapping ? "success" : "not_available"},
+             {"mapping_status", moduloMapping ? "rf_constrained_success" :
+                                               (stats.rfBudgetExceeded ? "route_mapped_rf_budget" :
+                                                (stats.completedModuloMappings ? "route_mapped_rf_infeasible"
+                                                                                : "not_available"))},
+             {"raw_mapping_found", stats.completedModuloMappings != 0},
+             {"rf_constrained_mapping_found", moduloMapping.has_value()},
              {"hardware_executable", hardwareExecutable()},
              {"physical_realizability",
               {{"status", toString(physicalRealizability.status)},
@@ -166,6 +175,10 @@ std::string CompileDFGResult::toJson() const {
                {"post_mapping_rejected", stats.postMappingRejected},
                {"stage_rejected", stats.stageRejected},
                {"rf_rejected", stats.rfRejected},
+               {"rf_budget_exceeded", stats.rfBudgetExceeded},
+               {"rf_rejected_by_ii", Json::object()},
+               {"rf_rejected_by_reason", Json::object()},
+               {"rf_constrained_mappings", stats.rfConstrainedMappings},
                {"post_mapping_abort", stats.postMappingAbort},
                {"max_stage", stats.maxStage},
                {"storage_segments", stats.storageSegments},
@@ -173,6 +186,10 @@ std::string CompileDFGResult::toJson() const {
                {"kernel_repeats", stats.kernelRepeats},
                {"epilogue_cycles", stats.epilogueCycles}}},
              {"artifacts", Json::array()}};
+  for (const auto &[ii, count] : stats.rfRejectedByII)
+    value["stats"]["rf_rejected_by_ii"][std::to_string(ii)] = count;
+  for (const auto &[reason, count] : stats.rfRejectedByReason)
+    value["stats"]["rf_rejected_by_reason"][reason] = count;
   for (const auto& artifact : artifacts)
     value["artifacts"].push_back(artifact.string());
   return value.dump(2);
@@ -220,7 +237,8 @@ CompileDFGResult compileGenericDFG(const ir::DFG& dfg, const TargetModel& target
 
     auto mapperOptions = options.mapper;
     BackendFeasibilityChecker completionChecker(options.rfAllocation);
-    if (options.mode == CompileDFGMode::HardwareExecutable) {
+    if (options.mode == CompileDFGMode::HardwareExecutable ||
+        options.mode == CompileDFGMode::MappingResearch) {
       mapperOptions.completeMappingChecker =
           [&completionChecker](const target::TargetDFG& candidateDFG,
                                const TargetModel& candidateTarget,
@@ -239,11 +257,34 @@ CompileDFGResult compileGenericDFG(const ir::DFG& dfg, const TargetModel& target
     result.stats.postMappingRejected = mapped.stats.postMappingRejected;
     result.stats.stageRejected = mapped.stats.stageRejected;
     result.stats.rfRejected = mapped.stats.rfRejected;
+    result.stats.rfBudgetExceeded = mapped.stats.rfBudgetExceeded;
+    result.stats.rfRejectedByII = mapped.stats.rfRejectedByII;
+    result.stats.rfRejectedByReason = mapped.stats.rfRejectedByReason;
     result.stats.postMappingAbort = mapped.stats.postMappingAbort;
-    if (!mapped.ok())
-      return failure(result, CompileDFGStatus::MappingFailure, mapped.format(), artifacts);
+    if (!mapped.ok()) {
+      const auto status = options.mode == CompileDFGMode::MappingResearch &&
+                                  mapped.stats.rfBudgetExceeded != 0
+                              ? CompileDFGStatus::RFConstrainedMappingBudgetFailure
+                              : options.mode == CompileDFGMode::MappingResearch &&
+                                  mapped.stats.completedModuloMappings != 0 &&
+                                  mapped.stats.rfRejected != 0
+                              ? CompileDFGStatus::RFConstrainedMappingFailure
+                              : CompileDFGStatus::MappingFailure;
+      if (status == CompileDFGStatus::RFConstrainedMappingFailure) {
+        result.physicalRealizability.status = PhysicalRealizabilityStatus::Infeasible;
+        result.physicalRealizability.reasonCode = "rf_constrained_mapping_failed";
+        result.physicalRealizability.message = mapped.format();
+      } else if (status == CompileDFGStatus::RFConstrainedMappingBudgetFailure) {
+        result.physicalRealizability.status = PhysicalRealizabilityStatus::Error;
+        result.physicalRealizability.reasonCode = "rf_budget";
+        result.physicalRealizability.message = mapped.format();
+      }
+      const auto message = status == CompileDFGStatus::RFConstrainedMappingBudgetFailure
+                               ? "RF_BUDGET: " + mapped.format()
+                               : mapped.format();
+      return failure(result, status, message, artifacts);
+    }
     result.stats.mappedII = mapped.mapping->ii();
-    result.moduloMapping = mapped.mapping;
     artifacts.write("07_modulo_mapping.json", mapping::toJson(*mapped.mapping));
     const auto mappingReport =
         mapping::ModuloMappingVerifier::verify(targetDFG, target, *mapped.mapping);
@@ -253,22 +294,45 @@ CompileDFGResult compileGenericDFG(const ir::DFG& dfg, const TargetModel& target
                      mappingReport.format(), artifacts);
 
     if (options.mode == CompileDFGMode::MappingResearch) {
-      const auto physical = completionChecker.check(targetDFG, target, *mapped.mapping);
-      result.physicalRealizability.reasonCode = physical.reasonCode;
-      result.physicalRealizability.message = physical.message;
-      switch (physical.decision) {
-      case mapping::CompleteMappingDecision::Accept:
-        result.physicalRealizability.status = PhysicalRealizabilityStatus::Feasible;
-        break;
-      case mapping::CompleteMappingDecision::Reject:
-        result.physicalRealizability.status = PhysicalRealizabilityStatus::Infeasible;
-        break;
-      case mapping::CompleteMappingDecision::Abort:
-        result.physicalRealizability.status = PhysicalRealizabilityStatus::Error;
-        break;
-      }
+      // The mapper completion callback already checked these invariants while
+      // searching. Re-run them for the accepted candidate so the research
+      // artifact contains the same independent stage/RF evidence as the
+      // hardware lane, without entering materialization or lowering.
+      const auto staged = schedule::StageScheduler::schedule(targetDFG, target, *mapped.mapping);
+      artifacts.write("09_stage_report.json", staged.toJson());
+      if (!staged.ok())
+        return failure(result, CompileDFGStatus::StageSchedulingFailure, staged.format(), artifacts);
+      result.stats.maxStage = staged.mapping->maxStage();
+      artifacts.write("10_staged_mapping.json", schedule::toJson(*staged.mapping));
+      const auto stageReport =
+          schedule::StageAssignmentVerifier::verify(targetDFG, target, *staged.mapping);
+      artifacts.write("11_stage_verification.json",
+                      verification(stageReport.ok(), stageReport.format()).dump(2));
+      if (!stageReport.ok())
+        return failure(result, CompileDFGStatus::StageVerificationFailure, stageReport.format(),
+                       artifacts);
+      const auto allocated = register_allocation::RFAllocator::allocate(
+          targetDFG, target, *staged.mapping, options.rfAllocation);
+      artifacts.write("12_rf_report.json", allocated.toJson());
+      if (!allocated.ok())
+        return failure(result, CompileDFGStatus::RFAllocationFailure, allocated.format(), artifacts);
+      result.stats.storageSegments = allocated.mapping->storageRequirements().segments().size();
+      artifacts.write("13_rf_allocated_mapping.json",
+                      register_allocation::toJson(*allocated.mapping));
+      const auto rfReport =
+          register_allocation::RFAllocationVerifier::verify(targetDFG, target, *allocated.mapping);
+      artifacts.write("14_rf_verification.json",
+                      verification(rfReport.ok(), rfReport.format()).dump(2));
+      if (!rfReport.ok())
+        return failure(result, CompileDFGStatus::RFVerificationFailure, rfReport.format(), artifacts);
+      result.moduloMapping = mapped.mapping;
+      result.stats.rfConstrainedMappings = 1;
+      result.physicalRealizability.status = PhysicalRealizabilityStatus::Feasible;
+      result.physicalRealizability.reasonCode = "rf_constrained_mapping_accepted";
+      result.physicalRealizability.message =
+          "stage assignment and finite register allocation accepted the mapping";
       result.status = CompileDFGStatus::Success;
-      result.message = "verified modulo mapping produced; physical realizability recorded separately";
+      result.message = "RF-constrained modulo mapping produced";
       artifacts.write("09_physical_realizability.json",
                       Json{{"schema", "cgra.physical_realizability.v1"},
                            {"status", toString(result.physicalRealizability.status)},
@@ -307,6 +371,7 @@ CompileDFGResult compileGenericDFG(const ir::DFG& dfg, const TargetModel& target
                     verification(rfReport.ok(), rfReport.format()).dump(2));
     if (!rfReport.ok())
       return failure(result, CompileDFGStatus::RFVerificationFailure, rfReport.format(), artifacts);
+    result.moduloMapping = mapped.mapping;
 
     schedule::ScheduleMaterializationRequest request{options.tripCount,
                                                      options.materializationBudget};

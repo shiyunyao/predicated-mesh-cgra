@@ -343,6 +343,71 @@ void testMappingResearchTarget() {
   f64Builder.bindExternal(f64Add, 1, f64Value);
   expect(cgra::target::TargetLegalizer::legalize(f64Builder.finish(), research64).ok(),
          "research64 accepts f64 operations in its typed data lane");
+
+  cgra::ir::DFGBuilder addressWidthBuilder("research_address_widths");
+  const auto i32Address =
+      addressWidthBuilder.addExternal("address32", cgra::ir::ValueType::i32());
+  const auto i64Address =
+      addressWidthBuilder.addExternal("address64", cgra::ir::ValueType::integer(64));
+  const auto load32 = addressWidthBuilder.addNode(
+      cgra::ir::Opcode::Load, {cgra::ir::ValueType::i32()}, cgra::ir::ValueType::i32(),
+      std::nullopt, cgra::ir::MemoryOpInfo{32, false, 4});
+  const auto load64 = addressWidthBuilder.addNode(
+      cgra::ir::Opcode::Load, {cgra::ir::ValueType::integer(64)},
+      cgra::ir::ValueType::integer(64), std::nullopt,
+      cgra::ir::MemoryOpInfo{64, false, 4});
+  const auto store64 = addressWidthBuilder.addNode(
+      cgra::ir::Opcode::Store,
+      {cgra::ir::ValueType::i32(), cgra::ir::ValueType::integer(64)},
+      cgra::ir::ValueType::voidTy(), std::nullopt,
+      cgra::ir::MemoryOpInfo{64, false, 4});
+  addressWidthBuilder.bindExternal(load32, 0, i32Address);
+  addressWidthBuilder.bindExternal(load64, 0, i64Address);
+  addressWidthBuilder.bindExternal(store64, 0, i32Address);
+  addressWidthBuilder.bindExternal(store64, 1, i64Address);
+  const auto addressWidthGraph = addressWidthBuilder.finish();
+  const auto addressWidthResult =
+      cgra::target::TargetLegalizer::legalize(addressWidthGraph, research64);
+  expect(addressWidthResult.ok(),
+         "research64 accepts i32 address values for 32/64-bit memory operations");
+
+  cgra::ir::DFGBuilder narrowAddressBuilder("research_narrow_address");
+  const auto narrowAddress =
+      narrowAddressBuilder.addExternal("address16", cgra::ir::ValueType::integer(16));
+  const auto narrowLoad = narrowAddressBuilder.addNode(
+      cgra::ir::Opcode::Load, {cgra::ir::ValueType::integer(16)},
+      cgra::ir::ValueType::i32(), std::nullopt,
+      cgra::ir::MemoryOpInfo{32, false, 4});
+  narrowAddressBuilder.bindExternal(narrowLoad, 0, narrowAddress);
+  const auto narrowResult =
+      cgra::target::TargetLegalizer::legalize(narrowAddressBuilder.finish(), research64);
+  expect(!narrowResult.ok() && !narrowResult.dfg &&
+             narrowResult.toJson().find("TLEG_UNSUPPORTED_ADDRESS_TYPE") != std::string::npos,
+         "research64 rejects address values narrower than its scratchpad address width");
+  cgra::ir::DFGBuilder alignmentBuilder("research_alignment_contract");
+  const auto alignmentAddress =
+      alignmentBuilder.addExternal("address32", cgra::ir::ValueType::i32());
+  const auto f64Load = alignmentBuilder.addNode(
+      cgra::ir::Opcode::Load, {cgra::ir::ValueType::i32()},
+      cgra::ir::ValueType::floating(64), std::nullopt,
+      cgra::ir::MemoryOpInfo{64, false, 2});
+  alignmentBuilder.bindExternal(f64Load, 0, alignmentAddress);
+  const auto alignmentResult =
+      cgra::target::TargetLegalizer::legalize(alignmentBuilder.finish(), research64);
+  expect(!alignmentResult.ok() &&
+             alignmentResult.toJson().find("TLEG_UNSUPPORTED_MEMORY_ALIGNMENT") !=
+                 std::string::npos,
+         "research64 target must reject an alignment below its declared minimum");
+  cgra::ir::DFGBuilder validAlignmentBuilder("research_valid_f64_alignment");
+  const auto validAlignmentAddress =
+      validAlignmentBuilder.addExternal("address32", cgra::ir::ValueType::i32());
+  const auto validF64Load = validAlignmentBuilder.addNode(
+      cgra::ir::Opcode::Load, {cgra::ir::ValueType::i32()},
+      cgra::ir::ValueType::floating(64), std::nullopt,
+      cgra::ir::MemoryOpInfo{64, false, 4});
+  validAlignmentBuilder.bindExternal(validF64Load, 0, validAlignmentAddress);
+  expect(cgra::target::TargetLegalizer::legalize(validAlignmentBuilder.finish(), research64).ok(),
+         "research64 must accept f64 accesses with its declared four-byte minimum alignment");
   cgra::ir::DFGBuilder mixedBuilder("typed_fadd_mixed");
   const auto f32Value = mixedBuilder.addExternal("f32", cgra::ir::ValueType::f32());
   const auto mixedF64 =
