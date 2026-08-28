@@ -311,6 +311,29 @@ void testMappingResearchTarget() {
              research64.supportsValueType(cgra::ir::ValueType::floating(64)) &&
              research64.supportsValueType(cgra::ir::ValueType::integer(64)),
          "research64 explicitly supports 64-bit integer and floating values");
+
+  cgra::ir::DFGBuilder predicateBuilder("research_predicate_ops");
+  const auto integer = predicateBuilder.addExternal("integer", cgra::ir::ValueType::i32());
+  const auto compare = predicateBuilder.addNode(
+      cgra::ir::Opcode::ICmp,
+      {cgra::ir::ValueType::i32(), cgra::ir::ValueType::i32()},
+      cgra::ir::ValueType::predicate(), cgra::ir::ICmpPredicate::SLT);
+  predicateBuilder.bindExternal(compare, 0, integer);
+  predicateBuilder.bindExternal(compare, 1, integer);
+  const auto predicateXor = predicateBuilder.addCustomNode(
+      "PXOR", {cgra::ir::ValueType::predicate(), cgra::ir::ValueType::predicate()},
+      cgra::ir::ValueType::predicate());
+  predicateBuilder.addPredicateEdge(compare, predicateXor, 0);
+  predicateBuilder.addPredicateEdge(compare, predicateXor, 1);
+  const auto predicateGraph = predicateBuilder.finish();
+  const auto predicateResult =
+      cgra::target::TargetLegalizer::legalize(predicateGraph, research64);
+  expect(predicateResult.ok() && predicateResult.dfg &&
+             predicateResult.dfg->node(0).operation == "CMP_SLT" &&
+             predicateResult.dfg->node(1).operation == "PXOR",
+         "abstract mapping target must declare signed compare and predicate logic FUs");
+  expect(!cgra::target::TargetLegalizer::legalize(predicateGraph, hardware).ok(),
+         "abstract predicate capabilities must not weaken the hardware target");
 }
 
 void testTargetDrivenOperations() {

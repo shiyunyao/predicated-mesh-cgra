@@ -17,8 +17,8 @@
     "pred_rf_depth": 16,
     "const_mem_depth": 16,
     "ctrl_mem_depth": 256,
-    "scratchpad_depth": 4096,
-    "scratchpad_addr_width": 12,
+    "scratchpad_depth": 1048576,
+    "scratchpad_addr_width": 20,
     "shared_mem_ports": 4,
     "mesh_hop_latency": 1,
     "load_latency": 2,
@@ -106,7 +106,7 @@
   "memory": {
     "model": "shared_multiport_scratchpad",
     "address_unit": "word",
-    "depth": 4096,
+    "depth": 1048576,
     "width_bits": 32,
     "ports": 4,
     "load_latency": 2,
@@ -127,7 +127,7 @@
     "pred_rf_addr_width": 4,
     "const_addr_width": 4,
     "ctrl_pc_width": 8,
-    "scratchpad_addr_width": 12,
+    "scratchpad_addr_width": 20,
     "cfg_word_idx_width_current_rtl": 2
   },
   "lsu": {
@@ -640,6 +640,38 @@
         "result_source": "fu_pred_result"
       }
     },
+    "CMP_SLT": {
+      "execution_class": "FU",
+      "operands": [{"role": "data"}, {"role": "data"}],
+      "result": {"role": "predicate"},
+      "issue_occupancy": 1,
+      "result_latency": 1,
+      "producer_output_ready_offset": 0
+    },
+    "CMP_SLE": {
+      "execution_class": "FU",
+      "operands": [{"role": "data"}, {"role": "data"}],
+      "result": {"role": "predicate"},
+      "issue_occupancy": 1,
+      "result_latency": 1,
+      "producer_output_ready_offset": 0
+    },
+    "CMP_SGT": {
+      "execution_class": "FU",
+      "operands": [{"role": "data"}, {"role": "data"}],
+      "result": {"role": "predicate"},
+      "issue_occupancy": 1,
+      "result_latency": 1,
+      "producer_output_ready_offset": 0
+    },
+    "CMP_SGE": {
+      "execution_class": "FU",
+      "operands": [{"role": "data"}, {"role": "data"}],
+      "result": {"role": "predicate"},
+      "issue_occupancy": 1,
+      "result_latency": 1,
+      "producer_output_ready_offset": 0
+    },
     "PPASS": {
       "execution_class": "FU",
       "operands": [
@@ -750,12 +782,7 @@
       "result": {"role": "predicate"},
       "issue_occupancy": 1,
       "result_latency": 1,
-      "producer_output_ready_offset": 0,
-      "encoding": {"domain": "op", "symbol": "PXOR"},
-      "lowering": {
-        "operand_sinks": ["fu_pred_0", "fu_pred_1"],
-        "result_source": "fu_pred_result"
-      }
+      "producer_output_ready_offset": 0
     },
     "LOAD": {
       "execution_class": "LSU",
@@ -1198,10 +1225,15 @@
       "CMP_NE",
       "CMP_ULT",
       "CMP_ULE",
+      "CMP_SLT",
+      "CMP_SLE",
+      "CMP_SGT",
+      "CMP_SGE",
       "PPASS",
       "PNOT",
       "PAND",
       "POR",
+      "PXOR",
       "FADD",
       "FSUB",
       "FMUL",
