@@ -164,15 +164,20 @@ def report(out: pathlib.Path, corpus: dict[str, Any], results: list[dict[str, An
         if item.get("kernel") and
         TIERS.get(item.get("tier", "DISCOVERED"), 0) >= TIERS["MAPPED"]
     })
-    mapper_entered = sum(
-        TIERS.get(item.get("tier", "DISCOVERED"), 0) >= TIERS["TARGET_LEGAL"]
-        for item in results
-    )
+    def mapper_was_invoked(item: dict[str, Any]) -> bool:
+        backend = item.get("backend", {})
+        if not isinstance(backend, dict):
+            return False
+        stats = backend.get("stats", {})
+        if isinstance(stats, dict) and "mapper_invoked" in stats:
+            return bool(stats["mapper_invoked"])
+        return backend.get("mapping_status") == "success"
+
+    mapper_entered = sum(mapper_was_invoked(item) for item in results)
     mapper_entered_kernel_directories = len({
         item.get("kernel")
         for item in results
-        if item.get("kernel") and
-        TIERS.get(item.get("tier", "DISCOVERED"), 0) >= TIERS["TARGET_LEGAL"]
+        if item.get("kernel") and mapper_was_invoked(item)
     })
     mapping_statuses = Counter(
         item.get("backend", {}).get("mapping_status", "not_available")

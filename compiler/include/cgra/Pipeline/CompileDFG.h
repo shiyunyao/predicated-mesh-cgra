@@ -78,6 +78,7 @@ struct CompileDFGOptions {
 struct CompileDFGStats {
   std::uint64_t tripCount = 0;
   std::uint32_t mii = 0;
+  bool mapperInvoked = false;
   std::uint32_t mappedII = 0;
   std::uint64_t nodeCandidateAttempts = 0;
   std::uint64_t routeStateExpansions = 0;

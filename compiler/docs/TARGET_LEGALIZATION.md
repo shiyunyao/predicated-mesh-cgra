@@ -3,7 +3,7 @@
 T-COMP-003 is the boundary between the target-independent loop IR and the
 current CGRA's executable operation set. It consumes a `cgra::ir::DFG` that
 has passed `DFGVerifier` and a `TargetModel` loaded from
-`target/cgra_v2.json`. It produces a deterministic, still-unmapped Target
+`target/cgra_v3.json`. It produces a deterministic, still-unmapped Target
 DFG.
 
 ## Pipeline
@@ -55,7 +55,7 @@ legalization does not duplicate them. An operation can be defined in the
 contract while not executable on a concrete topology: LSU operations require
 at least one enabled LSU tile, as reported by `TargetModel`.
 
-The current `cgra.target.v2` file requires this complete `operations` section.
+The current `cgra.target.v3` file requires this complete `operations` section.
 The older `ops` and `latencies` sections remain only as explicitly marked
 `legacy_compatibility_view` data for control/RTL consumers; they are not used
 to construct compiler operation semantics. A v2 target without the complete
@@ -68,7 +68,7 @@ Add/Sub/Mul/And/Or/Xor/Shl/LShr -> matching FU operation
 ICmp EQ/NE/ULT/ULE              -> CMP_* operation
 Select                          -> SELECT
 Load/Store                      -> LSU LOAD/STORE
-AShr and signed ICmp            -> unsupported on cgra_v2_shared4p
+AShr and signed ICmp            -> unsupported on cgra_v3_shared4p
 ```
 
 Generic-valid but target-unsupported operations therefore remain valid Generic
@@ -90,6 +90,36 @@ bits. `TargetDFGVerifier` independently checks operation descriptors, type
 support, providers, provenance, edge domains, and memory-edge endpoints. It
 does not prove placement, routing, or II feasibility.
 
+## Mapping-research targets
+
+An abstract mapping target is a separate research lane, not an executable
+hardware target. Its root `role` is `mapping_research_target`, and its
+operation descriptors may omit machine `encoding` and `lowering` fields. The
+descriptors still require complete semantic contracts: execution class,
+operand roles and accepted types, result role and accepted result types,
+latency, issue occupancy, and a compatible tile/resource capability.
+`uniform_data_type` is validated by `TargetModel` and enforced by
+`TargetLegalizer`; malformed typed operations are rejected before mapping.
+
+The mapping-research pipeline runs Generic DFG verification, target
+legalization, Target DFG verification, MII analysis, modulo mapping, and
+`ModuloMappingVerifier`, then stops. A verified modulo mapping is reported as
+`mapping_status=success`; physical realization results are recorded
+separately. The output is always `hardware_executable=false` and cannot
+produce a program manifest.
+
+The hardware-executable pipeline rejects a mapping-research target before
+legalization. Only a target with the complete encoding/lowering contract can
+continue through stage scheduling, register allocation, target lowering, and
+manifest verification. This keeps abstract mapping coverage from weakening
+the current RTL target contract.
+
+Typed `Custom` nodes retain their semantic operation key in the Generic DFG.
+Known keys such as `FADD`, `SDIV`, `TRUNC`, and `SITOFP` are independently
+checked by `DFGVerifier` for operand/result type direction and arity; a target
+descriptor with the same spelling does not override an invalid Generic
+signature.
+
 ## Debug schema and CLI
 
 `cgra::target::writeJson` and `readJson` use the versioned debug schema
@@ -104,7 +134,7 @@ cmake -S compiler -B compiler/build
 cmake --build compiler/build
 compiler/build/bin/cgra-target-legalize \
   input.dfg.json \
-  --target target/cgra_v2.json \
+  --target target/cgra_v3.json \
   -o output.target_dfg.json \
   --json-report build/legalization_report.json \
   --dump-text

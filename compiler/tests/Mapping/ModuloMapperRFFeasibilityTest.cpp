@@ -176,6 +176,8 @@ int main() {
            "fixed-RF overlap must remain visible as physical infeasibility");
     expect(research.physicalRealizability.reasonCode == "rf_infeasible",
            "mapping research lost the RF failure reason");
+    expect(research.stats.mapperInvoked,
+           "mapping research must record that the modulo mapper was invoked");
 
     const auto research64 =
         cgra::TargetModel::loadFromFile(Root / "target/cgra_mapping64_v1.json");
@@ -192,6 +194,8 @@ int main() {
         cgra::abi::compileKernel(typedFloatCandidate(), research64, typedOptions);
     expect(typed.ok() && typed.backend->moduloMapping.has_value(),
            "research64 typed kernel must reach verified modulo mapping: " + typed.message);
+    expect(typed.backend->stats.mapperInvoked,
+           "typed research pipeline must expose mapper invocation telemetry");
     expect(typed.abiLayout && typed.abiLayout->outputs.empty(),
            "mapping specialization must not materialize hardware ABI output Stores");
     expect(typed.bound && typed.bound->dfg.liveOuts().size() == 1 &&
@@ -199,6 +203,19 @@ int main() {
                  return node.opcode == cgra::ir::Opcode::Store;
                }),
            "mapping specialization must preserve LiveOut semantics without physical Stores");
+
+    cgra::pipeline::CompileDFGOptions invalidHardwareOptions;
+    invalidHardwareOptions.mode = cgra::pipeline::CompileDFGMode::HardwareExecutable;
+    invalidHardwareOptions.mapper.maxII = 4;
+    const auto invalidHardware = cgra::pipeline::compileGenericDFG(
+        typedFloatCandidate(), research64, invalidHardwareOptions);
+    expect(!invalidHardware.ok() &&
+               invalidHardware.status ==
+                   cgra::pipeline::CompileDFGStatus::TargetLegalizationFailure &&
+               invalidHardware.message.find("TARGET_MAPPING_PROFILE_NOT_HARDWARE_EXECUTABLE") !=
+                   std::string::npos &&
+               !invalidHardware.manifest,
+           "abstract mapping target must never produce a hardware manifest");
     std::cout << "CGRA_GENERIC_RF_FEASIBILITY_TEST_PASS\n";
     return EXIT_SUCCESS;
   } catch (const std::exception& error) {

@@ -158,6 +158,7 @@ std::string CompileDFGResult::toJson() const {
              {"stats",
               {{"trip_count", stats.tripCount},
                {"mii", stats.mii},
+               {"mapper_invoked", stats.mapperInvoked},
                {"mapped_ii", stats.mappedII},
                {"node_candidate_attempts", stats.nodeCandidateAttempts},
                {"route_state_expansions", stats.routeStateExpansions},
@@ -185,6 +186,12 @@ CompileDFGResult compileGenericDFG(const ir::DFG& dfg, const TargetModel& target
     ArtifactWriter artifacts(options.artifactDirectory, result);
     result.stats.tripCount = options.tripCount;
     artifacts.write("00_input.generic_dfg.json", ir::toJson(dfg));
+
+    if (options.mode == CompileDFGMode::HardwareExecutable && target.isMappingResearchTarget())
+      return failure(result, CompileDFGStatus::TargetLegalizationFailure,
+                     "TARGET_MAPPING_PROFILE_NOT_HARDWARE_EXECUTABLE: abstract mapping target "
+                     "cannot enter the hardware-executable pipeline",
+                     artifacts);
 
     const auto genericReport = ir::DFGVerifier::verify(dfg);
     artifacts.write("01_generic_dfg_verification.json", genericReport.toJson());
@@ -223,6 +230,7 @@ CompileDFGResult compileGenericDFG(const ir::DFG& dfg, const TargetModel& target
     } else {
       mapperOptions.completeMappingChecker = {};
     }
+    result.stats.mapperInvoked = true;
     const auto mapped = mapping::ModuloMapper::map(targetDFG, target, mapperOptions);
     artifacts.write("06_mapper_report.json", mapped.toJson());
     result.stats.nodeCandidateAttempts = mapped.stats.nodeCandidateAttempts;

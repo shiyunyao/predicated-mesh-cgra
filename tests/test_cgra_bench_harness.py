@@ -173,6 +173,15 @@ def test_classifier_preserves_budget_vs_infeasible() -> None:
     assert result["category"] == "MAPPING_BUDGET"
     result = classify("S10_MODULO_MAPPING", "modulo mapping verification failed")
     assert result["category"] == "MAPPING_VERIFY"
+    result = classify(
+        "S10_MODULO_MAPPING",
+        "MAP_NO_MAPPING_WITHIN_II_LIMIT: maxII is below the analyzer lower bound",
+    )
+    assert result == {
+        "category": "MAPPING_BUDGET",
+        "owner": "MAPPER",
+        "diagnostic_code": "MAP_NO_MAPPING_WITHIN_II_LIMIT",
+    }
 
 
 def test_classifier_preserves_production_diagnostic_and_timeout() -> None:
@@ -361,6 +370,7 @@ def test_report_tracks_linear_multiblock_outcomes(tmp_path: Path) -> None:
             "mapping_status": "not_available",
             "hardware_executable": False,
             "physical_realizability": {"status": "not_run"},
+            "stats": {"mapper_invoked": False},
         },
     }])
     assert summary["linear_multiblock"] == {
@@ -379,9 +389,9 @@ def test_report_tracks_linear_multiblock_outcomes(tmp_path: Path) -> None:
         "pass": False,
     }
     assert summary["t020r_mapping_research"] == {
-        "mapper_entered": 1,
+        "mapper_entered": 0,
         "modulo_mapping_verified": 0,
-        "mapper_entered_kernel_directories": 1,
+        "mapper_entered_kernel_directories": 0,
         "hardware_executable": 0,
         "mapping_status": {"not_available": 1},
         "physical_status": {"not_run": 1},
@@ -412,6 +422,7 @@ def test_report_separates_mapping_success_from_physical_failure(tmp_path: Path) 
         "backend": {
             "mapping_status": "success",
             "hardware_executable": False,
+            "stats": {"mapper_invoked": True},
             "physical_realizability": {
                 "status": "infeasible",
                 "reason_code": "rf_infeasible",

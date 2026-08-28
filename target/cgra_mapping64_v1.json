@@ -500,8 +500,17 @@
     },
     "ASHR": {
       "execution_class": "FU",
-      "operands": [{"role": "data"}, {"role": "data"}],
-      "result": {"role": "data"},
+      "operands": [
+        {
+          "role": "data"
+        },
+        {
+          "role": "data"
+        }
+      ],
+      "result": {
+        "role": "data"
+      },
       "issue_occupancy": 1,
       "result_latency": 1,
       "producer_output_ready_offset": 0
@@ -653,42 +662,84 @@
     "CMP_UGE": {
       "execution_class": "FU",
       "operands": [
-        {"role": "data"},
-        {"role": "data"}
+        {
+          "role": "data"
+        },
+        {
+          "role": "data"
+        }
       ],
-      "result": {"role": "predicate"},
+      "result": {
+        "role": "predicate"
+      },
       "issue_occupancy": 1,
       "result_latency": 1,
       "producer_output_ready_offset": 0
     },
     "CMP_SLT": {
       "execution_class": "FU",
-      "operands": [{"role": "data"}, {"role": "data"}],
-      "result": {"role": "predicate"},
+      "operands": [
+        {
+          "role": "data"
+        },
+        {
+          "role": "data"
+        }
+      ],
+      "result": {
+        "role": "predicate"
+      },
       "issue_occupancy": 1,
       "result_latency": 1,
       "producer_output_ready_offset": 0
     },
     "CMP_SLE": {
       "execution_class": "FU",
-      "operands": [{"role": "data"}, {"role": "data"}],
-      "result": {"role": "predicate"},
+      "operands": [
+        {
+          "role": "data"
+        },
+        {
+          "role": "data"
+        }
+      ],
+      "result": {
+        "role": "predicate"
+      },
       "issue_occupancy": 1,
       "result_latency": 1,
       "producer_output_ready_offset": 0
     },
     "CMP_SGT": {
       "execution_class": "FU",
-      "operands": [{"role": "data"}, {"role": "data"}],
-      "result": {"role": "predicate"},
+      "operands": [
+        {
+          "role": "data"
+        },
+        {
+          "role": "data"
+        }
+      ],
+      "result": {
+        "role": "predicate"
+      },
       "issue_occupancy": 1,
       "result_latency": 1,
       "producer_output_ready_offset": 0
     },
     "CMP_SGE": {
       "execution_class": "FU",
-      "operands": [{"role": "data"}, {"role": "data"}],
-      "result": {"role": "predicate"},
+      "operands": [
+        {
+          "role": "data"
+        },
+        {
+          "role": "data"
+        }
+      ],
+      "result": {
+        "role": "predicate"
+      },
       "issue_occupancy": 1,
       "result_latency": 1,
       "producer_output_ready_offset": 0
@@ -799,8 +850,17 @@
     },
     "PXOR": {
       "execution_class": "FU",
-      "operands": [{"role": "predicate"}, {"role": "predicate"}],
-      "result": {"role": "predicate"},
+      "operands": [
+        {
+          "role": "predicate"
+        },
+        {
+          "role": "predicate"
+        }
+      ],
+      "result": {
+        "role": "predicate"
+      },
       "issue_occupancy": 1,
       "result_latency": 1,
       "producer_output_ready_offset": 0
@@ -868,16 +928,25 @@
       "operands": [
         {
           "role": "data",
-          "types": ["f32", "f64"]
+          "types": [
+            "f32",
+            "f64"
+          ]
         },
         {
           "role": "data",
-          "types": ["f32", "f64"]
+          "types": [
+            "f32",
+            "f64"
+          ]
         }
       ],
       "result": {
         "role": "data",
-        "types": ["f32", "f64"]
+        "types": [
+          "f32",
+          "f64"
+        ]
       },
       "issue_occupancy": 1,
       "result_latency": 2,
@@ -889,16 +958,25 @@
       "operands": [
         {
           "role": "data",
-          "types": ["f32", "f64"]
+          "types": [
+            "f32",
+            "f64"
+          ]
         },
         {
           "role": "data",
-          "types": ["f32", "f64"]
+          "types": [
+            "f32",
+            "f64"
+          ]
         }
       ],
       "result": {
         "role": "data",
-        "types": ["f32", "f64"]
+        "types": [
+          "f32",
+          "f64"
+        ]
       },
       "issue_occupancy": 1,
       "result_latency": 2,
@@ -910,16 +988,25 @@
       "operands": [
         {
           "role": "data",
-          "types": ["f32", "f64"]
+          "types": [
+            "f32",
+            "f64"
+          ]
         },
         {
           "role": "data",
-          "types": ["f32", "f64"]
+          "types": [
+            "f32",
+            "f64"
+          ]
         }
       ],
       "result": {
         "role": "data",
-        "types": ["f32", "f64"]
+        "types": [
+          "f32",
+          "f64"
+        ]
       },
       "issue_occupancy": 1,
       "result_latency": 3,
@@ -931,20 +1018,32 @@
       "operands": [
         {
           "role": "data",
-          "types": ["f32", "f64"]
+          "types": [
+            "f32",
+            "f64"
+          ]
         },
         {
           "role": "data",
-          "types": ["f32", "f64"]
+          "types": [
+            "f32",
+            "f64"
+          ]
         },
         {
           "role": "data",
-          "types": ["f32", "f64"]
+          "types": [
+            "f32",
+            "f64"
+          ]
         }
       ],
       "result": {
         "role": "data",
-        "types": ["f32", "f64"]
+        "types": [
+          "f32",
+          "f64"
+        ]
       },
       "issue_occupancy": 1,
       "result_latency": 3,
@@ -956,16 +1055,25 @@
       "operands": [
         {
           "role": "data",
-          "types": ["f32", "f64"]
+          "types": [
+            "f32",
+            "f64"
+          ]
         },
         {
           "role": "data",
-          "types": ["f32", "f64"]
+          "types": [
+            "f32",
+            "f64"
+          ]
         }
       ],
       "result": {
         "role": "data",
-        "types": ["f32", "f64"]
+        "types": [
+          "f32",
+          "f64"
+        ]
       },
       "issue_occupancy": 4,
       "result_latency": 8,
@@ -977,12 +1085,18 @@
       "operands": [
         {
           "role": "data",
-          "types": ["f32", "f64"]
+          "types": [
+            "f32",
+            "f64"
+          ]
         }
       ],
       "result": {
         "role": "data",
-        "types": ["f32", "f64"]
+        "types": [
+          "f32",
+          "f64"
+        ]
       },
       "issue_occupancy": 1,
       "result_latency": 1,
@@ -992,79 +1106,165 @@
       "execution_class": "FU",
       "operands": [
         {
-          "role": "data"
+          "role": "data",
+          "types": [
+            "i8",
+            "i16",
+            "i32",
+            "i64"
+          ]
         },
         {
-          "role": "data"
+          "role": "data",
+          "types": [
+            "i8",
+            "i16",
+            "i32",
+            "i64"
+          ]
         }
       ],
       "result": {
-        "role": "data"
+        "role": "data",
+        "types": [
+          "i8",
+          "i16",
+          "i32",
+          "i64"
+        ]
       },
       "issue_occupancy": 4,
       "result_latency": 8,
-      "producer_output_ready_offset": 7
+      "producer_output_ready_offset": 7,
+      "uniform_data_type": true
     },
     "SREM": {
       "execution_class": "FU",
       "operands": [
         {
-          "role": "data"
+          "role": "data",
+          "types": [
+            "i8",
+            "i16",
+            "i32",
+            "i64"
+          ]
         },
         {
-          "role": "data"
+          "role": "data",
+          "types": [
+            "i8",
+            "i16",
+            "i32",
+            "i64"
+          ]
         }
       ],
       "result": {
-        "role": "data"
+        "role": "data",
+        "types": [
+          "i8",
+          "i16",
+          "i32",
+          "i64"
+        ]
       },
       "issue_occupancy": 4,
       "result_latency": 8,
-      "producer_output_ready_offset": 7
+      "producer_output_ready_offset": 7,
+      "uniform_data_type": true
     },
     "UDIV": {
       "execution_class": "FU",
       "operands": [
         {
-          "role": "data"
+          "role": "data",
+          "types": [
+            "i8",
+            "i16",
+            "i32",
+            "i64"
+          ]
         },
         {
-          "role": "data"
+          "role": "data",
+          "types": [
+            "i8",
+            "i16",
+            "i32",
+            "i64"
+          ]
         }
       ],
       "result": {
-        "role": "data"
+        "role": "data",
+        "types": [
+          "i8",
+          "i16",
+          "i32",
+          "i64"
+        ]
       },
       "issue_occupancy": 4,
       "result_latency": 8,
-      "producer_output_ready_offset": 7
+      "producer_output_ready_offset": 7,
+      "uniform_data_type": true
     },
     "UREM": {
       "execution_class": "FU",
       "operands": [
         {
-          "role": "data"
+          "role": "data",
+          "types": [
+            "i8",
+            "i16",
+            "i32",
+            "i64"
+          ]
         },
         {
-          "role": "data"
+          "role": "data",
+          "types": [
+            "i8",
+            "i16",
+            "i32",
+            "i64"
+          ]
         }
       ],
       "result": {
-        "role": "data"
+        "role": "data",
+        "types": [
+          "i8",
+          "i16",
+          "i32",
+          "i64"
+        ]
       },
       "issue_occupancy": 4,
       "result_latency": 8,
-      "producer_output_ready_offset": 7
+      "producer_output_ready_offset": 7,
+      "uniform_data_type": true
     },
     "TRUNC": {
       "execution_class": "FU",
       "operands": [
         {
-          "role": "data"
+          "role": "data",
+          "types": [
+            "i16",
+            "i32",
+            "i64"
+          ]
         }
       ],
       "result": {
-        "role": "data"
+        "role": "data",
+        "types": [
+          "i8",
+          "i16",
+          "i32"
+        ]
       },
       "issue_occupancy": 1,
       "result_latency": 1,
@@ -1074,11 +1274,21 @@
       "execution_class": "FU",
       "operands": [
         {
-          "role": "data"
+          "role": "data",
+          "types": [
+            "i8",
+            "i16",
+            "i32"
+          ]
         }
       ],
       "result": {
-        "role": "data"
+        "role": "data",
+        "types": [
+          "i16",
+          "i32",
+          "i64"
+        ]
       },
       "issue_occupancy": 1,
       "result_latency": 1,
@@ -1086,8 +1296,20 @@
     },
     "PZEXT": {
       "execution_class": "FU",
-      "operands": [{"role": "predicate"}],
-      "result": {"role": "data"},
+      "operands": [
+        {
+          "role": "predicate"
+        }
+      ],
+      "result": {
+        "role": "data",
+        "types": [
+          "i8",
+          "i16",
+          "i32",
+          "i64"
+        ]
+      },
       "issue_occupancy": 1,
       "result_latency": 1,
       "producer_output_ready_offset": 0
@@ -1096,11 +1318,21 @@
       "execution_class": "FU",
       "operands": [
         {
-          "role": "data"
+          "role": "data",
+          "types": [
+            "i8",
+            "i16",
+            "i32"
+          ]
         }
       ],
       "result": {
-        "role": "data"
+        "role": "data",
+        "types": [
+          "i16",
+          "i32",
+          "i64"
+        ]
       },
       "issue_occupancy": 1,
       "result_latency": 1,
@@ -1110,11 +1342,21 @@
       "execution_class": "FU",
       "operands": [
         {
-          "role": "data"
+          "role": "data",
+          "types": [
+            "i8",
+            "i16",
+            "i32",
+            "i64"
+          ]
         }
       ],
       "result": {
-        "role": "data"
+        "role": "data",
+        "types": [
+          "f32",
+          "f64"
+        ]
       },
       "issue_occupancy": 1,
       "result_latency": 2,
@@ -1124,11 +1366,21 @@
       "execution_class": "FU",
       "operands": [
         {
-          "role": "data"
+          "role": "data",
+          "types": [
+            "i8",
+            "i16",
+            "i32",
+            "i64"
+          ]
         }
       ],
       "result": {
-        "role": "data"
+        "role": "data",
+        "types": [
+          "f32",
+          "f64"
+        ]
       },
       "issue_occupancy": 1,
       "result_latency": 2,
@@ -1138,11 +1390,21 @@
       "execution_class": "FU",
       "operands": [
         {
-          "role": "data"
+          "role": "data",
+          "types": [
+            "f32",
+            "f64"
+          ]
         }
       ],
       "result": {
-        "role": "data"
+        "role": "data",
+        "types": [
+          "i8",
+          "i16",
+          "i32",
+          "i64"
+        ]
       },
       "issue_occupancy": 1,
       "result_latency": 2,
@@ -1152,11 +1414,21 @@
       "execution_class": "FU",
       "operands": [
         {
-          "role": "data"
+          "role": "data",
+          "types": [
+            "f32",
+            "f64"
+          ]
         }
       ],
       "result": {
-        "role": "data"
+        "role": "data",
+        "types": [
+          "i8",
+          "i16",
+          "i32",
+          "i64"
+        ]
       },
       "issue_occupancy": 1,
       "result_latency": 2,
@@ -1166,11 +1438,13 @@
       "execution_class": "FU",
       "operands": [
         {
-          "role": "data"
+          "role": "data",
+          "type": "f64"
         }
       ],
       "result": {
-        "role": "data"
+        "role": "data",
+        "type": "f32"
       },
       "issue_occupancy": 1,
       "result_latency": 1,
@@ -1180,11 +1454,13 @@
       "execution_class": "FU",
       "operands": [
         {
-          "role": "data"
+          "role": "data",
+          "type": "f32"
         }
       ],
       "result": {
-        "role": "data"
+        "role": "data",
+        "type": "f64"
       },
       "issue_occupancy": 1,
       "result_latency": 1,
@@ -1194,11 +1470,23 @@
       "execution_class": "FU",
       "operands": [
         {
-          "role": "data"
+          "role": "data",
+          "types": [
+            "i8",
+            "i16",
+            "i32",
+            "i64"
+          ]
         }
       ],
       "result": {
-        "role": "data"
+        "role": "data",
+        "types": [
+          "i8",
+          "i16",
+          "i32",
+          "i64"
+        ]
       },
       "issue_occupancy": 1,
       "result_latency": 1,
@@ -1208,11 +1496,13 @@
       "execution_class": "LSU",
       "operands": [
         {
-          "role": "address"
+          "role": "address",
+          "type": "i64"
         }
       ],
       "result": {
-        "role": "data"
+        "role": "data",
+        "type": "i8"
       },
       "issue_occupancy": 1,
       "result_latency": 2,
@@ -1223,11 +1513,13 @@
       "execution_class": "LSU",
       "operands": [
         {
-          "role": "address"
+          "role": "address",
+          "type": "i64"
         }
       ],
       "result": {
-        "role": "data"
+        "role": "data",
+        "type": "i16"
       },
       "issue_occupancy": 1,
       "result_latency": 2,
@@ -1238,10 +1530,12 @@
       "execution_class": "LSU",
       "operands": [
         {
-          "role": "address"
+          "role": "address",
+          "type": "i64"
         },
         {
-          "role": "data"
+          "role": "data",
+          "type": "i8"
         },
         {
           "role": "predicate",
@@ -1258,10 +1552,12 @@
       "execution_class": "LSU",
       "operands": [
         {
-          "role": "address"
+          "role": "address",
+          "type": "i64"
         },
         {
-          "role": "data"
+          "role": "data",
+          "type": "i16"
         },
         {
           "role": "predicate",
@@ -1278,11 +1574,16 @@
       "execution_class": "LSU",
       "operands": [
         {
-          "role": "address"
+          "role": "address",
+          "type": "i64"
         }
       ],
       "result": {
-        "role": "data"
+        "role": "data",
+        "types": [
+          "i32",
+          "f32"
+        ]
       },
       "issue_occupancy": 1,
       "result_latency": 2,
@@ -1293,10 +1594,15 @@
       "execution_class": "LSU",
       "operands": [
         {
-          "role": "address"
+          "role": "address",
+          "type": "i64"
         },
         {
-          "role": "data"
+          "role": "data",
+          "types": [
+            "i32",
+            "f32"
+          ]
         },
         {
           "role": "predicate",
@@ -1308,6 +1614,51 @@
       },
       "issue_occupancy": 1,
       "memory_access_width_bits": 32
+    },
+    "LOAD64": {
+      "execution_class": "LSU",
+      "operands": [
+        {
+          "role": "address",
+          "type": "i64"
+        }
+      ],
+      "result": {
+        "role": "data",
+        "types": [
+          "i64",
+          "f64"
+        ]
+      },
+      "issue_occupancy": 1,
+      "result_latency": 2,
+      "producer_output_ready_offset": 2,
+      "memory_access_width_bits": 64
+    },
+    "STORE64": {
+      "execution_class": "LSU",
+      "operands": [
+        {
+          "role": "address",
+          "type": "i64"
+        },
+        {
+          "role": "data",
+          "types": [
+            "i64",
+            "f64"
+          ]
+        },
+        {
+          "role": "predicate",
+          "optional": true
+        }
+      ],
+      "result": {
+        "role": "void"
+      },
+      "issue_occupancy": 1,
+      "memory_access_width_bits": 64
     }
   },
   "tile_capabilities": {

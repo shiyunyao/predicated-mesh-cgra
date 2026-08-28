@@ -391,10 +391,7 @@ private:
         verifyStore(node);
         break;
       case Opcode::Custom:
-        if (!node.operationKey || node.operationKey->empty() || node.operandTypes.empty() ||
-            node.resultType == ValueType::voidTy())
-          add(DFGDiagnosticCode::DFG_OPCODE_METADATA_INVALID,
-              "Custom requires a key, at least one operand, and a value result", node.id);
+        verifyCustom(node);
         break;
       default:
         add(DFGDiagnosticCode::DFG_OPCODE_METADATA_INVALID, "unknown opcode value", node.id);
@@ -444,6 +441,83 @@ private:
       return false;
     }
     return true;
+  }
+
+  void verifyCustom(const Node& node) {
+    if (!node.operationKey || node.operationKey->empty() || node.operandTypes.empty() ||
+        node.resultType == ValueType::voidTy()) {
+      add(DFGDiagnosticCode::DFG_OPCODE_METADATA_INVALID,
+          "Custom requires a key, at least one operand, and a value result", node.id);
+      return;
+    }
+
+    const auto key = std::string_view(*node.operationKey);
+    const auto allOperands = [&](const auto& predicate) {
+      return std::ranges::all_of(node.operandTypes, predicate);
+    };
+    const auto uniform = [&] {
+      return std::ranges::all_of(node.operandTypes,
+                                 [&](const auto& type) { return type == node.resultType; });
+    };
+    const auto invalidSignature = [&] {
+      add(DFGDiagnosticCode::DFG_OPCODE_OPERAND_TYPE_MISMATCH,
+          "Custom operation " + std::string(key) + " has an invalid semantic type signature",
+          node.id);
+    };
+
+    if (key == "FADD" || key == "FSUB" || key == "FMUL" || key == "FDIV") {
+      if (!hasArity(node, 2) || !allOperands([](const auto& type) {
+            return type.kind == ValueKind::Float;
+          }) ||
+          node.resultType.kind != ValueKind::Float || !uniform())
+        invalidSignature();
+    } else if (key == "FNEG") {
+      if (!hasArity(node, 1) || node.operandTypes[0].kind != ValueKind::Float ||
+          node.resultType != node.operandTypes[0])
+        invalidSignature();
+    } else if (key == "FMA") {
+      if (!hasArity(node, 3) || !allOperands([](const auto& type) {
+            return type.kind == ValueKind::Float;
+          }) ||
+          node.resultType.kind != ValueKind::Float || !uniform())
+        invalidSignature();
+    } else if (key == "SDIV" || key == "SREM" || key == "UDIV" || key == "UREM") {
+      if (!hasArity(node, 2) || !allOperands(isIntegerType) ||
+          !isIntegerType(node.resultType) || !uniform())
+        invalidSignature();
+    } else if (key == "TRUNC" || key == "ZEXT" || key == "SEXT") {
+      if (!hasArity(node, 1) || !isIntegerType(node.operandTypes[0]) ||
+          !isIntegerType(node.resultType) ||
+          (key == "TRUNC" ? node.operandTypes[0].bitWidth <= node.resultType.bitWidth
+                          : node.operandTypes[0].bitWidth >= node.resultType.bitWidth))
+        invalidSignature();
+    } else if (key == "SITOFP" || key == "UITOFP") {
+      if (!hasArity(node, 1) || !isIntegerType(node.operandTypes[0]) ||
+          node.resultType.kind != ValueKind::Float)
+        invalidSignature();
+    } else if (key == "FPTOSI" || key == "FPTOUI") {
+      if (!hasArity(node, 1) || node.operandTypes[0].kind != ValueKind::Float ||
+          !isIntegerType(node.resultType))
+        invalidSignature();
+    } else if (key == "FPTRUNC" || key == "FPEXT") {
+      if (!hasArity(node, 1) || node.operandTypes[0].kind != ValueKind::Float ||
+          node.resultType.kind != ValueKind::Float ||
+          (key == "FPTRUNC" ? node.operandTypes[0].bitWidth <= node.resultType.bitWidth
+                            : node.operandTypes[0].bitWidth >= node.resultType.bitWidth))
+        invalidSignature();
+    } else if (key == "PTRTOINT") {
+      if (!hasArity(node, 1) || !isIntegerType(node.operandTypes[0]) ||
+          !isIntegerType(node.resultType))
+        invalidSignature();
+    } else if (key == "PZEXT") {
+      if (!hasArity(node, 1) || !isPredicateType(node.operandTypes[0]) ||
+          !isIntegerType(node.resultType))
+        invalidSignature();
+    } else if (key == "PAND" || key == "POR" || key == "PXOR") {
+      if (!hasArity(node, 2) || !allOperands(isPredicateType) ||
+          !isPredicateType(node.resultType))
+        invalidSignature();
+    }
   }
 
   void verifyBinary(const Node& node, bool integerOnly) {

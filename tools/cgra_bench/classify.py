@@ -35,7 +35,7 @@ def classify(stage: str, message: str, returncode: int = 1) -> dict[str, str]:
         return {"category": "TIMEOUT", "owner": "HARNESS", "diagnostic_code": "STAGE_TIMEOUT"}
     if "mapping" in text and "verif" in text:
         return {"category": "MAPPING_VERIFY", "owner": "MAPPER", "diagnostic_code": "MAPPING_VERIFICATION_FAILED"}
-    diagnostic = re.search(r"\b(?:LLVM_FRONTEND|ABI|RFA|TARGET|MAPPING|RF|MEMORY|GENERIC|MII|STAGE|MANIFEST)_[A-Z0-9_]+\b", message)
+    diagnostic = re.search(r"\b(?:LLVM_FRONTEND|ABI|RFA|TARGET|MAPPING|MAP|RF|MEMORY|GENERIC|MII|STAGE|MANIFEST)_[A-Z0-9_]+\b", message)
     if diagnostic:
         code = diagnostic.group(0)
         if code.startswith("LLVM_FRONTEND_"):
@@ -44,8 +44,9 @@ def classify(stage: str, message: str, returncode: int = 1) -> dict[str, str]:
             return {"category": "ABI", "owner": "ABI", "diagnostic_code": code}
         if code.startswith("RFA_") or code.startswith("RF_"):
             return {"category": "RF", "owner": "RF", "diagnostic_code": code}
-        if code.startswith("MAPPING_"):
-            category = "MAPPING_BUDGET" if "BUDGET" in code else "MAPPING_INFEASIBLE"
+        if code.startswith("MAPPING_") or code.startswith("MAP_"):
+            limited = code == "MAP_NO_MAPPING_WITHIN_II_LIMIT"
+            category = "MAPPING_BUDGET" if "BUDGET" in code or limited else "MAPPING_INFEASIBLE"
             return {"category": category, "owner": "MAPPER", "diagnostic_code": code}
         if code.startswith("TARGET_"):
             return {"category": "TARGET_ISA", "owner": "ISA", "diagnostic_code": code}

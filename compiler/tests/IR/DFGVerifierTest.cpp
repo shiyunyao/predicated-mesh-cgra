@@ -294,6 +294,20 @@ void testFocusedOpcodeCorpus() {
     builder.bindExternal(store, 2, value);
     verifyFailure(builder.finish(), DFGDiagnosticCode::DFG_STORE_INVALID_PREDICATE);
   }
+  auto invalidCustom = [&](std::string_view name, std::vector<ValueType> operands,
+                           ValueType result) {
+    DFGBuilder builder("invalid_custom_signature");
+    const auto node = builder.addCustomNode(std::string(name), operands, result);
+    for (std::uint32_t operand = 0; operand < operands.size(); ++operand)
+      builder.bindExternal(node, operand,
+                           builder.addExternal("input." + std::to_string(operand),
+                                               operands[operand]));
+    verifyFailure(builder.finish(), DFGDiagnosticCode::DFG_OPCODE_OPERAND_TYPE_MISMATCH);
+  };
+  invalidCustom("SDIV", {ValueType::f32(), ValueType::f32()}, ValueType::f32());
+  invalidCustom("SITOFP", {ValueType::f32()}, ValueType::f32());
+  invalidCustom("TRUNC", {ValueType::i16()}, ValueType::i32());
+  invalidCustom("FPEXT", {ValueType::floating(64)}, ValueType::f32());
 }
 
 void testDeterminismAndReadOnly() {
