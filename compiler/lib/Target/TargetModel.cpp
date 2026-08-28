@@ -429,9 +429,18 @@ TargetModel TargetModel::loadFromFile(const std::filesystem::path& path) {
         } catch (const std::exception& error) {
           fail(typeContext, error.what());
         }
-        for (const auto& type : operand.acceptedTypes)
+        std::vector<ir::ValueType> uniqueTypes;
+        for (const auto& type : operand.acceptedTypes) {
+          if (std::ranges::find(uniqueTypes, type) != uniqueTypes.end())
+            fail(typeContext, "contains a duplicate value type");
+          uniqueTypes.push_back(type);
           if (!operandTypeMatchesRole(operand.role, type))
             fail(typeContext, "declared type is incompatible with operand role");
+          if (mappingResearchTarget && type.kind != ir::ValueKind::Predicate &&
+              std::ranges::find(model.supportedValueTypes_, type) ==
+                  model.supportedValueTypes_.end())
+            fail(typeContext, "declared type is not supported by the target datapath");
+        }
       }
       if (operand.optional)
         optionalSeen = true;
@@ -480,9 +489,19 @@ TargetModel TargetModel::loadFromFile(const std::filesystem::path& path) {
       } catch (const std::exception& error) {
         fail(typeContext, error.what());
       }
-      for (const auto& type : acceptedResultTypes)
+      std::vector<ir::ValueType> uniqueTypes;
+      for (const auto& type : acceptedResultTypes) {
+        if (std::ranges::find(uniqueTypes, type) != uniqueTypes.end())
+          fail(typeContext, "contains a duplicate value type");
+        uniqueTypes.push_back(type);
         if (!resultTypeMatchesRole(resultRole, type))
           fail(typeContext, "declared type is incompatible with result role");
+        if (mappingResearchTarget && type.kind != ir::ValueKind::Predicate &&
+            type.kind != ir::ValueKind::Void &&
+            std::ranges::find(model.supportedValueTypes_, type) ==
+                model.supportedValueTypes_.end())
+          fail(typeContext, "declared type is not supported by the target datapath");
+      }
     }
     std::vector<std::pair<unsigned, TargetControlSink>> operandSinks;
     std::unordered_set<TargetControlSink> usedSinks;
@@ -562,6 +581,13 @@ TargetModel TargetModel::loadFromFile(const std::filesystem::path& path) {
     const bool uniformDataType = descriptorJson.contains("uniform_data_type")
                                      ? required<bool>(descriptorJson, "uniform_data_type", context)
                                      : false;
+    if (uniformDataType &&
+        (resultRole != TargetResultRole::Data ||
+         std::ranges::none_of(operands, [](const auto& operand) {
+           return operand.role == TargetOperandRole::Data;
+         })))
+      fail(context + ".uniform_data_type",
+           "requires a data result and at least one data operand");
 
     if (resultRole == TargetResultRole::Void) {
       if (resultLatency || outputReadyOffset)

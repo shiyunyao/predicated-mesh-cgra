@@ -502,6 +502,24 @@ void testMappingOperationTypeContract() {
         malformed["operations"]["FADD"]["result"]["types"] = {"void"};
       },
       "declared type is incompatible with result role");
+  expectRejected(
+      json,
+      [](Json& malformed) {
+        malformed["operations"]["FADD"]["operands"][0]["types"] = {"f32", "f32"};
+      },
+      "contains a duplicate value type");
+  expectRejected(
+      json,
+      [](Json& malformed) {
+        malformed["supported_value_types"] = {"i8", "i16", "i32", "i64", "f32"};
+      },
+      "declared type is not supported by the target datapath");
+  expectRejected(
+      json,
+      [](Json& malformed) {
+        malformed["operations"]["CMP_EQ"]["uniform_data_type"] = true;
+      },
+      "requires a data result and at least one data operand");
 }
 
 } // namespace
