@@ -44,7 +44,10 @@ BASELINE_MAPPING_PROFILE = {
 MAPPING_PROFILES = {
     "baseline": BASELINE_MAPPING_PROFILE,
     "research": {
-        "max_ii": 64,
+        # Keep the profile below the known pathological MII=49 cases so they
+        # terminate through the mapper's explicit budget result instead of
+        # consuming the external audit timeout.
+        "max_ii": 48,
         "max_node_candidates": 100000,
         "max_backtracks": 50000,
         "max_route_calls": 100000,
