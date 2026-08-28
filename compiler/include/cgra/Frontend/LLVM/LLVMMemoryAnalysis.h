@@ -97,6 +97,7 @@ struct LLVMMemoryAnalysisResult {
 
 LLVMMemoryAnalysisResult analyzeMemoryDependences(const llvm::Loop& loop,
                                                   const llvm::DominatorTree& dominatorTree,
-                                                  llvm::LoopInfo& loopInfo);
+                                                  llvm::LoopInfo& loopInfo,
+                                                  std::uint32_t addressUnitBytes = 4);
 
 } // namespace cgra::frontend::llvm_frontend

@@ -8,6 +8,7 @@
 #include <llvm/Support/SourceMgr.h>
 
 #include <cstddef>
+#include <cstdint>
 #include <cstdlib>
 #include <iostream>
 #include <memory>
@@ -116,6 +117,20 @@ LLVMFrontendResult lower(const std::string& text, const std::string& function,
                                   " memory frontend result must pass independent verification: " +
                                   verification.format());
   }
+  return result;
+}
+
+LLVMFrontendResult lowerWithAddressUnit(const std::string& text, const std::string& function,
+                                        std::uint32_t addressUnitBytes,
+                                        llvm::LLVMContext& context) {
+  auto module = parse(text, context);
+  LLVMFrontendOptions options;
+  options.functionName = function;
+  options.addressUnitBytes = addressUnitBytes;
+  auto result = cgra::frontend::llvm_frontend::lowerInnermostLoop(*module, options);
+  if (result.ok())
+    expect(cgra::frontend::llvm_frontend::verifyFrontendResult(*module, options, result).ok(),
+           function + " explicit address unit must pass independent verification");
   return result;
 }
 
@@ -560,6 +575,23 @@ exit:
 }
 )IR";
 
+const char* kSubwordGEP = R"IR(
+target datalayout = "e-p:64:64"
+define void @subword_gep(i16* %A) {
+entry:
+  br label %loop
+loop:
+  %i = phi i32 [ 0, %entry ], [ %inc, %loop ]
+  %addr = getelementptr i16, i16* %A, i32 %i
+  %value = load i16, i16* %addr, align 2
+  %inc = add i32 %i, 1
+  %done = icmp ult i32 %inc, 4
+  br i1 %done, label %loop, label %exit
+exit:
+  ret void
+}
+)IR";
+
 const char* kWideFloatLoad = R"IR(
 target datalayout = "e-p:64:64"
 define void @wide_float(double* %A) {
@@ -955,6 +987,17 @@ void runNegativeCases() {
              subword.dfg->node(subword.provenance.memoryAccesses.front().memoryNode).resultType ==
                  cgra::ir::ValueType::i16(),
          "typed memory frontend must preserve a naturally aligned i16 Load");
+
+  const auto subwordWordAddress = lower(kSubwordGEP, "subword_gep", context);
+  expect(!subwordWordAddress.ok() &&
+             subwordWordAddress.status ==
+                 cgra::frontend::llvm_frontend::LLVMFrontendStatus::UnsupportedNonAffineAddress,
+         "word-address lowering must reject an i16 byte stride explicitly");
+  const auto subwordByteAddress = lowerWithAddressUnit(kSubwordGEP, "subword_gep", 1, context);
+  expect(subwordByteAddress.ok() && subwordByteAddress.metadata->addressUnitBytes == 1 &&
+             subwordByteAddress.provenance.memoryAccesses.front().strideBytes == 2 &&
+             subwordByteAddress.provenance.memoryAccesses.front().strideWords == 2,
+         "byte-address lowering must preserve the i16 byte stride independent of width");
 
   const auto wideFloat = lower(kWideFloatLoad, "wide_float", context);
   expect(

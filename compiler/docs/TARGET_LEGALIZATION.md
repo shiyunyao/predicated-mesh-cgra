@@ -120,6 +120,13 @@ checked by `DFGVerifier` for operand/result type direction and arity; a target
 descriptor with the same spelling does not override an invalid Generic
 signature.
 
+Research target memory descriptors use a byte address unit. The LLVM frontend
+therefore receives `--address-unit-bytes 1` for that lane and preserves LLVM
+DataLayout byte offsets in Generic address arithmetic. The executable
+`cgra_v3` profile remains word-addressed and uses the default
+`--address-unit-bytes 4`; the unit is an explicit pipeline contract and is
+never inferred from the access width.
+
 ## Debug schema and CLI
 
 `cgra::target::writeJson` and `readJson` use the versioned debug schema

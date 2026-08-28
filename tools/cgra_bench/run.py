@@ -194,6 +194,12 @@ def run_case(case: dict[str, Any], root: pathlib.Path, corpus: pathlib.Path, out
     if not case.get("enabled", True):
         return [{"id": case["id"], "kernel": case["kernel"], "source": case["source"], "loop_header": None, "tier": "DISCOVERED", "terminal_stage": "S0_CORPUS_DISCOVERY", "status": "EXCLUDED", "stages": [{"stage": "S0_CORPUS_DISCOVERY", "status": "EXCLUDED"}], "category": "CORPUS", "owner": "HARNESS", "diagnostic_code": "EXPLICIT_EXCLUSION", "message": case.get("exclusion", "explicitly excluded"), "excluded": True}]
     source = corpus / case["source"]
+    try:
+        target_description = read_json(target)
+        address_unit = target_description.get("memory", {}).get("address_unit", "word")
+        address_unit_bytes = {"byte": 1, "word": 4}[address_unit]
+    except (OSError, ValueError, json.JSONDecodeError, KeyError) as error:
+        return [result_for_failure(case, "S4_FRONTEND_LOWER", f"invalid target address unit: {error}")]
     source_out = out / "cases" / case["id"].replace("/", "_").replace("::", "__")
     source_out.mkdir(parents=True, exist_ok=True)
     flags = list(case.get("compile_flags", []))
@@ -260,7 +266,7 @@ def run_case(case: dict[str, Any], root: pathlib.Path, corpus: pathlib.Path, out
         frontend_out = loop_out / "frontend"
         frontend_out.mkdir(parents=True, exist_ok=True)
         dfg_path = frontend_out / "generic_dfg.json"
-        lower_command = [str(frontend_bin), str(canonical), "--function", loop["function"], "--loop-header", loop["header"], "--artifact-dir", str(frontend_out), "-o", str(dfg_path)]
+        lower_command = [str(frontend_bin), str(canonical), "--function", loop["function"], "--loop-header", loop["header"], "--address-unit-bytes", str(address_unit_bytes), "--artifact-dir", str(frontend_out), "-o", str(dfg_path)]
         rc, stdout, stderr, lower_duration = command_result(lower_command, root, timeout)
         base = {
             "id": loop_case["id"], "kernel": case["kernel"], "source": case["source"],
@@ -525,6 +531,11 @@ def main() -> int:
             report_corpus["denominator"]["source_translation_units"] = len(report_corpus["sources"])
             report_corpus["denominator"]["scope"] = "smoke subset"
         write_json(out / "corpus.json", report_corpus)
+        target_description = read_json(target)
+        address_unit = target_description.get("memory", {}).get("address_unit", "word")
+        address_unit_bytes = {"byte": 1, "word": 4}.get(address_unit)
+        if address_unit_bytes is None:
+            raise ValueError(f"unsupported target memory address unit: {address_unit}")
         write_json(out / "environment.json", {
             "schema": "cgra.cgra_bench.environment.v1",
             "project_sha": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip(),
@@ -532,6 +543,8 @@ def main() -> int:
             "corpus_sha": lock["commit"],
             "target": str(target),
             "target_sha256": sha256_file(target),
+            "target_address_unit": address_unit,
+            "frontend_address_unit_bytes": address_unit_bytes,
             "clang": shutil.which("clang-14"),
             "clang_version": tool_version("clang-14"),
             "clangxx": shutil.which("clang++-14"),

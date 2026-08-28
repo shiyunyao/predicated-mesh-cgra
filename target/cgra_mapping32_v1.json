@@ -105,7 +105,7 @@
   },
   "memory": {
     "model": "shared_multiport_scratchpad",
-    "address_unit": "word",
+    "address_unit": "byte",
     "depth": 16777216,
     "width_bits": 32,
     "ports": 4,

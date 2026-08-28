@@ -334,8 +334,10 @@ TargetModel TargetModel::loadFromFile(const std::filesystem::path& path) {
   model.memory_.runtimeArbitration = required<bool>(memory, "runtime_arbitration", "memory");
   if (model.memory_.model != "shared_multiport_scratchpad")
     fail("memory.model", "unsupported memory model");
-  if (model.memory_.addressUnit != "word")
-    fail("memory.address_unit", "must be word");
+  if (model.memory_.addressUnit != "word" &&
+      !(mappingResearchTarget && model.memory_.addressUnit == "byte"))
+    fail("memory.address_unit",
+         "must be word for hardware targets or byte for mapping-research targets");
   if (model.memory_.sameAddressPolicy != "multi_load_only")
     fail("memory.same_address_policy", "unsupported policy");
   if (model.memory_.runtimeStall || model.memory_.runtimeArbitration)

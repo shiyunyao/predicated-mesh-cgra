@@ -335,11 +335,10 @@ std::optional<AffineValue> affineValue(const llvm::Value& value, const llvm::Loo
   return AffineValue{0, 0, LLVMAddressMode::Dynamic, {}};
 }
 
-std::optional<LLVMMemoryAccessDescriptor> analyzeAccess(const llvm::Instruction& instruction,
-                                                        const llvm::Loop& loop,
-                                                        const llvm::DataLayout& dataLayout,
-                                                        llvm::ScalarEvolution& scalarEvolution,
-                                                        LLVMMemoryAnalysisResult& error) {
+std::optional<LLVMMemoryAccessDescriptor>
+analyzeAccess(const llvm::Instruction& instruction, const llvm::Loop& loop,
+              const llvm::DataLayout& dataLayout, llvm::ScalarEvolution& scalarEvolution,
+              std::uint32_t addressUnitBytes, LLVMMemoryAnalysisResult& error) {
   const auto* load = llvm::dyn_cast<llvm::LoadInst>(&instruction);
   const auto* store = llvm::dyn_cast<llvm::StoreInst>(&instruction);
   if (!load && !store)
@@ -405,8 +404,7 @@ std::optional<LLVMMemoryAccessDescriptor> analyzeAccess(const llvm::Instruction&
   descriptor.pointerStepBytes = pointerRoot->stepBytes;
   descriptor.accessWidthBits = accessWidthBits;
   descriptor.exactAffine = true;
-  const std::int64_t addressUnitBytes = accessWidthBits < 32 ? 1 : 4;
-  if (pointerRoot->stepBytes % addressUnitBytes != 0) {
+  if (addressUnitBytes == 0 || pointerRoot->stepBytes % addressUnitBytes != 0) {
     error = fail(LLVMMemoryAnalysisStatus::UnsupportedNonAffineAddress,
                  "pointer recurrence step is not a whole Generic address unit");
     return std::nullopt;
@@ -626,7 +624,12 @@ std::string_view toString(LLVMMemoryDependenceMode mode) noexcept {
 
 LLVMMemoryAnalysisResult analyzeMemoryDependences(const llvm::Loop& loop,
                                                   const llvm::DominatorTree& dominatorTree,
-                                                  llvm::LoopInfo& loopInfo) {
+                                                  llvm::LoopInfo& loopInfo,
+                                                  std::uint32_t addressUnitBytes) {
+  if (addressUnitBytes == 0) {
+    return fail(LLVMMemoryAnalysisStatus::InternalError,
+                "Generic address unit must be a positive byte count");
+  }
   auto* function = loop.getHeader()->getParent();
   const auto& dataLayout = function->getParent()->getDataLayout();
   llvm::TargetLibraryInfoImpl libraryInfoImpl;
@@ -651,7 +654,8 @@ LLVMMemoryAnalysisResult analyzeMemoryDependences(const llvm::Loop& loop,
       if (ignoredControlLoads.contains(&instruction))
         continue;
       LLVMMemoryAnalysisResult error;
-      auto descriptor = analyzeAccess(instruction, loop, dataLayout, scalarEvolution, error);
+      auto descriptor =
+          analyzeAccess(instruction, loop, dataLayout, scalarEvolution, addressUnitBytes, error);
       if (!descriptor)
         return error;
       descriptor->id = static_cast<std::uint32_t>(result.accesses.size());

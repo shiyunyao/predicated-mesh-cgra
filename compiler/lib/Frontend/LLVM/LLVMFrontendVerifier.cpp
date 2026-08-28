@@ -1657,8 +1657,13 @@ void addVerifiedDependence(
   result.dependences.push_back({source, destination, kind, distance, mode});
 }
 
-VerifiedMemoryExpectations recomputeMemoryExpectations(const Selection& selection) {
+VerifiedMemoryExpectations recomputeMemoryExpectations(const Selection& selection,
+                                                       std::uint32_t addressUnitBytes) {
   VerifiedMemoryExpectations result;
+  if (addressUnitBytes == 0) {
+    result.error = "Generic address unit must be a positive byte count";
+    return result;
+  }
   auto* function = selection.loop->getHeader()->getParent();
   const auto& dataLayout = function->getParent()->getDataLayout();
   llvm::TargetLibraryInfoImpl libraryInfoImpl;
@@ -1728,7 +1733,6 @@ VerifiedMemoryExpectations recomputeMemoryExpectations(const Selection& selectio
       access.accessWidthBits = accessWidthBits;
 
       {
-        const std::int64_t addressUnitBytes = accessWidthBits < 32 ? 1 : 4;
         if (collected->constantBytes % addressUnitBytes != 0 ||
             root->stepBytes % addressUnitBytes != 0) {
           result.error = "LLVM GEP is not aligned to the verified Generic address unit";
@@ -1961,9 +1965,10 @@ bool gepAddressGraphMatches(const LLVMFrontendResult& result,
   return addressTermMatches(result, descriptor.dynamicTerms.front(), expression, addressType);
 }
 
-void verifyMemoryDataflow(const Selection& selection, const LLVMFrontendResult& result,
+void verifyMemoryDataflow(const Selection& selection, const LLVMFrontendOptions& options,
+                          const LLVMFrontendResult& result,
                           LLVMFrontendVerificationReport& report) {
-  const auto expected = recomputeMemoryExpectations(selection);
+  const auto expected = recomputeMemoryExpectations(selection, options.addressUnitBytes);
   if (!expected.ok()) {
     report.add("LLVM_FRONTEND_MEMORY_ANALYSIS_VERIFY_FAILED", expected.error);
     return;
@@ -2075,7 +2080,7 @@ LLVMFrontendVerificationReport verifyIfConvertedResult(const llvm::Module& modul
   verifyIfRegionStructure(*selection, result, report);
   verifyLinearRegionStructure(*selection, result, report);
   verifyIfDataflow(module, *selection, result, report);
-  verifyMemoryDataflow(*selection, result, report);
+  verifyMemoryDataflow(*selection, options, result, report);
 
   for (const auto& node : result.dfg->nodes()) {
     const auto* provenance = nodeProvenance(result, node.id);
@@ -2243,6 +2248,11 @@ LLVMFrontendVerificationReport verifyFrontendResult(const llvm::Module& module,
   if (!result.metadata || result.metadata->loopEntryCanonicalized != originalNeedsCanonicalEntry) {
     report.add("LLVM_FRONTEND_LOOP_ENTRY_VERIFY_FAILED",
                "loop-entry canonicalization metadata does not match the original LLVM CFG");
+  }
+  if (!result.metadata || result.metadata->addressUnitBytes != options.addressUnitBytes ||
+      options.addressUnitBytes == 0) {
+    report.add("LLVM_FRONTEND_ADDRESS_UNIT_VERIFY_FAILED",
+               "frontend metadata address unit does not match the explicit lowering contract");
   }
   if (originalNeedsCanonicalEntry && !result.normalizedModule) {
     report.add("LLVM_FRONTEND_LOOP_ENTRY_VERIFY_FAILED",

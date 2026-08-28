@@ -26,6 +26,7 @@
 #include <fstream>
 #include <functional>
 #include <iostream>
+#include <limits>
 #include <optional>
 #include <sstream>
 #include <stdexcept>
@@ -38,7 +39,7 @@ void usage(const char* name) {
   std::cerr << "usage: " << name
             << " input.ll|input.bc --function name [--loop-header block]"
                " --artifact-dir dir -o generic_dfg.json\n"
-               "       [--invocation invocation.json]\n"
+               "       [--invocation invocation.json] [--address-unit-bytes N]\n"
             << name << " input.ll|input.bc [--function name] --list-loops [--json]\n";
 }
 
@@ -190,6 +191,12 @@ int main(int argc, char** argv) {
         options.functionName = next();
       else if (argument == "--loop-header")
         options.loopHeader = next();
+      else if (argument == "--address-unit-bytes") {
+        const auto value = std::stoul(next());
+        if (value == 0 || value > std::numeric_limits<std::uint32_t>::max())
+          throw std::invalid_argument("--address-unit-bytes must be a positive uint32");
+        options.addressUnitBytes = static_cast<std::uint32_t>(value);
+      }
       else if (argument == "--artifact-dir")
         artifactDirectory = next();
       else if (argument == "--invocation")

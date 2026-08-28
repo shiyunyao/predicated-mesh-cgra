@@ -280,6 +280,8 @@ void testMappingResearchTarget() {
   expect(research.isMappingResearchTarget() &&
              research.role() == std::string_view{"mapping_research_target"},
          "abstract target must be explicitly marked mapping-only");
+  expect(research.memory().addressUnit == "byte",
+         "research32 must expose the byte-address mapping contract");
   expect(research.supportsValueType(cgra::ir::ValueType::f32()) &&
              research.supportsValueType(cgra::ir::ValueType::i8()) &&
              !research.supportsValueType(cgra::ir::ValueType::floating(64)),
@@ -327,6 +329,8 @@ void testMappingResearchTarget() {
              research64.supportsValueType(cgra::ir::ValueType::floating(64)) &&
              research64.supportsValueType(cgra::ir::ValueType::integer(64)),
          "research64 explicitly supports 64-bit integer and floating values");
+  expect(research64.memory().addressUnit == "byte",
+         "research64 must expose the byte-address mapping contract");
   expect(cgra::target::TargetLegalizer::legalize(graph, research64).ok(),
          "research64 accepts f32 operations in its typed data lane");
   cgra::ir::DFGBuilder f64Builder("typed_fadd_f64");

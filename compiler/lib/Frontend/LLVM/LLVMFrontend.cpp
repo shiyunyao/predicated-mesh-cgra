@@ -1294,7 +1294,10 @@ std::optional<ir::ValueType> addressValueType(const llvm::Module& module,
 }
 
 std::optional<std::int64_t> constantGEPOffsetUnits(const llvm::Module& module,
-                                                   const llvm::GetElementPtrInst& gep) {
+                                                   const llvm::GetElementPtrInst& gep,
+                                                   std::uint32_t addressUnitBytes) {
+  if (addressUnitBytes == 0)
+    return std::nullopt;
   const auto& dataLayout = module.getDataLayout();
   const auto bitWidth = dataLayout.getIndexTypeSizeInBits(gep.getType());
   llvm::MapVector<llvm::Value*, llvm::APInt> offsets;
@@ -1302,12 +1305,10 @@ std::optional<std::int64_t> constantGEPOffsetUnits(const llvm::Module& module,
   if (!gep.collectOffset(dataLayout, bitWidth, offsets, constant) || !offsets.empty() ||
       constant.getMinSignedBits() > 64)
     return std::nullopt;
-  const auto primitiveBits = gep.getResultElementType()->getPrimitiveSizeInBits();
-  const std::int64_t unitBytes = primitiveBits > 0 && primitiveBits < 32 ? 1 : 4;
   const auto bytes = constant.getSExtValue();
-  if (bytes % unitBytes != 0)
+  if (bytes % addressUnitBytes != 0)
     return std::nullopt;
-  return bytes / unitBytes;
+  return bytes / addressUnitBytes;
 }
 
 std::optional<ir::ValueType> pointerTokenType(const llvm::Module& module,
@@ -1336,7 +1337,6 @@ std::optional<ir::ValueType> pointerTokenType(const llvm::Module& module,
 LLVMFrontendResult lowerStructuredLoop(llvm::Module& module, const LLVMFrontendOptions& options,
                                        LoopSelection& selection,
                                        std::optional<BranchRegion> discoveredRegion) {
-  static_cast<void>(options);
   LLVMFrontendResult error;
   IfLoweringState state{selection};
   if (discoveredRegion)
@@ -1346,8 +1346,8 @@ LLVMFrontendResult lowerStructuredLoop(llvm::Module& module, const LLVMFrontendO
   discoverIfRecurrences(state, module);
   promoteIfRecurrenceProducerClosure(state);
 
-  const auto memoryAnalysis =
-      analyzeMemoryDependences(*selection.loop, *selection.dominatorTree, *selection.loopInfo);
+  const auto memoryAnalysis = analyzeMemoryDependences(
+      *selection.loop, *selection.dominatorTree, *selection.loopInfo, options.addressUnitBytes);
   if (!memoryAnalysis.ok()) {
     LLVMFrontendStatus status = LLVMFrontendStatus::UnsupportedMemoryOperation;
     LLVMFrontendDiagnosticCode code = LLVMFrontendDiagnosticCode::LLVM_FRONTEND_UNSUPPORTED_MEMORY;
@@ -1532,7 +1532,7 @@ LLVMFrontendResult lowerStructuredLoop(llvm::Module& module, const LLVMFrontendO
       if (!pointerDataUse)
         continue;
       const auto type = addressValueType(module, *gep);
-      const auto offset = constantGEPOffsetUnits(module, *gep);
+      const auto offset = constantGEPOffsetUnits(module, *gep, options.addressUnitBytes);
       if (!type || !offset)
         return failure(LLVMFrontendStatus::UnsupportedNonAffineAddress,
                        LLVMFrontendDiagnosticCode::LLVM_FRONTEND_UNSUPPORTED_NON_AFFINE_ADDRESS,
@@ -2076,6 +2076,7 @@ LLVMFrontendResult lowerStructuredLoop(llvm::Module& module, const LLVMFrontendO
   metadata.loopHeader = blockName(*selection.function, selection.block);
   metadata.loopDepth = selection.loop->getLoopDepth();
   metadata.loopBlockCount = selection.loop->getBlocks().size();
+  metadata.addressUnitBytes = options.addressUnitBytes;
   metadata.requiresTripCount = true;
   metadata.staticTripCount = inferStaticTripCount(selection);
   metadata.loopShape = selection.linearRegion ? "linear_multiblock" : "structured";
@@ -2409,6 +2410,7 @@ LLVMFrontendResult lowerSelectedLoop(llvm::Module& module, const LLVMFrontendOpt
   metadata.loopHeader = blockName(*state.selection.function, *state.selection.block);
   metadata.loopDepth = state.selection.loop->getLoopDepth();
   metadata.loopBlockCount = state.selection.loop->getBlocks().size();
+  metadata.addressUnitBytes = options.addressUnitBytes;
   metadata.requiresTripCount = true;
   metadata.staticTripCount = inferStaticTripCount(state.selection);
   result.metadata = std::move(metadata);
@@ -2659,6 +2661,7 @@ std::string LLVMFrontendResult::toJson() const {
                         {"loop_header", metadata->loopHeader},
                         {"loop_depth", metadata->loopDepth},
                         {"loop_block_count", metadata->loopBlockCount},
+                        {"address_unit_bytes", metadata->addressUnitBytes},
                         {"loop_shape", metadata->loopShape},
                         {"loop_entry_canonicalized", metadata->loopEntryCanonicalized},
                         {"coalesced_store_pairs", metadata->coalescedStorePairs},

@@ -14,6 +14,9 @@ hardware, and full CGRA-Bench gates on the pinned 32-bit environment.
   targets.
 - Hardware profile: `target/cgra_v3.json`; the hardware lane remains
   32-bit, word-addressed, and requires complete encoding/lowering metadata.
+- Research profiles use explicit byte-addressed Generic memory units. The
+  frontend runner passes `--address-unit-bytes 1`; the hardware lane passes
+  the native four-byte unit. Address units are independent of access width.
 - A mapping-research result is L4 only after `ModuloMappingVerifier` passes.
   RF/stage feasibility is a separate observation and never changes mapping
   success into mapping infeasibility.
@@ -33,6 +36,10 @@ hardware, and full CGRA-Bench gates on the pinned 32-bit environment.
   result types are supported, role-compatible, and directionally valid.
 - Added regression coverage for the hardware/research boundary, typed
   operation corruption, Mapper-entry accounting, and budget classification.
+- Made the LLVM address unit an explicit frontend option. Research targets are
+  byte-addressed and the runner passes unit `1`; the executable target remains
+  word-addressed with unit `4`. Producer and independent verifier use the same
+  declared unit, so access width can no longer silently change address meaning.
 
 ## Local development evidence
 

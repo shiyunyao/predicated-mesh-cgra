@@ -15,6 +15,17 @@ make cgra-bench-inventory
 make cgra-bench-audit
 ```
 
+The mapping-research lane is separate:
+
+```sh
+make cgra-bench-research-audit
+```
+
+It uses `target/cgra_mapping64_v1.json`, passes the target's explicit
+byte-address unit to the LLVM frontend, and stops after
+`ModuloMappingVerifier`. Its output is mapping evidence only: it never emits
+an executable manifest or claims RTL support.
+
 After a completed **hosted** full audit, freeze its mapped-case contract with:
 
 ```sh

@@ -5,6 +5,7 @@ on:
     branches:
       - compiler/cgra-bench-audit-v0
       - compiler/linear-multiblock-loop-v0
+      - compiler/benchmark-to-mapper-v1
   workflow_dispatch:
   schedule:
     - cron: '17 3 * * 0'
@@ -59,3 +60,43 @@ jobs:
           name: cgra-bench-full-audit
           if-no-files-found: error
           path: build/cgra-bench/run/full/**
+
+  mapping-research:
+    name: cgra-bench-mapping-research
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+          fetch-depth: 0
+      - name: Install audit dependencies
+        run: sudo apt-get update && sudo apt-get install -y clang-14 llvm-14 llvm-14-dev llvm-14-tools cmake g++-multilib libc6-dev-i386 nlohmann-json3-dev python3 jq
+      - name: Verify pinned clean corpus
+        run: |
+          set -euo pipefail
+          test "$(git -C third_party/CGRA-Bench rev-parse HEAD)" = "$(jq -r .commit benchmarks/cgra-bench/corpus.lock.json)"
+          test -z "$(git -C third_party/CGRA-Bench status --porcelain)"
+      - name: Run typed abstract mapping audit
+        run: make cgra-bench-research-audit
+      - name: Verify mapping-research reconciliation and coverage
+        run: |
+          set -euo pipefail
+          summary=build/cgra-bench/run/research/summary.json
+          test -s build/cgra-bench/run/research/results.jsonl
+          jq -e '
+            .reconciliation.ok == true and
+            .unknown_count == 0 and
+            .timeout_count == 0 and
+            .t020r_mapping_research.mapper_entered >= 60 and
+            .t020r_mapping_research.modulo_mapping_verified >= 20 and
+            .t020r_mapping_research.mapper_entered_kernel_directories >= 12 and
+            .t020r_mapping_research.pass == true
+          ' "$summary" >/dev/null
+      - name: Upload mapping-research audit
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cgra-bench-mapping-research
+          if-no-files-found: error
+          path: build/cgra-bench/run/research/**

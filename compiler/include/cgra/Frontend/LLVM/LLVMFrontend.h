@@ -143,6 +143,10 @@ struct LLVMFrontendDiagnostic {
 struct LLVMFrontendOptions {
   std::string functionName;
   std::optional<std::string> loopHeader;
+  // Generic address operands are expressed in this explicit unit. The native
+  // cgra_v3 contract uses four-byte words; mapping-research byte-address
+  // profiles pass one. This is deliberately independent of access width.
+  std::uint32_t addressUnitBytes = 4;
 };
 
 struct LLVMFrontendMetadata {
@@ -150,6 +154,7 @@ struct LLVMFrontendMetadata {
   std::string loopHeader;
   std::uint32_t loopDepth = 0;
   std::uint32_t loopBlockCount = 0;
+  std::uint32_t addressUnitBytes = 4;
   bool requiresTripCount = true;
   std::optional<std::uint64_t> staticTripCount;
   std::string loopShape;
