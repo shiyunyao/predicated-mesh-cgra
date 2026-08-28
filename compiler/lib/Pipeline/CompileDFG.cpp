@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 #include "cgra/Pipeline/CompileDFG.h"
+#include "cgra/Transforms/RecurrenceIngressNormalization.h"
 
 #include "cgra/Analysis/MIIAnalyzer.h"
 #include "cgra/IR/DFGSerialization.h"
@@ -165,10 +166,17 @@ std::string CompileDFGResult::toJson() const {
                {"reason_code", physicalRealizability.reasonCode},
                {"message", physicalRealizability.message}}},
              {"stats",
-              {{"trip_count", stats.tripCount},
+               {{"trip_count", stats.tripCount},
                {"mii", stats.mii},
                {"mapper_invoked", stats.mapperInvoked},
                {"mapped_ii", stats.mappedII},
+               {"safe_ii", stats.safeII},
+               {"best_known_ii", stats.bestKnownII},
+               {"mapping_solution_kind", stats.mappingSolutionKind},
+               {"feasibility_fallback_invoked", stats.feasibilityFallbackInvoked},
+               {"feasibility_fallback_attempts", stats.feasibilityFallbackAttempts},
+               {"feasibility_fallback_schedule_growth",
+                stats.feasibilityFallbackScheduleGrowth},
                {"node_candidate_attempts", stats.nodeCandidateAttempts},
                {"route_state_expansions", stats.routeStateExpansions},
                {"completed_modulo_mappings", stats.completedModuloMappings},
@@ -216,14 +224,39 @@ CompileDFGResult compileGenericDFG(const ir::DFG& dfg, const TargetModel& target
       return failure(result, CompileDFGStatus::GenericDFGVerificationFailure,
                      genericReport.format(), artifacts);
 
-    const auto legalization = target::TargetLegalizer::legalize(dfg, target);
+    auto normalized = options.normalizeRecurrenceIngress
+                          ? transforms::normalizeRecurrenceIngress(dfg)
+                          : transforms::RecurrenceIngressNormalizationResult{dfg, {}, {}};
+    if (options.normalizeRecurrenceIngress && normalized.changed()) {
+      Json ingress = {{"schema", "cgra.recurrence_ingress_normalization.v1"}};
+      ingress["records"] = Json::array();
+      for (const auto& record : normalized.records) {
+        ingress["records"].push_back({
+            {"original_edge", record.originalEdge},
+            {"ingress_node", record.ingressNode},
+            {"recurrence_edge", record.recurrenceEdge},
+            {"local_edge", record.localEdge},
+            {"kind", record.kind == transforms::RecurrenceIngressKind::Predicate ? "predicate"
+                                                                                     : "data"},
+            {"distance", record.distance}});
+      }
+      artifacts.write("01_recurrence_ingress_normalization.json", ingress.dump(2));
+      const auto normalizedReport = ir::DFGVerifier::verify(normalized.dfg);
+      artifacts.write("01_recurrence_ingress_verification.json", normalizedReport.toJson());
+      if (!normalizedReport.ok())
+        return failure(result, CompileDFGStatus::GenericDFGVerificationFailure,
+                       normalizedReport.format(), artifacts);
+    }
+    const auto& semanticDfg = normalized.dfg;
+
+    const auto legalization = target::TargetLegalizer::legalize(semanticDfg, target);
     artifacts.write("02_legalization.json", legalization.toJson());
     if (!legalization.ok())
       return failure(result, CompileDFGStatus::TargetLegalizationFailure, legalization.format(),
                      artifacts);
     const auto& targetDFG = *legalization.dfg;
     artifacts.write("03_target_dfg.json", target::toJson(targetDFG));
-    const auto targetReport = target::TargetDFGVerifier::verify(targetDFG, target, &dfg);
+    const auto targetReport = target::TargetDFGVerifier::verify(targetDFG, target, &semanticDfg);
     artifacts.write("04_target_dfg_verification.json", targetReport.toJson());
     if (!targetReport.ok())
       return failure(result, CompileDFGStatus::TargetDFGVerificationFailure, targetReport.format(),
@@ -261,6 +294,12 @@ CompileDFGResult compileGenericDFG(const ir::DFG& dfg, const TargetModel& target
     result.stats.rfRejectedByII = mapped.stats.rfRejectedByII;
     result.stats.rfRejectedByReason = mapped.stats.rfRejectedByReason;
     result.stats.postMappingAbort = mapped.stats.postMappingAbort;
+    result.stats.safeII = mapped.safeII;
+    result.stats.bestKnownII = mapped.bestKnownII;
+    result.stats.mappingSolutionKind = mapped.solutionKind;
+    result.stats.feasibilityFallbackInvoked = mapped.fallbackInvoked;
+    result.stats.feasibilityFallbackAttempts = mapped.fallbackAttempts;
+    result.stats.feasibilityFallbackScheduleGrowth = mapped.fallbackScheduleGrowth;
     if (!mapped.ok()) {
       const auto status = options.mode == CompileDFGMode::MappingResearch &&
                                   mapped.stats.rfBudgetExceeded != 0

@@ -68,6 +68,9 @@ std::string_view toString(CompileDFGStatus status) noexcept;
 
 struct CompileDFGOptions {
   CompileDFGMode mode = CompileDFGMode::HardwareExecutable;
+  // Keep the historical pipeline unchanged unless a caller explicitly opts
+  // into recurrence-ingress normalization (T021).
+  bool normalizeRecurrenceIngress = false;
   std::uint64_t tripCount = 1;
   std::filesystem::path targetPath;
   std::filesystem::path artifactDirectory;
@@ -83,6 +86,12 @@ struct CompileDFGStats {
   std::uint32_t mii = 0;
   bool mapperInvoked = false;
   std::uint32_t mappedII = 0;
+  std::uint32_t safeII = 0;
+  std::uint32_t bestKnownII = 0;
+  std::string mappingSolutionKind = "none";
+  bool feasibilityFallbackInvoked = false;
+  std::uint64_t feasibilityFallbackAttempts = 0;
+  std::uint64_t feasibilityFallbackScheduleGrowth = 0;
   std::uint64_t nodeCandidateAttempts = 0;
   std::uint64_t routeStateExpansions = 0;
   std::uint64_t completedModuloMappings = 0;

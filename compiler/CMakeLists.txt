@@ -159,6 +159,7 @@ cgra_enable_sanitizers(cgra_lowering)
 add_library(cgra_pipeline
   lib/Pipeline/CompileDFG.cpp
   lib/Pipeline/BackendFeasibilityChecker.cpp
+  lib/Transforms/RecurrenceIngressNormalization.cpp
 )
 target_include_directories(cgra_pipeline PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(cgra_pipeline PUBLIC cgra_lowering cgra_schedule_materialization
@@ -371,6 +372,22 @@ if(CGRA_BUILD_TESTS)
     TYPE semantic
     SOURCES tests/Mapping/ModuloMapperTest.cpp tests/IR/Fixtures.cpp
     LIBRARIES cgra_mapping
+    DEFINITIONS CGRA_REPOSITORY_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/.."
+  )
+
+  cgra_add_test(
+    NAME cgra-recurrence-ingress-tests
+    TYPE semantic
+    SOURCES tests/Mapping/RecurrenceIngressNormalizationTest.cpp
+    LIBRARIES cgra_pipeline
+    DEFINITIONS CGRA_REPOSITORY_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/.."
+  )
+
+  cgra_add_test(
+    NAME cgra-feasibility-fallback-tests
+    TYPE semantic
+    SOURCES tests/Mapping/FeasibilityFallbackTest.cpp
+    LIBRARIES cgra_mapping cgra_target cgra_ir
     DEFINITIONS CGRA_REPOSITORY_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/.."
   )
 

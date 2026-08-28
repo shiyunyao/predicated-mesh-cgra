@@ -54,6 +54,15 @@ struct ModuloMapperResult {
   ModuloMapperStatus status = ModuloMapperStatus::InternalError;
   std::optional<ModuloMapping> mapping;
   ModuloMapperStats stats;
+  std::uint32_t mii = 0;
+  std::uint32_t safeII = 0;
+  std::uint32_t bestKnownII = 0;
+  std::string solutionKind = "none";
+  bool fallbackInvoked = false;
+  std::uint64_t fallbackAttempts = 0;
+  std::uint64_t fallbackLocalRepairs = 0;
+  std::uint64_t fallbackScheduleGrowth = 0;
+  std::string fallbackFailureReason;
   std::vector<ModuloMapperDiagnostic> diagnostics;
 
   bool ok() const noexcept { return status == ModuloMapperStatus::Success && mapping.has_value(); }

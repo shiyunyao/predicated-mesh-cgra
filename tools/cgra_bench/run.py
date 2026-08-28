@@ -16,6 +16,7 @@ from typing import Any
 
 try:
     from .build_llvm import build
+    from .admissibility import attach_terminal_status
     from .classify import classify
     from .evidence import STAGES, complete_stage_records, write_case_evidence
     from .functional import FunctionalCaseError, build_kernel_invocation, load_cases, validate_case
@@ -25,6 +26,7 @@ try:
     from .schemas import read_json, sha256_file, write_json
 except ImportError:  # pragma: no cover - direct script execution
     from build_llvm import build
+    from admissibility import attach_terminal_status
     from classify import classify
     from evidence import STAGES, complete_stage_records, write_case_evidence
     from functional import FunctionalCaseError, build_kernel_invocation, load_cases, validate_case
@@ -201,7 +203,8 @@ def run_case(case: dict[str, Any], root: pathlib.Path, corpus: pathlib.Path, out
              target: pathlib.Path, frontend_bin: pathlib.Path, compile_bin: pathlib.Path,
              timeout: int, functional_cases: dict[str, dict[str, Any]],
              mapping_profile: dict[str, int], pipeline_lane: str = "hardware",
-             source_abi: str = "m32") -> list[dict[str, Any]]:
+             source_abi: str = "m32", mapping_objective: str = "optimize-ii",
+             normalize_recurrence_ingress: bool = False) -> list[dict[str, Any]]:
     if not case.get("enabled", True):
         return [{"id": case["id"], "kernel": case["kernel"], "source": case["source"], "loop_header": None, "tier": "DISCOVERED", "terminal_stage": "S0_CORPUS_DISCOVERY", "status": "EXCLUDED", "stages": [{"stage": "S0_CORPUS_DISCOVERY", "status": "EXCLUDED"}], "category": "CORPUS", "owner": "HARNESS", "diagnostic_code": "EXPLICIT_EXCLUSION", "message": case.get("exclusion", "explicitly excluded"), "excluded": True}]
     source = corpus / case["source"]
@@ -381,6 +384,13 @@ def run_case(case: dict[str, Any], root: pathlib.Path, corpus: pathlib.Path, out
         ]
         if pipeline_lane == "mapping-research":
             compile_command.extend(["--mode", "mapping-research"])
+            if normalize_recurrence_ingress:
+                compile_command.append("--enable-recurrence-ingress")
+            if mapping_objective == "find-any-feasible":
+                compile_command.extend([
+                    "--mapping-objective", "find-any-feasible",
+                    "--enable-feasibility-fallback",
+                ])
         rc, stdout, stderr, compile_duration = command_result(compile_command, root, timeout)
         base["command"] = compile_command
         tier, stage = tier_from_compile(abi_out, True)
@@ -486,6 +496,8 @@ def main() -> int:
     parser.add_argument("--timeout", type=int, default=120)
     parser.add_argument("--profile", choices=sorted(MAPPING_PROFILES), default="baseline")
     parser.add_argument("--lane", choices=("hardware", "mapping-research"), default="hardware")
+    parser.add_argument("--mapping-objective", choices=("optimize-ii", "find-any-feasible"), default="optimize-ii")
+    parser.add_argument("--enable-recurrence-ingress", action="store_true")
     parser.add_argument(
         "--source-abi",
         choices=("m32", "native"),
@@ -587,6 +599,8 @@ def main() -> int:
                 "name": args.profile,
                 "lane": args.lane,
                 "source_abi": args.source_abi,
+                "mapping_objective": args.mapping_objective,
+                "normalize_recurrence_ingress": args.enable_recurrence_ingress,
                 "timeout_seconds": args.timeout,
                 "mapping": mapping_profile,
             },
@@ -608,6 +622,8 @@ def main() -> int:
                         mapping_profile,
                         args.lane,
                         args.source_abi,
+                        args.mapping_objective,
+                        args.enable_recurrence_ingress,
                     )
                 )
             except Exception as error:  # every case must have a terminal result
@@ -623,10 +639,13 @@ def main() -> int:
             results, functional_cases, root, out, args.timeout
         )
         for result in results:
+            attach_terminal_status(result)
             result["audit_profile"] = {
                 "name": args.profile,
                 "lane": args.lane,
                 "source_abi": args.source_abi,
+                "mapping_objective": args.mapping_objective,
+                "normalize_recurrence_ingress": args.enable_recurrence_ingress,
                 "timeout_seconds": args.timeout,
                 "mapping": mapping_profile,
             }

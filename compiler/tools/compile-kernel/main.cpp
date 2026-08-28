@@ -17,6 +17,9 @@ void usage(const char* name) {
             << " input.generic_dfg.json --target target.json --invocation invocation.json"
                " --artifact-dir dir -o manifest.json [--abi-layout-out path]"
                " [--mode hardware|mapping-research]"
+               " [--mapping-objective optimize-ii|find-any-feasible]"
+               " [--enable-feasibility-fallback] [--low-ii-window N] [--max-safe-ii N]"
+               " [--enable-recurrence-ingress]"
                " [--max-ii N] [--min-ii N] [--max-node-candidates N]"
                " [--max-backtracks N] [--max-route-calls N] [--max-route-states N]"
                " [--no-virtual-hold]\n";
@@ -69,6 +72,23 @@ int main(int argc, char** argv) {
         if (stop != "modulo-map")
           throw std::invalid_argument("unsupported pipeline stop: " + stop);
         options.backend.mode = cgra::pipeline::CompileDFGMode::MappingResearch;
+      } else if (arg == "--mapping-objective") {
+        const auto objective = next();
+        if (objective == "optimize-ii")
+          options.backend.mapper.objective = cgra::mapping::MappingObjective::OptimizeII;
+        else if (objective == "find-any-feasible")
+          options.backend.mapper.objective = cgra::mapping::MappingObjective::FindAnyFeasible;
+        else
+          throw std::invalid_argument("unsupported mapping objective: " + objective);
+      } else if (arg == "--enable-feasibility-fallback") {
+        options.backend.mapper.objective = cgra::mapping::MappingObjective::FindAnyFeasible;
+        options.backend.mapper.feasibilityFallback.enabled = true;
+      } else if (arg == "--low-ii-window") {
+        options.backend.mapper.feasibilityFallback.lowIIWindow = std::stoul(next());
+      } else if (arg == "--max-safe-ii") {
+        options.backend.mapper.feasibilityFallback.maxSafeII = std::stoul(next());
+      } else if (arg == "--enable-recurrence-ingress") {
+        options.backend.normalizeRecurrenceIngress = true;
       }
       else if (arg == "--max-ii")
         options.backend.mapper.maxII = std::stoul(next());

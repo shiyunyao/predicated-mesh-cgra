@@ -17,6 +17,9 @@ void usage(const char* name) {
   std::cerr << "usage: " << name
             << " input.dfg.json --target target.json --trip-count N"
                " --artifact-dir dir -o manifest.json [--scratchpad-preload file]"
+               " [--mapping-objective optimize-ii|find-any-feasible]"
+               " [--enable-feasibility-fallback] [--low-ii-window N] [--max-safe-ii N]"
+               " [--enable-recurrence-ingress]"
                " [--max-ii N] [--min-ii N] [--no-virtual-hold]\n";
 }
 
@@ -64,6 +67,24 @@ int main(int argc, char** argv) {
         options.mapper.maxII = std::stoul(next());
       else if (arg == "--min-ii")
         options.mapper.minII = std::stoul(next());
+      else if (arg == "--mapping-objective") {
+        const auto objective = next();
+        if (objective == "optimize-ii")
+          options.mapper.objective = cgra::mapping::MappingObjective::OptimizeII;
+        else if (objective == "find-any-feasible")
+          options.mapper.objective = cgra::mapping::MappingObjective::FindAnyFeasible;
+        else
+          throw std::invalid_argument("unsupported mapping objective: " + objective);
+      } else if (arg == "--enable-feasibility-fallback") {
+        options.mapper.objective = cgra::mapping::MappingObjective::FindAnyFeasible;
+        options.mapper.feasibilityFallback.enabled = true;
+      } else if (arg == "--low-ii-window") {
+        options.mapper.feasibilityFallback.lowIIWindow = std::stoul(next());
+      } else if (arg == "--max-safe-ii") {
+        options.mapper.feasibilityFallback.maxSafeII = std::stoul(next());
+      } else if (arg == "--enable-recurrence-ingress") {
+        options.normalizeRecurrenceIngress = true;
+      }
       else if (arg == "--no-virtual-hold")
         options.mapper.routeOptions.allowVirtualHold = false;
       else if (arg == "--program-name")

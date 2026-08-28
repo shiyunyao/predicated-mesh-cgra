@@ -546,6 +546,8 @@ std::string ModuloMapperResult::format() const {
          << "\npost-mapping rejected: " << stats.postMappingRejected
          << "\nRF rejected: " << stats.rfRejected
          << "\nRF budget exceeded: " << stats.rfBudgetExceeded;
+  output << "\nMII: " << mii << "\nsafe II: " << safeII
+         << "\nsolution kind: " << solutionKind;
   for (const auto& diagnostic : diagnostics)
     output << '\n' << toString(diagnostic.code) << ": " << diagnostic.message;
   return output.str();
@@ -554,6 +556,15 @@ std::string ModuloMapperResult::format() const {
 std::string ModuloMapperResult::toJson() const {
   Json root = {{"schema", "cgra.modulo_mapper.result.v1"},
                {"status", toString(status)},
+               {"mii", mii},
+               {"safe_ii", safeII},
+               {"best_known_ii", bestKnownII},
+               {"solution_kind", solutionKind},
+               {"fallback_invoked", fallbackInvoked},
+               {"fallback_attempts", fallbackAttempts},
+               {"fallback_local_repairs", fallbackLocalRepairs},
+               {"fallback_schedule_growth", fallbackScheduleGrowth},
+               {"fallback_failure_reason", fallbackFailureReason},
                {"stats",
                 {{"starting_mii", stats.startingMII},
                  {"final_ii", stats.finalII},
@@ -625,8 +636,11 @@ ModuloMapperResult ModuloMapper::map(const cgra::target::TargetDFG& dfg,
     return result;
   }
   result.stats.startingMII = mii.mii;
+  result.mii = mii.mii;
   const auto startII = std::max(mii.mii, options.minII == 0 ? mii.mii : options.minII);
-  const auto maxII = options.maxII == 0 ? startII : options.maxII;
+  const auto configuredMaxII = options.maxII == 0 ? startII : options.maxII;
+  const auto fallbackLimit = options.feasibilityFallback.maxSafeII;
+  const auto maxII = fallbackLimit == 0 ? configuredMaxII : std::max(configuredMaxII, fallbackLimit);
   if (maxII < startII) {
     result.status = ModuloMapperStatus::NoMappingWithinIILimit;
     addDiagnostic(result, ModuloMapperDiagnosticCode::MAP_NO_MAPPING_WITHIN_II_LIMIT,
@@ -635,7 +649,17 @@ ModuloMapperResult ModuloMapper::map(const cgra::target::TargetDFG& dfg,
   }
 
   bool perIIBudgetExceeded = false;
+  const auto lowIIEnd = std::min<std::uint64_t>(
+      maxII, static_cast<std::uint64_t>(startII) + options.feasibilityFallback.lowIIWindow);
   for (std::uint64_t ii = startII; ii <= maxII; ++ii) {
+    const bool inFallback = options.objective == MappingObjective::FindAnyFeasible &&
+                            options.feasibilityFallback.enabled && ii > lowIIEnd;
+    if (inFallback && !result.fallbackInvoked) {
+      result.fallbackInvoked = true;
+      result.fallbackAttempts = 1;
+    } else if (inFallback) {
+      ++result.fallbackAttempts;
+    }
     ++result.stats.iiAttempts;
     const auto currentII = static_cast<std::uint32_t>(ii);
     const auto attemptsRemaining = static_cast<std::uint64_t>(maxII) - ii + 1;
@@ -651,6 +675,10 @@ ModuloMapperResult ModuloMapper::map(const cgra::target::TargetDFG& dfg,
     if (outcome == SearchOutcome::Success) {
       result.status = ModuloMapperStatus::Success;
       result.mapping = state.mapping();
+      result.bestKnownII = currentII;
+      result.safeII = currentII;
+      result.solutionKind = inFallback ? "constructive_fallback" : "low_ii_search";
+      result.fallbackScheduleGrowth = currentII > lowIIEnd ? currentII - lowIIEnd : 0;
       return result;
     }
     if (outcome == SearchOutcome::PerIIBudgetExceeded) {
@@ -677,6 +705,8 @@ ModuloMapperResult ModuloMapper::map(const cgra::target::TargetDFG& dfg,
     }
   }
   if (perIIBudgetExceeded) {
+    if (result.fallbackInvoked)
+      result.fallbackFailureReason = "mapping search budget exhausted during fallback";
     result.status = ModuloMapperStatus::BudgetExceeded;
     return result;
   }

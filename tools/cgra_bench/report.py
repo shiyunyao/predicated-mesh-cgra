@@ -8,6 +8,7 @@ import csv
 import fnmatch
 import json
 import pathlib
+import statistics
 from collections import Counter, defaultdict
 from typing import Any
 
@@ -74,6 +75,22 @@ def _operation_histogram(item: dict[str, Any], out: pathlib.Path) -> dict[str, i
         str(opcode): int(count)
         for opcode, count in item.get("dfg", {}).get("opcode_histogram", {}).items()
     }
+
+
+def _metric(item: dict[str, Any], name: str) -> Any:
+    """Read a metric from the stable result envelope or backend stats."""
+    if name in item:
+        return item[name]
+    backend = item.get("backend", {})
+    if isinstance(backend, dict):
+        stats = backend.get("stats", {})
+        if isinstance(stats, dict) and name in stats:
+            return stats[name]
+    if name == "compile_ms":
+        durations = item.get("duration_ms", {})
+        if isinstance(durations, dict):
+            return sum(value for value in durations.values() if isinstance(value, (int, float)))
+    return None
 
 
 def _find_family_manifest(out: pathlib.Path) -> pathlib.Path | None:
@@ -170,6 +187,7 @@ def _computational_family_gate(
 
 def report(out: pathlib.Path, corpus: dict[str, Any], results: list[dict[str, Any]], family_manifest: dict[str, Any] | None = None) -> dict[str, Any]:
     terminal = Counter(item.get("category", "INTERNAL") for item in results)
+    strict_terminal = Counter(item.get("terminal_status", "COMPILER_BUG") for item in results)
     tiers = Counter(item.get("tier", "DISCOVERED") for item in results)
     first_blockers = Counter(
         item.get("diagnostic_code", "UNCLASSIFIED_RESULT")
@@ -340,6 +358,35 @@ def report(out: pathlib.Path, corpus: dict[str, Any], results: list[dict[str, An
         if physical.get("reason_code"):
             physical_reasons[physical["reason_code"]] += 1
     computational_family_gate = _computational_family_gate(out, corpus, results, family_manifest)
+    def metric_values(name: str) -> list[float]:
+        values = []
+        for item in results:
+            value = _metric(item, name)
+            if isinstance(value, (int, float)):
+                values.append(float(value))
+        return values
+
+    def quantile(values: list[float], fraction: float) -> float | None:
+        if not values:
+            return None
+        ordered = sorted(values)
+        index = min(len(ordered) - 1, int(round((len(ordered) - 1) * fraction)))
+        return ordered[index]
+
+    mii_values = metric_values("mii")
+    safe_ii_values = metric_values("safe_ii")
+    compile_values = [
+        float(value)
+        for item in results
+        for value in item.get("duration_ms", {}).values()
+        if isinstance(value, int)
+    ]
+    ratio_values = []
+    for item in results:
+        mii = _metric(item, "mii")
+        safe_ii = _metric(item, "safe_ii")
+        if isinstance(mii, (int, float)) and isinstance(safe_ii, (int, float)) and mii > 0 and safe_ii > 0:
+            ratio_values.append(float(safe_ii) / float(mii))
     summary = {
         "schema": "cgra.cgra_bench.summary.v1",
         "denominator": {
@@ -363,6 +410,34 @@ def report(out: pathlib.Path, corpus: dict[str, Any], results: list[dict[str, An
         },
         "tiers": dict(sorted(tiers.items())),
         "terminal_categories": dict(sorted(terminal.items())),
+        "terminal_status_histogram": dict(sorted(strict_terminal.items())),
+        "architecture_admissible_loops": sum(
+            item.get("terminal_status") in {"FEASIBLE_II", "RESOURCE_INFEASIBLE"}
+            for item in results
+        ),
+        "strict_feasible_ii_loops": sum(
+            item.get("terminal_status") == "FEASIBLE_II" for item in results
+        ),
+        "compiler_bug_count": sum(
+            item.get("terminal_status") == "COMPILER_BUG" for item in results
+        ),
+        "mapper_entered_loops": mapper_entered,
+        "raw_route_mapped_loops": sum(raw_mapping_observed(item) for item in results),
+        "target_legal_loops": sum(TIERS.get(item.get("tier", "DISCOVERED"), 0) >= TIERS["TARGET_LEGAL"] for item in results),
+        "hardware_executable_loops": sum(
+            bool(item.get("backend", {}).get("hardware_executable"))
+            for item in results if isinstance(item.get("backend"), dict)
+        ),
+        "stage_rejected": sum(int(stats.get("stage_rejected", 0)) for stats in backend_stats),
+        "rf_rejected": sum(int(stats.get("rf_rejected", 0)) for stats in backend_stats),
+        "metrics": {
+            "median_mii": statistics.median(mii_values) if mii_values else None,
+            "median_safe_ii": statistics.median(safe_ii_values) if safe_ii_values else None,
+            "median_safe_ii_over_mii": statistics.median(ratio_values) if ratio_values else None,
+            "p95_safe_ii_over_mii": quantile(ratio_values, 0.95),
+            "median_compile_time_ms": statistics.median(compile_values) if compile_values else None,
+            "p95_compile_time_ms": quantile(compile_values, 0.95),
+        },
         "unknown_count": sum(1 for item in results if item.get("category") == "INTERNAL" or item.get("owner") == "UNKNOWN"),
         "timeout_count": sum(1 for item in results if item.get("category") == "TIMEOUT"),
         "first_blocker_distribution": dict(sorted(first_blockers.items())),
