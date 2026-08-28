@@ -357,6 +357,11 @@ def test_report_tracks_linear_multiblock_outcomes(tmp_path: Path) -> None:
         "category": "RF",
         "owner": "RF",
         "diagnostic_code": "RF_ALLOCATION_FAILED",
+        "backend": {
+            "mapping_status": "not_available",
+            "hardware_executable": False,
+            "physical_realizability": {"status": "not_run"},
+        },
     }])
     assert summary["linear_multiblock"] == {
         "candidate_count": 1,
@@ -373,6 +378,52 @@ def test_report_tracks_linear_multiblock_outcomes(tmp_path: Path) -> None:
         "required_mapped_kernel_directories": 5,
         "pass": False,
     }
+    assert summary["t020r_mapping_research"] == {
+        "mapper_entered": 1,
+        "modulo_mapping_verified": 0,
+        "mapper_entered_kernel_directories": 1,
+        "hardware_executable": 0,
+        "mapping_status": {"not_available": 1},
+        "physical_status": {"not_run": 1},
+        "physical_failure_reasons": {},
+        "required_mapper_entered": 60,
+        "required_modulo_mapping_verified": 20,
+        "required_mapper_entered_kernel_directories": 12,
+        "pass": False,
+    }
+
+
+def test_report_separates_mapping_success_from_physical_failure(tmp_path: Path) -> None:
+    corpus = {
+        "denominator": {"kernel_directories": 1, "source_translation_units": 1},
+        "sources": [{"path": "kernels/a/a.c", "enabled": True}],
+    }
+    summary = report(tmp_path, corpus, [{
+        "id": "kernels/a/a.c::kernel::loop",
+        "kernel": "a",
+        "source": "kernels/a/a.c",
+        "function": "kernel",
+        "loop_header": "loop",
+        "tier": "MAPPED",
+        "status": "PASS",
+        "category": "MAPPING",
+        "owner": "MAPPER",
+        "diagnostic_code": "MODULO_MAPPING_VERIFIED",
+        "backend": {
+            "mapping_status": "success",
+            "hardware_executable": False,
+            "physical_realizability": {
+                "status": "infeasible",
+                "reason_code": "rf_infeasible",
+            },
+        },
+    }])
+    research = summary["t020r_mapping_research"]
+    assert research["modulo_mapping_verified"] == 1
+    assert research["mapping_status"] == {"success": 1}
+    assert research["physical_status"] == {"infeasible": 1}
+    assert research["physical_failure_reasons"] == {"rf_infeasible": 1}
+    assert research["hardware_executable"] == 0
 
 
 def test_failure_evidence_contains_metrics_reproducer_and_stage_hashes(tmp_path: Path) -> None:

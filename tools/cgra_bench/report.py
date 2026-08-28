@@ -164,6 +164,31 @@ def report(out: pathlib.Path, corpus: dict[str, Any], results: list[dict[str, An
         if item.get("kernel") and
         TIERS.get(item.get("tier", "DISCOVERED"), 0) >= TIERS["MAPPED"]
     })
+    mapper_entered = sum(
+        TIERS.get(item.get("tier", "DISCOVERED"), 0) >= TIERS["TARGET_LEGAL"]
+        for item in results
+    )
+    mapper_entered_kernel_directories = len({
+        item.get("kernel")
+        for item in results
+        if item.get("kernel") and
+        TIERS.get(item.get("tier", "DISCOVERED"), 0) >= TIERS["TARGET_LEGAL"]
+    })
+    mapping_statuses = Counter(
+        item.get("backend", {}).get("mapping_status", "not_available")
+        for item in results
+        if isinstance(item.get("backend"), dict)
+    )
+    physical_statuses = Counter()
+    physical_reasons = Counter()
+    for item in results:
+        if not isinstance(item.get("backend"), dict):
+            continue
+        physical = item["backend"].get("physical_realizability", {})
+        status = physical.get("status", "not_run")
+        physical_statuses[status] += 1
+        if physical.get("reason_code"):
+            physical_reasons[physical["reason_code"]] += 1
     summary = {
         "schema": "cgra.cgra_bench.summary.v1",
         "denominator": {
@@ -230,6 +255,24 @@ def report(out: pathlib.Path, corpus: dict[str, Any], results: list[dict[str, An
             "pass": frontend_dfg_or_higher >= 10 and mapped_or_higher >= 8 and
                     mapped_kernel_directories >= 5,
         },
+        "t020r_mapping_research": {
+            "mapper_entered": mapper_entered,
+            "modulo_mapping_verified": mapping_statuses.get("success", 0),
+            "mapper_entered_kernel_directories": mapper_entered_kernel_directories,
+            "hardware_executable": sum(
+                bool(item.get("backend", {}).get("hardware_executable"))
+                for item in results
+                if isinstance(item.get("backend"), dict)
+            ),
+            "mapping_status": dict(sorted(mapping_statuses.items())),
+            "physical_status": dict(sorted(physical_statuses.items())),
+            "physical_failure_reasons": dict(sorted(physical_reasons.items())),
+            "required_mapper_entered": 60,
+            "required_modulo_mapping_verified": 20,
+            "required_mapper_entered_kernel_directories": 12,
+            "pass": mapper_entered >= 60 and mapping_statuses.get("success", 0) >= 20 and
+                    mapper_entered_kernel_directories >= 12,
+        },
         "backend_metrics": {
             "cases_with_stats": len(backend_stats),
             "mii": [stats.get("mii") for stats in backend_stats if stats.get("mii") is not None],
@@ -274,7 +317,7 @@ def report(out: pathlib.Path, corpus: dict[str, Any], results: list[dict[str, An
         writer = csv.writer(stream)
         writer.writerow(["metric", "value"])
         writer.writerows([("candidate_loops", candidate_loop_count), ("terminal_results", len(results)), *sorted(tiers.items()), *sorted(terminal.items())])
-    lines = ["# CGRA-Bench Audit Summary", "", f"- Source units represented: {source_count}/{len(expected_sources)}", f"- Candidate loops represented: {len(represented_loops)}/{candidate_loop_count}", f"- Terminal results: {len(results)}", f"- UNKNOWN/unclassified: {summary['unknown_count']}", f"- Timeouts: {summary['timeout_count']}", f"- Reconciliation: {'PASS' if summary['reconciliation']['ok'] else 'FAIL'}", f"- Linear multi-block: candidates={summary['linear_multiblock']['candidate_count']}, frontend={summary['linear_multiblock']['frontend_dfg_count']}, mapped={summary['linear_multiblock']['mapped_count']}, shape-rejected={summary['linear_multiblock']['shape_rejection_count']}", f"- T020 outcome: frontend={frontend_dfg_or_higher}/10, mapped={mapped_or_higher}/8, mapped kernels={mapped_kernel_directories}/5 ({'PASS' if summary['t020_outcome']['pass'] else 'FAIL'})", "", "## Tiers", ""]
+    lines = ["# CGRA-Bench Audit Summary", "", f"- Source units represented: {source_count}/{len(expected_sources)}", f"- Candidate loops represented: {len(represented_loops)}/{candidate_loop_count}", f"- Terminal results: {len(results)}", f"- UNKNOWN/unclassified: {summary['unknown_count']}", f"- Timeouts: {summary['timeout_count']}", f"- Reconciliation: {'PASS' if summary['reconciliation']['ok'] else 'FAIL'}", f"- Linear multi-block: candidates={summary['linear_multiblock']['candidate_count']}, frontend={summary['linear_multiblock']['frontend_dfg_count']}, mapped={summary['linear_multiblock']['mapped_count']}, shape-rejected={summary['linear_multiblock']['shape_rejection_count']}", f"- T020 outcome: frontend={frontend_dfg_or_higher}/10, mapped={mapped_or_higher}/8, mapped kernels={mapped_kernel_directories}/5 ({'PASS' if summary['t020_outcome']['pass'] else 'FAIL'})", f"- T020R research outcome: mapper entered={mapper_entered}/60, modulo mapped={mapping_statuses.get('success', 0)}/20, mapper-entered kernels={mapper_entered_kernel_directories}/12 ({'PASS' if summary['t020r_mapping_research']['pass'] else 'FAIL'})", "", "## Tiers", ""]
     lines.extend(f"- {key}: {value}" for key, value in sorted(tiers.items()))
     lines.extend(["", "## First blockers", ""])
     lines.extend(f"- {key}: {value}" for key, value in sorted(first_blockers.items()))
