@@ -475,6 +475,35 @@ void testExplicitV3Contract() {
   }
 }
 
+void testMappingOperationTypeContract() {
+  const auto path = RepositoryRoot / "target/cgra_mapping64_v1.json";
+  const auto target = cgra::TargetModel::loadFromFile(path);
+  check(target.operation("FADD").acceptedResultTypes ==
+            std::vector<cgra::ir::ValueType>{cgra::ir::ValueType::f32(),
+                                             cgra::ir::ValueType::floating(64)} &&
+            target.operation("FADD").uniformDataType,
+        "mapping64 retains the declared typed FADD contract");
+  const auto json = loadJson(path);
+  expectRejected(
+      json,
+      [](Json& malformed) {
+        malformed["operations"]["FADD"]["operands"][0]["types"] = Json::array();
+      },
+      "must be a type string or non-empty type array");
+  expectRejected(
+      json,
+      [](Json& malformed) {
+        malformed["operations"]["FADD"]["operands"][0]["types"] = {"predicate"};
+      },
+      "declared type is incompatible with operand role");
+  expectRejected(
+      json,
+      [](Json& malformed) {
+        malformed["operations"]["FADD"]["result"]["types"] = {"void"};
+      },
+      "declared type is incompatible with result role");
+}
+
 } // namespace
 
 int main() {
@@ -490,6 +519,7 @@ int main() {
     testExecutionAvailability(loadJson(TargetPath));
     testPaddingRejected(target);
     testExplicitV3Contract();
+    testMappingOperationTypeContract();
   } catch (const std::exception& error) {
     std::cerr << "UNCAUGHT TEST ERROR: " << error.what() << '\n';
     return 1;
