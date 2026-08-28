@@ -864,19 +864,20 @@
     },
     "FADD": {
       "execution_class": "FU",
+      "uniform_data_type": true,
       "operands": [
         {
           "role": "data",
-          "type": "f64"
+          "types": ["f32", "f64"]
         },
         {
           "role": "data",
-          "type": "f64"
+          "types": ["f32", "f64"]
         }
       ],
       "result": {
         "role": "data",
-        "type": "f64"
+        "types": ["f32", "f64"]
       },
       "issue_occupancy": 1,
       "result_latency": 2,
@@ -884,19 +885,20 @@
     },
     "FSUB": {
       "execution_class": "FU",
+      "uniform_data_type": true,
       "operands": [
         {
           "role": "data",
-          "type": "f64"
+          "types": ["f32", "f64"]
         },
         {
           "role": "data",
-          "type": "f64"
+          "types": ["f32", "f64"]
         }
       ],
       "result": {
         "role": "data",
-        "type": "f64"
+        "types": ["f32", "f64"]
       },
       "issue_occupancy": 1,
       "result_latency": 2,
@@ -904,19 +906,20 @@
     },
     "FMUL": {
       "execution_class": "FU",
+      "uniform_data_type": true,
       "operands": [
         {
           "role": "data",
-          "type": "f64"
+          "types": ["f32", "f64"]
         },
         {
           "role": "data",
-          "type": "f64"
+          "types": ["f32", "f64"]
         }
       ],
       "result": {
         "role": "data",
-        "type": "f64"
+        "types": ["f32", "f64"]
       },
       "issue_occupancy": 1,
       "result_latency": 3,
@@ -924,23 +927,24 @@
     },
     "FMA": {
       "execution_class": "FU",
+      "uniform_data_type": true,
       "operands": [
         {
           "role": "data",
-          "type": "f64"
+          "types": ["f32", "f64"]
         },
         {
           "role": "data",
-          "type": "f64"
+          "types": ["f32", "f64"]
         },
         {
           "role": "data",
-          "type": "f64"
+          "types": ["f32", "f64"]
         }
       ],
       "result": {
         "role": "data",
-        "type": "f64"
+        "types": ["f32", "f64"]
       },
       "issue_occupancy": 1,
       "result_latency": 3,
@@ -948,19 +952,20 @@
     },
     "FDIV": {
       "execution_class": "FU",
+      "uniform_data_type": true,
       "operands": [
         {
           "role": "data",
-          "type": "f64"
+          "types": ["f32", "f64"]
         },
         {
           "role": "data",
-          "type": "f64"
+          "types": ["f32", "f64"]
         }
       ],
       "result": {
         "role": "data",
-        "type": "f64"
+        "types": ["f32", "f64"]
       },
       "issue_occupancy": 4,
       "result_latency": 8,
@@ -968,15 +973,16 @@
     },
     "FNEG": {
       "execution_class": "FU",
+      "uniform_data_type": true,
       "operands": [
         {
           "role": "data",
-          "type": "f64"
+          "types": ["f32", "f64"]
         }
       ],
       "result": {
         "role": "data",
-        "type": "f64"
+        "types": ["f32", "f64"]
       },
       "issue_occupancy": 1,
       "result_latency": 1,

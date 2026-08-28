@@ -315,6 +315,7 @@ TargetDFGVerifier::verify(const TargetDFG& dfg, const TargetModel& target, const
     if (!target.supportsValueType(node.resultType))
       report.add({TargetDFGDiagnosticCode::TDFG_UNSUPPORTED_TYPE,
                   "node result type is not supported by TargetModel", node.id});
+    std::optional<ir::ValueType> uniformDataType;
     for (std::uint32_t operand = 0; operand < node.operandTypes.size(); ++operand) {
       if (!target.supportsValueType(node.operandTypes[operand]))
         report.add({TargetDFGDiagnosticCode::TDFG_UNSUPPORTED_TYPE,
@@ -322,15 +323,32 @@ TargetDFGVerifier::verify(const TargetDFG& dfg, const TargetModel& target, const
                     operand});
       if (operand >= operation->operands.size() ||
           !roleMatches(operation->operands[operand].role, node.operandTypes[operand]) ||
-          (operand < operation->operands.size() && operation->operands[operand].type &&
-           *operation->operands[operand].type != node.operandTypes[operand]))
+          (operand < operation->operands.size() &&
+           !operation->operands[operand].acceptedTypes.empty() &&
+           std::find(operation->operands[operand].acceptedTypes.begin(),
+                     operation->operands[operand].acceptedTypes.end(),
+                     node.operandTypes[operand]) == operation->operands[operand].acceptedTypes.end()))
         report.add({TargetDFGDiagnosticCode::TDFG_OPERATION_OPERAND_INVALID,
                     "node operand type does not satisfy TargetModel operand role", node.id,
                     std::nullopt, operand});
+      if (operand < operation->operands.size() && operation->uniformDataType &&
+          operation->operands[operand].role == TargetOperandRole::Data) {
+        if (uniformDataType && *uniformDataType != node.operandTypes[operand])
+          report.add({TargetDFGDiagnosticCode::TDFG_OPERATION_OPERAND_INVALID,
+                      "node operands violate TargetModel uniform data type", node.id,
+                      std::nullopt, operand});
+        uniformDataType = node.operandTypes[operand];
+      }
     }
-    if (operation->declaredResultType && *operation->declaredResultType != node.resultType)
+    if (!operation->acceptedResultTypes.empty() &&
+        std::find(operation->acceptedResultTypes.begin(), operation->acceptedResultTypes.end(),
+                  node.resultType) == operation->acceptedResultTypes.end())
       report.add({TargetDFGDiagnosticCode::TDFG_RESULT_TYPE_MISMATCH,
                   "node result type does not satisfy TargetModel operation type", node.id});
+    if (operation->uniformDataType && operation->resultRole == TargetResultRole::Data &&
+        uniformDataType && *uniformDataType != node.resultType)
+      report.add({TargetDFGDiagnosticCode::TDFG_RESULT_TYPE_MISMATCH,
+                  "node result violates TargetModel uniform data type", node.id});
     if (node.genericOrigins.empty())
       report.add({TargetDFGDiagnosticCode::TDFG_PROVENANCE_EMPTY,
                   "Target node must retain Generic provenance", node.id});

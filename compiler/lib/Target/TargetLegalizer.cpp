@@ -255,16 +255,31 @@ TargetLegalizationResult TargetLegalizer::legalize(const ir::DFG& generic,
       continue;
     }
     bool operandSignatureValid = true;
+    std::optional<ir::ValueType> uniformDataType;
     for (std::size_t operand = 0; operand < node.operandTypes.size(); ++operand) {
       const auto& descriptor = operation->operands[operand];
       if (!roleMatches(descriptor.role, node.operandTypes[operand]) ||
-          (descriptor.type && *descriptor.type != node.operandTypes[operand])) {
+          (!descriptor.acceptedTypes.empty() &&
+           std::find(descriptor.acceptedTypes.begin(), descriptor.acceptedTypes.end(),
+                     node.operandTypes[operand]) == descriptor.acceptedTypes.end())) {
         operandSignatureValid = false;
         break;
       }
+      if (operation->uniformDataType && descriptor.role == TargetOperandRole::Data) {
+        if (uniformDataType && *uniformDataType != node.operandTypes[operand]) {
+          operandSignatureValid = false;
+          break;
+        }
+        uniformDataType = node.operandTypes[operand];
+      }
     }
+    if (operation->uniformDataType && operation->resultRole == TargetResultRole::Data &&
+        uniformDataType && *uniformDataType != node.resultType)
+      operandSignatureValid = false;
     if (!operandSignatureValid || !resultRoleMatches(operation->resultRole, node.resultType) ||
-        (operation->declaredResultType && *operation->declaredResultType != node.resultType)) {
+        (!operation->acceptedResultTypes.empty() &&
+         std::find(operation->acceptedResultTypes.begin(), operation->acceptedResultTypes.end(),
+                   node.resultType) == operation->acceptedResultTypes.end())) {
       addDiagnostic(
           result, LegalizationStatus::TargetContractError, "TLEG_INVALID_TARGET_OPERATION_DESC",
           "target operation " + operationName + " semantic signature does not match Generic DFG",

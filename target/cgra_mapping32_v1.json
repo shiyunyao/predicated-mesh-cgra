@@ -864,6 +864,7 @@
     },
     "FADD": {
       "execution_class": "FU",
+      "uniform_data_type": true,
       "operands": [
         {
           "role": "data",
@@ -884,6 +885,7 @@
     },
     "FSUB": {
       "execution_class": "FU",
+      "uniform_data_type": true,
       "operands": [
         {
           "role": "data",
@@ -904,6 +906,7 @@
     },
     "FMUL": {
       "execution_class": "FU",
+      "uniform_data_type": true,
       "operands": [
         {
           "role": "data",
@@ -924,6 +927,7 @@
     },
     "FMA": {
       "execution_class": "FU",
+      "uniform_data_type": true,
       "operands": [
         {
           "role": "data",
@@ -948,6 +952,7 @@
     },
     "FDIV": {
       "execution_class": "FU",
+      "uniform_data_type": true,
       "operands": [
         {
           "role": "data",
@@ -968,6 +973,7 @@
     },
     "FNEG": {
       "execution_class": "FU",
+      "uniform_data_type": true,
       "operands": [
         {
           "role": "data",

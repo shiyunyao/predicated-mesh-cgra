@@ -300,7 +300,8 @@ void testMappingResearchTarget() {
              researchResult.dfg->node(0).operation == "FADD",
          "typed custom operation must legalize on a declared abstract FU");
   expect(research.operation("FADD").resultType == cgra::ir::ValueType::f32() &&
-             research.operation("FADD").operands[0].type == cgra::ir::ValueType::f32(),
+             research.operation("FADD").operands[0].acceptedTypes ==
+                 std::vector<cgra::ir::ValueType>{cgra::ir::ValueType::f32()},
          "research target must retain the declared FADD type contract");
   expect(cgra::target::TargetDFGVerifier::verify(*researchResult.dfg, research, &graph).ok(),
          "typed abstract Target DFG must pass the independent target verifier");
@@ -326,6 +327,29 @@ void testMappingResearchTarget() {
              research64.supportsValueType(cgra::ir::ValueType::floating(64)) &&
              research64.supportsValueType(cgra::ir::ValueType::integer(64)),
          "research64 explicitly supports 64-bit integer and floating values");
+  expect(cgra::target::TargetLegalizer::legalize(graph, research64).ok(),
+         "research64 accepts f32 operations in its typed data lane");
+  cgra::ir::DFGBuilder f64Builder("typed_fadd_f64");
+  const auto f64Value =
+      f64Builder.addExternal("value", cgra::ir::ValueType::floating(64));
+  const auto f64Add = f64Builder.addCustomNode(
+      "FADD", {cgra::ir::ValueType::floating(64), cgra::ir::ValueType::floating(64)},
+      cgra::ir::ValueType::floating(64));
+  f64Builder.bindExternal(f64Add, 0, f64Value);
+  f64Builder.bindExternal(f64Add, 1, f64Value);
+  expect(cgra::target::TargetLegalizer::legalize(f64Builder.finish(), research64).ok(),
+         "research64 accepts f64 operations in its typed data lane");
+  cgra::ir::DFGBuilder mixedBuilder("typed_fadd_mixed");
+  const auto f32Value = mixedBuilder.addExternal("f32", cgra::ir::ValueType::f32());
+  const auto mixedF64 =
+      mixedBuilder.addExternal("f64", cgra::ir::ValueType::floating(64));
+  const auto mixedAdd = mixedBuilder.addCustomNode(
+      "FADD", {cgra::ir::ValueType::f32(), cgra::ir::ValueType::floating(64)},
+      cgra::ir::ValueType::floating(64));
+  mixedBuilder.bindExternal(mixedAdd, 0, f32Value);
+  mixedBuilder.bindExternal(mixedAdd, 1, mixedF64);
+  expect(!cgra::target::TargetLegalizer::legalize(mixedBuilder.finish(), research64).ok(),
+         "research64 rejects mixed-width FADD signatures");
 
   cgra::ir::DFGBuilder predicateBuilder("research_predicate_ops");
   const auto integer = predicateBuilder.addExternal("integer", cgra::ir::ValueType::i32());

@@ -407,15 +407,31 @@ TargetModel TargetModel::loadFromFile(const std::filesystem::path& path) {
       }
       if (operandJson[index].contains("optional"))
         operand.optional = required<bool>(operandJson[index], "optional", operandContext);
-      if (operandJson[index].contains("type")) {
+      if (operandJson[index].contains("type") || operandJson[index].contains("types")) {
+        const auto& typeJson = operandJson[index].contains("type")
+                                   ? operandJson[index].at("type")
+                                   : operandJson[index].at("types");
+        const auto typeContext = operandContext + "." +
+                                 (operandJson[index].contains("type") ? "type" : "types");
         try {
-          operand.type = ir::ValueType::fromString(
-              required<std::string>(operandJson[index], "type", operandContext));
+          if (typeJson.is_string()) {
+            operand.acceptedTypes.push_back(
+                ir::ValueType::fromString(typeJson.get<std::string>()));
+          } else if (typeJson.is_array() && !typeJson.empty()) {
+            for (const auto& value : typeJson) {
+              if (!value.is_string())
+                fail(typeContext, "entries must be strings");
+              operand.acceptedTypes.push_back(ir::ValueType::fromString(value.get<std::string>()));
+            }
+          } else {
+            fail(typeContext, "must be a type string or non-empty type array");
+          }
         } catch (const std::exception& error) {
-          fail(operandContext + ".type", error.what());
+          fail(typeContext, error.what());
         }
-        if (!operandTypeMatchesRole(operand.role, *operand.type))
-          fail(operandContext + ".type", "declared type is incompatible with operand role");
+        for (const auto& type : operand.acceptedTypes)
+          if (!operandTypeMatchesRole(operand.role, type))
+            fail(typeContext, "declared type is incompatible with operand role");
       }
       if (operand.optional)
         optionalSeen = true;
@@ -442,16 +458,31 @@ TargetModel TargetModel::loadFromFile(const std::filesystem::path& path) {
     } catch (const std::exception& error) {
       fail(context + ".result.role", error.what());
     }
-    std::optional<ir::ValueType> declaredResultType;
-    if (resultJson.contains("type")) {
+    std::vector<ir::ValueType> acceptedResultTypes;
+    if (resultJson.contains("type") || resultJson.contains("types")) {
+      const auto& typeJson = resultJson.contains("type") ? resultJson.at("type")
+                                                          : resultJson.at("types");
+      const auto typeContext = context + ".result." +
+                               (resultJson.contains("type") ? "type" : "types");
       try {
-        declaredResultType = ir::ValueType::fromString(
-            required<std::string>(resultJson, "type", context + ".result"));
+        if (typeJson.is_string()) {
+          acceptedResultTypes.push_back(
+              ir::ValueType::fromString(typeJson.get<std::string>()));
+        } else if (typeJson.is_array() && !typeJson.empty()) {
+          for (const auto& value : typeJson) {
+            if (!value.is_string())
+              fail(typeContext, "entries must be strings");
+            acceptedResultTypes.push_back(ir::ValueType::fromString(value.get<std::string>()));
+          }
+        } else {
+          fail(typeContext, "must be a type string or non-empty type array");
+        }
       } catch (const std::exception& error) {
-        fail(context + ".result.type", error.what());
+        fail(typeContext, error.what());
       }
-      if (!resultTypeMatchesRole(resultRole, *declaredResultType))
-        fail(context + ".result.type", "declared type is incompatible with result role");
+      for (const auto& type : acceptedResultTypes)
+        if (!resultTypeMatchesRole(resultRole, type))
+          fail(typeContext, "declared type is incompatible with result role");
     }
     std::vector<std::pair<unsigned, TargetControlSink>> operandSinks;
     std::unordered_set<TargetControlSink> usedSinks;
@@ -528,6 +559,9 @@ TargetModel TargetModel::loadFromFile(const std::filesystem::path& path) {
     std::optional<unsigned> accessWidth;
     if (descriptorJson.contains("memory_access_width_bits"))
       accessWidth = positiveUnsigned(descriptorJson, "memory_access_width_bits", context);
+    const bool uniformDataType = descriptorJson.contains("uniform_data_type")
+                                     ? required<bool>(descriptorJson, "uniform_data_type", context)
+                                     : false;
 
     if (resultRole == TargetResultRole::Void) {
       if (resultLatency || outputReadyOffset)
@@ -577,9 +611,10 @@ TargetModel TargetModel::loadFromFile(const std::filesystem::path& path) {
                                                         : ir::ValueType::voidTy();
     TargetOperationDesc operation{
         name, executionClass, std::move(operands), resultRole,
-        declaredResultType.value_or(defaultResultType), issueOccupancy, resultLatency,
+        acceptedResultTypes.empty() ? defaultResultType : acceptedResultTypes.front(),
+        issueOccupancy, resultLatency,
         outputReadyOffset, accessWidth, encoding, std::move(operandSinks), resultSource,
-        declaredResultType};
+        std::move(acceptedResultTypes), uniformDataType};
     model.operations_.push_back(std::move(operation));
     model.operationIndices_.emplace(name, model.operations_.size() - 1);
   }
