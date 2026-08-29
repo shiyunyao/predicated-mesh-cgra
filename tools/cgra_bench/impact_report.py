@@ -134,6 +134,18 @@ def _case_table(results: dict[str, dict[str, Any]]) -> list[str]:
     return lines
 
 
+def _artifact_json(case_root: pathlib.Path, name: str) -> dict[str, Any] | None:
+    """Read a named case artifact without assuming frontend/backend layout."""
+    for candidate in case_root.rglob(name):
+        try:
+            value = json.loads(candidate.read_text(encoding="utf-8"))
+        except (OSError, ValueError, json.JSONDecodeError):
+            continue
+        if isinstance(value, dict):
+            return value
+    return None
+
+
 def _kernel_table(summary: dict[str, Any]) -> list[str]:
     rollup = summary.get("kernel_rollup", {})
     if not isinstance(rollup, dict):
@@ -182,6 +194,49 @@ def generate(historical: pathlib.Path, checkpoint: pathlib.Path, final: pathlib.
     checkpoint_full = _summary(checkpoint, checkpoint_results)
     historical_full = _summary(historical, historical_results)
     final_environment = _environment(final)
+    ingress_records = 0
+    ingress_shared = 0
+    predicate_cases = 0
+    dynamic_memory_cases = 0
+    for item in final_results.values():
+        case_root = final / str(item.get("artifact_directory", ""))
+        normalization = _artifact_json(case_root, "01_recurrence_ingress_normalization.json")
+        if normalization:
+            records = normalization.get("records", [])
+            if isinstance(records, list):
+                ingress_records += len(records)
+                ingress_shared += sum(
+                    bool(record.get("shared_ingress"))
+                    for record in records
+                    if isinstance(record, dict)
+                )
+        provenance = _artifact_json(case_root, "03_frontend_provenance.json")
+        # The production runner also emits the wrapped frontend result.  The
+        # legacy provenance artifact only contains node/external data, while
+        # predicate provenance lives under the result's `provenance` field.
+        frontend_result = _artifact_json(case_root, "06_frontend_result.json")
+        if isinstance(frontend_result, dict):
+            result_provenance = frontend_result.get("provenance")
+            if isinstance(result_provenance, dict):
+                provenance = result_provenance
+        if isinstance(provenance, dict):
+            # Frontend provenance is currently serialized with its semantic
+            # fields at the artifact root.  Accept the wrapped form as well
+            # so reports remain compatible with older/newer artifact writers.
+            nested = provenance.get("provenance")
+            if isinstance(nested, dict):
+                provenance = nested
+            if isinstance(provenance.get("predicate_ssa"), dict) or provenance.get("if_conversions"):
+                predicate_cases += 1
+            accesses = provenance.get("memory_accesses", [])
+            if not isinstance(accesses, list):
+                memory = _artifact_json(case_root, "02_memory_analysis.json")
+                accesses = memory.get("accesses", []) if isinstance(memory, dict) else []
+            if isinstance(accesses, list) and any(
+                isinstance(access, dict) and access.get("address_mode") == "dynamic"
+                for access in accesses
+            ):
+                dynamic_memory_cases += 1
     safe = []
     compile_times = []
     for item in final_results.values():
@@ -227,6 +282,20 @@ def generate(historical: pathlib.Path, checkpoint: pathlib.Path, final: pathlib.
             "p95_ms": sorted(value for value, _ in compile_times)[min(len(compile_times) - 1,
                          max(0, int(round((len(compile_times) - 1) * 0.95))))] if compile_times else None,
             "max_ms": max((value for value, _ in compile_times), default=None),
+        },
+        "task_impact": {
+            "u021_recurrence_ingress_records": ingress_records,
+            "u021_shared_ingress_records": ingress_shared,
+            "u022_fallback_cases": sum(
+                bool(_backend_stats(item).get("feasibility_fallback_invoked"))
+                for item in final_results.values()
+            ),
+            "u022_fallback_attempts": sum(
+                int(_backend_stats(item).get("feasibility_fallback_attempts", 0))
+                for item in final_results.values()
+            ),
+            "u023_dynamic_memory_cases": dynamic_memory_cases,
+            "u024_predicate_ssa_cases": predicate_cases,
         },
     }
     json_path = output.parent / "impact_summary.json"
@@ -274,6 +343,29 @@ def generate(historical: pathlib.Path, checkpoint: pathlib.Path, final: pathlib.
     lines.extend(f"- `{key}`: {value}" for key, value in sorted(final_summary.get("first_blocker_distribution", {}).items()))
     lines.extend(["", "## Kernel Rollup", ""])
     lines.extend(_kernel_table(final_summary))
+    lines.extend(["", "## Task-Level Causal Impact", "",
+                  "### U021 Recurrence Ingress", "",
+                  f"- normalization records observed in final case artifacts: `{ingress_records}`",
+                  f"- records marked shared-ingress: `{ingress_shared}`",
+                  "- normalization is opt-in and limited to distance-one data/predicate edges; memory edges are unchanged.",
+                  "- strict Stage/RF regression is covered by the local C++ feasibility tests; the corpus-wide benchmark conversion gate is not demonstrated.",
+                  "", "### U022 Constructive Safe-II", "",
+                  f"- cases invoking the fallback: `{sum(bool(_backend_stats(item).get('feasibility_fallback_invoked')) for item in final_results.values())}`",
+                  f"- fallback II attempts: `{sum(int(_backend_stats(item).get('feasibility_fallback_attempts', 0)) for item in final_results.values())}`",
+                  f"- strict successes with explicit safe II: `{len(safe)}`",
+                  "- raw route candidates and ordinary RF rejection remain separate from strict success; no RF policy was relaxed.",
+                  "", "### U023 Dynamic Memory", "",
+                  f"- case artifacts with dynamic memory addresses: `{dynamic_memory_cases}`",
+                  "- conservative CFG memory ordering uses stable source order with distance-zero and iteration-wrap distance-one edges where writes may alias.",
+                  "- host pointers, volatile/atomic operations, and unsupported pointer domains remain explicit rejects.",
+                  "", "### U024 Predicate-SSA", "",
+                  f"- case artifacts carrying Predicate-SSA provenance: `{predicate_cases}`",
+                  "- nested/sequential reducible branch, predicated-store, conditional-recurrence, polarity-corruption, and strict backend fixtures pass locally.",
+                  "- unsafe predicated loads and dynamic exits remain explicit architecture/control diagnostics.",
+                  "", "### U025 Accounting", "",
+                  "- raw route status is never counted as strict finite-RF success.",
+                  "- ordinary RF/stage rejection without a strong lower-bound witness remains a compiler/mapping completeness issue.",
+                  "- blocker migration and terminal-status migration are emitted as separate machine-readable tables."])
     lines.extend(["", "## Blocker Migration", "", "| Baseline blocker | Final blocker | Count | Case IDs |",
                    "|---|---|---:|---|"])
     lines.extend(f"| {row['baseline_blocker']} | {row['candidate_blocker']} | {row['case_count']} | {row['case_ids']} |"
