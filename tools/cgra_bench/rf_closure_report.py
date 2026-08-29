@@ -72,6 +72,29 @@ def generate(run_paths: dict[str, pathlib.Path], output: pathlib.Path) -> dict:
         writer = csv.writer(stream)
         writer.writerow(["baseline_blocker", "combined_blocker", "case_count"])
         writer.writerows([*key, count] for key, count in sorted(blocker.items()))
+    # Keep the historical filename as a compatibility alias while the
+    # contents now explicitly describe diagnostic migration.
+    (output / "blocker_migration.csv").write_text(
+        (output / "rf_failure_migration.csv").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    terminal = Counter((row.get("baseline_status", ""), row.get("combined_status", ""))
+                       for row in rows)
+    with (output / "terminal_status_migration.csv").open("w", newline="") as stream:
+        writer = csv.writer(stream)
+        writer.writerow(["baseline_status", "combined_status", "case_count"])
+        writer.writerows([*key, count] for key, count in sorted(terminal.items()))
+    with (output / "safe_ii_distribution.csv").open("w", newline="") as stream:
+        writer = csv.writer(stream)
+        writer.writerow(["case_id", "mii", "safe_ii", "safe_ii_over_mii", "solution_kind"])
+        for item in case_maps["combined"].values():
+            mii = _metric(item, "mii")
+            safe = _metric(item, "safe_ii", "safeII")
+            ratio = ""
+            if isinstance(mii, (int, float)) and isinstance(safe, (int, float)) and mii:
+                ratio = safe / mii
+            writer.writerow([item.get("id", ""), mii, safe, ratio,
+                             _metric(item, "mapping_solution_kind", "solution_kind")])
     markdown = [
         "# RF Closure Impact Report", "",
         "The four lanes use the same corpus, target, profile, ABI and budgets.", "",
