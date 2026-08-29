@@ -251,6 +251,11 @@ def generate(historical: pathlib.Path, checkpoint: pathlib.Path, final: pathlib.
         *_status_table("B0 historical", historical, historical_results),
         *_status_table("B1 checkpoint", checkpoint, checkpoint_results),
         *_status_table("F final", final, final_results), "",
+        "## Baseline Provenance", "",
+        "- The task's historical reference is 128 candidate loops, 51 mapper-entered loops, 12 raw route mappings, 0 strict finite-RF mappings, and 39 timeouts.",
+        "- Local B0 and B1 full-corpus attempts were retained separately; both reached the external bounded timeout before producing `results.jsonl`.",
+        "- Therefore the B0/B1 rows above are the retained six-case smoke references, not a claim that the 128-loop historical baseline was reproduced locally.",
+        "- The final run is the only complete local corpus accounting artifact in this report.", "",
         "## Strict II", "",
         "| Case | MII | Safe II | Safe II/MII | Solution kind |", "|---|---:|---:|---:|---|",
     ]
