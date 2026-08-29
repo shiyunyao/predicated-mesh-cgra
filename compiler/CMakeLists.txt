@@ -122,6 +122,7 @@ add_library(cgra_register_allocation
   lib/RegisterAllocation/StorageRequirementAnalysis.cpp
   lib/RegisterAllocation/PeriodicLifetime.cpp
   lib/RegisterAllocation/RotationFactorAnalysis.cpp
+  lib/RegisterAllocation/PhaseRegisterColoring.cpp
   lib/RegisterAllocation/RFAllocatedMapping.cpp
   lib/RegisterAllocation/RFAllocationResult.cpp
   lib/RegisterAllocation/RFAllocatedMappingSerialization.cpp
@@ -403,6 +404,14 @@ if(CGRA_BUILD_TESTS)
     TYPE semantic
     SOURCES tests/Mapping/PartialRFEventAnalysisTest.cpp
     LIBRARIES cgra_mapping
+    DEFINITIONS CGRA_REPOSITORY_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/.."
+  )
+
+  cgra_add_test(
+    NAME cgra-phase-register-coloring-tests
+    TYPE semantic
+    SOURCES tests/RegisterAllocation/PhaseRegisterColoringTest.cpp
+    LIBRARIES cgra_register_allocation
     DEFINITIONS CGRA_REPOSITORY_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/.."
   )
 

@@ -2,6 +2,7 @@
 #include "cgra/RegisterAllocation/RFAllocationVerifier.h"
 
 #include "cgra/RegisterAllocation/PeriodicLifetime.h"
+#include "cgra/RegisterAllocation/RotationFactorAnalysis.h"
 #include "cgra/RegisterAllocation/RFPortMatcher.h"
 #include "cgra/RegisterAllocation/StorageRequirementAnalysis.h"
 #include "cgra/Schedule/StageAssignmentVerifier.h"
@@ -189,14 +190,31 @@ RFAllocationVerificationReport RFAllocationVerifier::verify(const cgra::target::
     if (allocation.family.phases.size() != allocation.family.phaseCount)
       add(report, RFAllocationVerificationCode::RFA_INVALID_REGISTER_INDEX,
           "periodic register family has an incomplete phase list", segment.id);
+    std::set<std::uint32_t> phaseIds;
     std::set<std::uint32_t> phaseRegisters;
     for (const auto& phase : allocation.family.phases) {
-      if (phase.phase >= allocation.family.phaseCount ||
+      if (phase.phase >= allocation.family.phaseCount || !phaseIds.insert(phase.phase).second ||
           !phaseRegisters.insert(phase.reg.index).second || phase.reg.tile != segment.tile ||
           phase.reg.bank != bank->id || !bank->allocates(phase.reg.index))
         add(report, RFAllocationVerificationCode::RFA_INVALID_REGISTER_INDEX,
             "periodic register family contains an invalid or duplicate phase register",
             segment.id);
+    }
+    if (allocation.family.phaseCount > 0 && phaseIds.size() != allocation.family.phaseCount)
+      add(report, RFAllocationVerificationCode::RFA_INVALID_REGISTER_INDEX,
+          "periodic register family phase IDs are not a complete zero-based set", segment.id);
+    const auto rotationPlan = analyzeRotationFactors(
+        std::span<const StorageSegment>(&segment, 1), ii, bank->sameAddressReadWritePolicy,
+        target.controlMemoryDepth());
+    if (!rotationPlan.ok()) {
+      add(report, RFAllocationVerificationCode::RFA_INVALID_REGISTER_INDEX,
+          "rotation factor analysis rejects the serialized storage family: " +
+              rotationPlan.diagnostic,
+          segment.id);
+    } else if (allocation.family.phaseCount != rotationPlan.segments.front().minimumPhaseCount) {
+      add(report, RFAllocationVerificationCode::RFA_INVALID_REGISTER_INDEX,
+          "periodic register family phase count does not match the independently recomputed minimum",
+          segment.id);
     }
     if (allocation.family.phaseCount == 1 &&
         fixedRegisterSelfOverlaps(segment, ii, bank->sameAddressReadWritePolicy))

@@ -4,6 +4,7 @@
 #include "cgra/RegisterAllocation/PeriodicLifetime.h"
 #include "cgra/RegisterAllocation/RFAllocationVerifier.h"
 #include "cgra/RegisterAllocation/RFPortMatcher.h"
+#include "cgra/RegisterAllocation/PhaseRegisterColoring.h"
 #include "cgra/RegisterAllocation/RotationFactorAnalysis.h"
 #include "cgra/RegisterAllocation/StorageRequirementAnalysis.h"
 #include "cgra/Target/TargetDFGVerifier.h"
@@ -336,7 +337,13 @@ RFAllocationResult RFAllocator::allocate(const cgra::target::TargetDFG& dfg,
   }
 
   std::vector<std::optional<std::uint32_t>> colors(requirements.segments().size());
-  for (const auto& [key, vertices] : groups) {
+  if (options.enableSoftwareRotation) {
+    // Phase-expanded allocation is solved globally below.  Seed the legacy
+    // compatibility alias with a deterministic bank color for construction.
+    for (const auto& segment : requirements.segments())
+      colors[segment.id] = banks[segment.id]->allocatableIndices.front();
+  } else {
+   for (const auto& [key, vertices] : groups) {
     const auto* bank = banks[vertices.front()];
     std::vector<std::vector<bool>> graph(requirements.segments().size(),
                                          std::vector<bool>(requirements.segments().size(), false));
@@ -402,6 +409,7 @@ RFAllocationResult RFAllocator::allocate(const cgra::target::TargetDFG& dfg,
       used.insert(*colors[vertex]);
     result.stats.maxRegistersUsedOnAnyBank =
         std::max(result.stats.maxRegistersUsedOnAnyBank, static_cast<std::uint32_t>(used.size()));
+   }
   }
 
   std::vector<StorageAllocation> allocations;
@@ -416,56 +424,27 @@ RFAllocationResult RFAllocator::allocate(const cgra::target::TargetDFG& dfg,
                             {{0, {segment.tile, banks[segment.id]->id, *colors[segment.id]}}}}});
 
   if (options.enableSoftwareRotation) {
+    const auto colored = colorPhaseRegisters(requirements.segments(), rotationPlan, target,
+                                              options.budget);
+    result.stats.coloringDecisions += colored.decisions;
+    result.stats.coloringBacktracks += colored.backtracks;
+    if (colored.status != PhaseRegisterColoringResult::Status::Success) {
+      result.status = colored.status == PhaseRegisterColoringResult::Status::BudgetExceeded
+                          ? RFAllocationStatus::BudgetExceeded
+                          : RFAllocationStatus::RegisterDepthInfeasible;
+      add(result,
+          colored.status == PhaseRegisterColoringResult::Status::BudgetExceeded
+              ? RFAllocationDiagnosticCode::RFA_COLORING_BUDGET_EXCEEDED
+              : RFAllocationDiagnosticCode::RFA_REGISTER_DEPTH_INFEASIBLE,
+          "global phase-vertex RF coloring could not allocate the requested register families");
+      return result;
+    }
     for (const auto& requirement : rotationPlan.segments) {
       auto& allocation = allocations[requirement.segment];
-      const auto* bank = banks[requirement.segment];
       allocation.family.phaseCount = requirement.minimumPhaseCount;
       allocation.family.phases.clear();
-      std::vector<std::uint32_t> phaseRegisters;
-      phaseRegisters.reserve(requirement.minimumPhaseCount);
       for (std::uint32_t phase = 0; phase < requirement.minimumPhaseCount; ++phase) {
-        const auto preferred = phase == 0 ? allocation.reg.index : std::numeric_limits<std::uint32_t>::max();
-        std::optional<std::uint32_t> selected;
-        for (const auto color : bank->allocatableIndices) {
-          if (color == preferred || (phase != 0 && color != allocation.reg.index)) {
-            if (std::find(phaseRegisters.begin(), phaseRegisters.end(), color) !=
-                phaseRegisters.end())
-              continue;
-            std::vector<std::uint32_t> candidate = phaseRegisters;
-            candidate.push_back(color);
-            bool conflicts = false;
-            for (const auto& other : allocations) {
-              if (other.segment == allocation.segment || other.family.phases.empty() ||
-                  other.reg.tile != allocation.reg.tile || other.reg.bank != allocation.reg.bank)
-                continue;
-              std::vector<std::uint32_t> otherRegisters;
-              otherRegisters.reserve(other.family.phases.size());
-              for (const auto& otherPhase : other.family.phases)
-                otherRegisters.push_back(otherPhase.reg.index);
-              if (phasePeriodicLifetimesConflict(
-                      requirements.segment(requirement.segment), candidate,
-                      requirements.segment(other.segment), otherRegisters, ii,
-                      bank->sameAddressReadWritePolicy)) {
-                conflicts = true;
-                break;
-              }
-            }
-            if (!conflicts) {
-              selected = color;
-              break;
-            }
-          }
-        }
-        if (!selected) {
-          result.status = RFAllocationStatus::RegisterDepthInfeasible;
-          add(result, RFAllocationDiagnosticCode::RFA_REGISTER_DEPTH_INFEASIBLE,
-              "software rotation phase family conflicts with finite RF registers",
-              requirements.segment(requirement.segment).edge, requirement.segment,
-              requirements.segment(requirement.segment).tile, bank->id);
-          return result;
-        }
-        const auto color = *selected;
-        phaseRegisters.push_back(color);
+        const auto color = colored.colors.at({requirement.segment, phase});
         allocation.family.phases.push_back(
             {phase, {allocation.reg.tile, allocation.reg.bank, color}});
       }
