@@ -513,6 +513,10 @@ private:
       if (!hasArity(node, 1) || !isPredicateType(node.operandTypes[0]) ||
           !isIntegerType(node.resultType))
         invalidSignature();
+    } else if (key == "PNOT") {
+      if (!hasArity(node, 1) || !isPredicateType(node.operandTypes[0]) ||
+          !isPredicateType(node.resultType))
+        invalidSignature();
     } else if (key == "PAND" || key == "POR" || key == "PXOR") {
       if (!hasArity(node, 2) || !allOperands(isPredicateType) ||
           !isPredicateType(node.resultType))

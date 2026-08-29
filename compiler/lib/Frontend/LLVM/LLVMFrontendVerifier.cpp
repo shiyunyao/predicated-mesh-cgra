@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 #include "cgra/Frontend/LLVM/LLVMFrontendVerifier.h"
+#include "cgra/Frontend/LLVM/PredicateSSA.h"
 
 #include "cgra/IR/DFGVerifier.h"
 
@@ -707,7 +708,11 @@ std::uint32_t correspondingLLVMOperand(const LLVMFrontendResult& result,
             if (phi->getIncomingValue(index) == provider)
               return index;
       }
-    }
+    if (result.provenance.predicateSSA)
+      for (const auto& merge : result.provenance.predicateSSA->merges)
+        if (merge.phiValue == phi)
+          return genericOperand - 1;
+  }
   }
   const auto* compare = llvm::dyn_cast<llvm::ICmpInst>(&instruction);
   if (!compare || genericOperand >= compare->getNumOperands())
@@ -721,6 +726,24 @@ std::uint32_t correspondingLLVMOperand(const LLVMFrontendResult& result,
   return genericOperand;
 }
 
+const llvm::Value* correspondingLLVMValue(const LLVMFrontendResult& result,
+                                          const llvm::Instruction& instruction,
+                                          std::uint32_t genericOperand) {
+  if (const auto* phi = llvm::dyn_cast<llvm::PHINode>(&instruction);
+      phi && result.provenance.predicateSSA) {
+    for (const auto& merge : result.provenance.predicateSSA->merges) {
+      if (merge.phiValue != phi)
+        continue;
+      if (genericOperand == 1)
+        return merge.trueProvider;
+      if (genericOperand == 2)
+        return merge.falseProvider;
+    }
+  }
+  const auto operand = correspondingLLVMOperand(result, instruction, genericOperand);
+  return operand < instruction.getNumOperands() ? instruction.getOperand(operand) : nullptr;
+}
+
 void verifyIfRegionStructure(const Selection& selection, const LLVMFrontendResult& result,
                              LLVMFrontendVerificationReport& report) {
   std::vector<const llvm::BranchInst*> internalBranches;
@@ -729,6 +752,26 @@ void verifyIfRegionStructure(const Selection& selection, const LLVMFrontendResul
     if (branch && branch->isConditional() && selection.loop->contains(branch->getSuccessor(0)) &&
         selection.loop->contains(branch->getSuccessor(1)))
       internalBranches.push_back(branch);
+  }
+
+  if (result.provenance.predicateSSA) {
+    const auto expected = buildPredicateSSA(*selection.loop);
+    if (!expected.ok()) {
+      report.add("LLVM_FRONTEND_PREDICATE_SSA_VERIFY_FAILED",
+                 "normalized LLVM CFG no longer satisfies Predicate-SSA: " + expected.message);
+      return;
+    }
+    std::vector<std::string> orderedBlocks;
+    for (const auto* block : expected.orderedBlocks)
+      orderedBlocks.push_back(blockName(*selection.function, *block));
+    const auto& actual = *result.provenance.predicateSSA;
+    if (actual.internalBranchCount != expected.internalBranches.size() ||
+        actual.internalBranchCount != internalBranches.size() ||
+        actual.orderedBlocks != orderedBlocks || !result.metadata ||
+        result.metadata->loopShape != "predicate_ssa")
+      report.add("LLVM_FRONTEND_PREDICATE_SSA_VERIFY_FAILED",
+                 "Predicate-SSA branch coverage or CFG order does not match LLVM");
+    return;
   }
 
   std::size_t describedBranches = 0;
@@ -767,6 +810,12 @@ void verifyIfRegionStructure(const Selection& selection, const LLVMFrontendResul
 
 void verifyLinearRegionStructure(const Selection& selection, const LLVMFrontendResult& result,
                                  LLVMFrontendVerificationReport& report) {
+  if (result.provenance.predicateSSA) {
+    if (result.provenance.linearLoop)
+      report.add("LLVM_FRONTEND_LINEAR_LOOP_VERIFY_FAILED",
+                 "Predicate-SSA loop has spurious linear-loop provenance");
+    return;
+  }
   if (selection.loop->getBlocks().size() <= 1) {
     if (result.provenance.linearLoop)
       report.add("LLVM_FRONTEND_LINEAR_LOOP_VERIFY_FAILED",
@@ -889,9 +938,141 @@ std::optional<std::int64_t> verifiedConstantGEPOffsetUnits(const llvm::Module& m
 bool constantBindingMatches(const ir::DFG& dfg, ir::NodeId node, std::uint32_t operand,
                             const ir::ValueType& type, std::int64_t expected);
 
+bool predicateConstantMatches(const ir::DFG& dfg, ir::NodeId node, std::uint32_t operand,
+                              bool expected) {
+  for (const auto& binding : dfg.externalBindings()) {
+    if (binding.node != node || binding.operand != operand)
+      continue;
+    const auto* reference = std::get_if<ir::ConstantRef>(&binding.source);
+    return reference && dfg.containsConstant(reference->value) &&
+           dfg.constant(reference->value).type == ir::ValueType::predicate() &&
+           dfg.constant(reference->value).bits == static_cast<std::uint64_t>(expected);
+  }
+  return false;
+}
+
+bool predicateExpressionMatches(const LLVMFrontendResult& result,
+                                const PredicateExpression& expression,
+                                ir::NodeId destination, std::uint32_t operand) {
+  switch (expression.kind) {
+  case PredicateExpression::Kind::True:
+    return predicateConstantMatches(*result.dfg, destination, operand, true);
+  case PredicateExpression::Kind::False:
+    return predicateConstantMatches(*result.dfg, destination, operand, false);
+  case PredicateExpression::Kind::Value:
+    return providerMatches(result, expression.value, destination, operand);
+  case PredicateExpression::Kind::Not:
+  case PredicateExpression::Kind::And:
+  case PredicateExpression::Kind::Or:
+    break;
+  }
+  const auto* edge =
+      findProviderEdge(*result.dfg, destination, operand, ir::Edge::Kind::Predicate);
+  if (!edge || !result.dfg->containsNode(edge->src))
+    return false;
+  const auto& node = result.dfg->node(edge->src);
+  const auto expectedKey = expression.kind == PredicateExpression::Kind::Not
+                               ? "PNOT"
+                               : expression.kind == PredicateExpression::Kind::And ? "PAND"
+                                                                                   : "POR";
+  if (node.opcode != ir::Opcode::Custom || node.operationKey != expectedKey ||
+      node.operandTypes.size() != expression.operands.size())
+    return false;
+  for (std::uint32_t index = 0; index < expression.operands.size(); ++index)
+    if (!predicateExpressionMatches(result, *expression.operands[index], node.id, index))
+      return false;
+  return true;
+}
+
+void verifyPredicateSSADataflow(const Selection& selection, const LLVMFrontendResult& result,
+                                LLVMFrontendVerificationReport& report) {
+  if (!result.provenance.predicateSSA)
+    return;
+  const auto expected = buildPredicateSSA(*selection.loop);
+  if (!expected.ok()) {
+    report.add("LLVM_FRONTEND_PREDICATE_SSA_VERIFY_FAILED", expected.message);
+    return;
+  }
+  const auto& provenance = *result.provenance.predicateSSA;
+  std::size_t expectedMerges = 0;
+  std::size_t expectedStores = 0;
+  for (const auto* block : expected.orderedBlocks) {
+    const auto* blockPredicate = expected.forBlock(block);
+    const bool conditional = blockPredicate && blockPredicate->expression &&
+                             blockPredicate->expression->kind != PredicateExpression::Kind::True;
+    for (const auto& instruction : *block) {
+      if (const auto* phi = llvm::dyn_cast<llvm::PHINode>(&instruction);
+          phi && block != selection.loop->getHeader()) {
+        ++expectedMerges;
+        const auto matches = std::ranges::find_if(provenance.merges, [&](const auto& merge) {
+          return merge.phiValue == phi;
+        });
+        const auto* edge = phi->getNumIncomingValues() == 2
+                               ? expected.forEdge(phi->getIncomingBlock(0), block)
+                               : nullptr;
+        if (matches == provenance.merges.end() || !edge || !edge->expression ||
+            matches->predicateExpression != predicateExpressionKey(*edge->expression) ||
+            !result.dfg->containsNode(matches->node) ||
+            result.dfg->node(matches->node).opcode != ir::Opcode::Select ||
+            !predicateExpressionMatches(result, *edge->expression, matches->node, 0) ||
+            !providerMatches(result, phi->getIncomingValue(0), matches->node, 1) ||
+            !providerMatches(result, phi->getIncomingValue(1), matches->node, 2))
+          report.add("LLVM_FRONTEND_PREDICATE_SSA_VERIFY_FAILED",
+                     "Predicate-SSA merge Select does not match the LLVM PHI and edge predicate");
+      }
+      if (const auto* load = llvm::dyn_cast<llvm::LoadInst>(&instruction); load && conditional)
+        report.add("LLVM_FRONTEND_PREDICATE_SSA_VERIFY_FAILED",
+                   "successful Predicate-SSA result speculates an unverified conditional Load");
+      if (const auto* store = llvm::dyn_cast<llvm::StoreInst>(&instruction);
+          store && conditional) {
+        ++expectedStores;
+        const auto matches = std::ranges::find_if(provenance.stores, [&](const auto& item) {
+          return item.store == store;
+        });
+        if (matches == provenance.stores.end() || !result.dfg->containsNode(matches->node) ||
+            result.dfg->node(matches->node).opcode != ir::Opcode::Store ||
+            matches->predicateExpression !=
+                predicateExpressionKey(*blockPredicate->expression) ||
+            !predicateExpressionMatches(result, *blockPredicate->expression, matches->node, 2))
+          report.add("LLVM_FRONTEND_PREDICATE_SSA_VERIFY_FAILED",
+                     "Predicate-SSA Store commit predicate does not match its LLVM block");
+      }
+    }
+  }
+  if (expectedMerges != provenance.merges.size() || expectedStores != provenance.stores.size())
+    report.add("LLVM_FRONTEND_PREDICATE_SSA_VERIFY_FAILED",
+               "Predicate-SSA merge or Store provenance count does not match LLVM");
+}
+
 void verifyIfDataflow(const llvm::Module& module, const Selection& selection,
                       const LLVMFrontendResult& result, LLVMFrontendVerificationReport& report) {
   auto slice = controlSlice(selection);
+  if (result.provenance.predicateSSA) {
+    std::unordered_set<const llvm::Instruction*> predicateSlice;
+    const auto collectPredicateSlice = [&](const llvm::Value* root) {
+      std::vector<const llvm::Value*> work{root};
+      while (!work.empty()) {
+        const auto* value = work.back();
+        work.pop_back();
+        const auto* instruction = llvm::dyn_cast_or_null<llvm::Instruction>(value);
+        if (!instruction || !selection.loop->contains(instruction) ||
+            !predicateSlice.insert(instruction).second)
+          continue;
+        for (const auto& operand : instruction->operands())
+          work.push_back(operand.get());
+      }
+    };
+    for (const auto* block : selection.loop->getBlocks()) {
+      const auto* branch = llvm::dyn_cast<llvm::BranchInst>(block->getTerminator());
+      if (!branch || !branch->isConditional() ||
+          !selection.loop->contains(branch->getSuccessor(0)) ||
+          !selection.loop->contains(branch->getSuccessor(1)))
+        continue;
+      collectPredicateSlice(branch->getCondition());
+    }
+    for (const auto* instruction : predicateSlice)
+      slice.erase(instruction);
+  }
   removeRecurrenceProducerClosure(selection, slice);
   std::unordered_set<const llvm::Instruction*> mappedInstructions;
   std::unordered_set<ir::NodeId> plannedSelects;
@@ -908,6 +1089,16 @@ void verifyIfDataflow(const llvm::Module& module, const Selection& selection,
       if (!plannedStores.insert(store).second)
         report.add("LLVM_FRONTEND_IFCONV_VERIFY_FAILED",
                    "Store is duplicated across if-conversion plans");
+  }
+  if (result.provenance.predicateSSA) {
+    for (const auto& merge : result.provenance.predicateSSA->merges)
+      if (!plannedSelects.insert(merge.node).second)
+        report.add("LLVM_FRONTEND_PREDICATE_SSA_VERIFY_FAILED",
+                   "Predicate-SSA Select is duplicated in provenance");
+    for (const auto& store : result.provenance.predicateSSA->stores)
+      if (!plannedStores.insert(store.node).second)
+        report.add("LLVM_FRONTEND_PREDICATE_SSA_VERIFY_FAILED",
+                   "Predicate-SSA Store is duplicated in provenance");
   }
 
   std::unordered_set<const llvm::PHINode*> mergePhis;
@@ -938,6 +1129,10 @@ void verifyIfDataflow(const llvm::Module& module, const Selection& selection,
       for (const auto& select : region.selects)
         if (select.phiValue == phi)
           plannedNodes.push_back(select.node);
+    if (result.provenance.predicateSSA)
+      for (const auto& merge : result.provenance.predicateSSA->merges)
+        if (merge.phiValue == phi)
+          plannedNodes.push_back(merge.node);
     if (matchingNodes.size() != 1 || plannedNodes.size() != 1 ||
         (matchingNodes.size() == 1 && plannedNodes.size() == 1 &&
          matchingNodes.front() != plannedNodes.front()))
@@ -972,6 +1167,14 @@ void verifyIfDataflow(const llvm::Module& module, const Selection& selection,
                  "node function, block, or instruction ordinal provenance is inconsistent");
     }
     mappedInstructions.insert(instruction);
+    if (provenance->opcode.starts_with("PREDICATE_SSA_")) {
+      const auto expectedKey = provenance->opcode.substr(std::string("PREDICATE_SSA_").size());
+      if (node.opcode != ir::Opcode::Custom || node.operationKey != expectedKey ||
+          node.resultType != ir::ValueType::predicate())
+        report.add("LLVM_FRONTEND_PREDICATE_SSA_VERIFY_FAILED",
+                   "synthetic predicate node has the wrong Generic operation");
+      continue;
+    }
     if (const auto expected = opcode(*instruction)) {
       const auto type = valueType(*instruction);
       if (!type || node.opcode != *expected || node.resultType != *type)
@@ -1067,15 +1270,14 @@ void verifyIfDataflow(const llvm::Module& module, const Selection& selection,
                    "Generic data edge does not match the LLVM SSA def-use operand");
       continue;
     }
-    const auto* recurrence =
-        llvmOperand < destination->instruction->getNumOperands()
-            ? recurrenceForEdge(result, source->instruction,
-                                destination->instruction->getOperand(llvmOperand))
-            : nullptr;
+    const auto* recurrence = recurrenceForEdge(
+        result, source->instruction,
+        correspondingLLVMValue(result, *destination->instruction, info.dstOperand));
     if (edge.distance != 1 || !info.boundary || !recurrence ||
         !boundaryMatches(result, *result.dfg, *recurrence, *info.boundary))
       report.add("LLVM_FRONTEND_RECURRENCE_EDGE_VERIFY_FAILED",
-                 "distance-one edge does not match a canonical LLVM PHI use and boundary");
+                 "distance-one edge " + std::to_string(edge.id) +
+                     " does not match a canonical LLVM PHI use and boundary");
   }
 
   for (const auto& recurrence : result.provenance.recurrences) {
@@ -1094,10 +1296,10 @@ void verifyIfDataflow(const llvm::Module& module, const Selection& selection,
       const auto* source = nodeProvenance(result, edge.src);
       const auto* destination = nodeProvenance(result, edge.dst);
       const auto* info = std::get_if<ir::DataEdgeInfo>(&edge.info);
-      const auto llvmOperand =
+      const auto* llvmValue =
           info && destination && destination->instruction
-              ? correspondingLLVMOperand(result, *destination->instruction, info->dstOperand)
-              : 0;
+              ? correspondingLLVMValue(result, *destination->instruction, info->dstOperand)
+              : nullptr;
       const bool gepUsesPhi =
           destination && llvm::isa<llvm::GetElementPtrInst>(destination->instruction) &&
           std::ranges::any_of(destination->instruction->operands(), [&](const auto& operand) {
@@ -1106,12 +1308,11 @@ void verifyIfDataflow(const llvm::Module& module, const Selection& selection,
       if (edge.kind() != ir::Edge::Kind::Data || edge.distance != 1 ||
           edge.dst != use.destination || !source || !destination || !destination->instruction ||
           source->instruction != recurrence.backedge || !info || info->dstOperand != use.operand ||
-          (!gepUsesPhi &&
-           (llvmOperand >= destination->instruction->getNumOperands() ||
-            destination->instruction->getOperand(llvmOperand) != recurrence.phiValue)) ||
+          (!gepUsesPhi && llvmValue != recurrence.phiValue) ||
           !info->boundary || !boundaryMatches(result, *result.dfg, recurrence, *info->boundary))
         report.add("LLVM_FRONTEND_RECURRENCE_EDGE_VERIFY_FAILED",
-                   "recurrence descriptor edge identity is inconsistent");
+                   "recurrence descriptor edge " + std::to_string(use.edge) +
+                       " identity is inconsistent");
     }
 
     for (const auto* user : recurrence.phiValue->users()) {
@@ -2137,6 +2338,7 @@ LLVMFrontendVerificationReport verifyIfConvertedResult(const llvm::Module& modul
     report.add("LLVM_FRONTEND_DFG_VERIFY_FAILED", dfgReport.format());
   verifyIfRegionStructure(*selection, result, report);
   verifyLinearRegionStructure(*selection, result, report);
+  verifyPredicateSSADataflow(*selection, result, report);
   verifyIfDataflow(module, *selection, result, report);
   verifyMemoryDataflow(*selection, options, result, report);
 
@@ -2148,6 +2350,8 @@ LLVMFrontendVerificationReport verifyIfConvertedResult(const llvm::Module& modul
       continue;
     }
     const auto* instruction = provenance->instruction;
+    if (provenance->opcode.starts_with("PREDICATE_SSA_"))
+      continue;
     if (!selection->loop->contains(instruction) && !llvm::isa<llvm::PHINode>(instruction))
       report.add("LLVM_FRONTEND_NODE_PROVENANCE_INVALID",
                  "predication node provenance is outside the selected loop");
@@ -2338,7 +2542,7 @@ LLVMFrontendVerificationReport verifyFrontendResult(const llvm::Module& module,
     return report;
   }
   if (!result.provenance.ifConversions.empty() || !result.provenance.memoryAccesses.empty() ||
-      result.provenance.linearLoop)
+      result.provenance.linearLoop || result.provenance.predicateSSA)
     return verifyIfConvertedResult(verificationModule, options, result);
   if (!selection->branch || selection->loop->getBlocks().size() != 1) {
     report.add("LLVM_FRONTEND_LOOP_SHAPE_MISMATCH", "selected loop shape changed after lowering");

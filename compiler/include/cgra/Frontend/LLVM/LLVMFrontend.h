@@ -246,6 +246,32 @@ struct LLVMIfConversionProvenance {
   const llvm::Value* conditionValue = nullptr;
 };
 
+struct LLVMPredicateSSAMergeProvenance {
+  std::string phi;
+  ir::NodeId node = 0;
+  std::string predicateExpression;
+  std::string trueBlock;
+  std::string falseBlock;
+  std::string trueValue;
+  std::string falseValue;
+  const llvm::PHINode* phiValue = nullptr;
+  const llvm::Value* trueProvider = nullptr;
+  const llvm::Value* falseProvider = nullptr;
+};
+
+struct LLVMPredicateSSAStoreProvenance {
+  ir::NodeId node = 0;
+  std::string predicateExpression;
+  const llvm::StoreInst* store = nullptr;
+};
+
+struct LLVMPredicateSSAProvenance {
+  std::uint32_t internalBranchCount = 0;
+  std::vector<std::string> orderedBlocks;
+  std::vector<LLVMPredicateSSAMergeProvenance> merges;
+  std::vector<LLVMPredicateSSAStoreProvenance> stores;
+};
+
 struct LLVMMemoryAccessProvenance {
   std::uint32_t id = 0;
   std::string kind;
@@ -285,6 +311,7 @@ struct LLVMFrontendProvenance {
   std::vector<LLVMMemoryDependenceProvenance> memoryDependences;
   std::vector<std::string> controlSlice;
   std::optional<LLVMLinearLoopProvenance> linearLoop;
+  std::optional<LLVMPredicateSSAProvenance> predicateSSA;
 };
 
 struct LLVMFrontendResult {

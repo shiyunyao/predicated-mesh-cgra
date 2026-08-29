@@ -105,7 +105,7 @@ def tier_from_compile(artifact_dir: pathlib.Path, frontend_ok: bool) -> tuple[st
         status = backend.get("status", result.get("status", ""))
         if status == "success":
             if backend.get("mode") == "mapping_research":
-                if backend.get("mapping_status") in {"rf_constrained_success", "success"}:
+                if backend.get("mapping_status") == "rf_constrained_success":
                     return "RF_CONSTRAINED_MAPPED", "S12_RF_ALLOCATION"
                 return "ROUTE_MAPPED", "S10_MODULO_MAPPING"
             return "MANIFEST_COMPLETE", "SUCCESS"
@@ -403,7 +403,11 @@ def run_case(case: dict[str, Any], root: pathlib.Path, corpus: pathlib.Path, out
             failure = classify(stage, classification_message, rc)
             results.append({**base, "tier": tier, "terminal_stage": stage, "stages": [*base["stages"], {"stage": "S4_FRONTEND_LOWER", "status": "PASS"}, {"stage": "S5_GENERIC_VERIFY", "status": "PASS"}, {"stage": stage, "status": "FAIL"}], "message": (stderr or stdout)[-4000:], "stdout": stdout[-4000:], "stderr": stderr[-4000:], "duration_ms": {**base["duration_ms"], "abi_backend": compile_duration}, "backend": backend, **failure})
         elif pipeline_lane == "mapping-research":
-            strict_mapping = backend.get("mapping_status") in {"rf_constrained_success", "success"}
+            # ``success`` was used by pre-RF research runs and may describe a
+            # raw placement/routing candidate.  A strict result must carry the
+            # explicit finite-RF status so raw mappings cannot become L5 by
+            # compatibility fallback.
+            strict_mapping = backend.get("mapping_status") == "rf_constrained_success"
             results.append({**base,
                             "tier": "RF_CONSTRAINED_MAPPED" if strict_mapping else "ROUTE_MAPPED",
                             "terminal_stage": "S12_RF_ALLOCATION" if strict_mapping else "S10_MODULO_MAPPING",

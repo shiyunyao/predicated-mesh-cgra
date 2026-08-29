@@ -690,10 +690,24 @@ ModuloMapperResult ModuloMapper::map(const cgra::target::TargetDFG& dfg,
       continue;
     }
     if (outcome == SearchOutcome::BudgetExceeded) {
+      if (options.objective == MappingObjective::FindAnyFeasible &&
+          options.feasibilityFallback.enabled) {
+        // The low-II optimization window is deliberately bounded.  A
+        // coverage run must still get a chance to try the constructive lane;
+        // preserve the fact that this window exhausted its share in stats
+        // rather than making the whole case terminate as a budget result.
+        perIIBudgetExceeded = true;
+        continue;
+      }
       result.status = ModuloMapperStatus::BudgetExceeded;
       return result;
     }
     if (outcome == SearchOutcome::RouteBudgetExceeded) {
+      if (options.objective == MappingObjective::FindAnyFeasible &&
+          options.feasibilityFallback.enabled) {
+        perIIBudgetExceeded = true;
+        continue;
+      }
       result.status = ModuloMapperStatus::RouteBudgetExceeded;
       return result;
     }

@@ -59,12 +59,11 @@ def terminal_status(result: dict[str, Any]) -> str:
         return "NOT_ACCELERATION_REGION"
     backend = _backend(result)
     if result.get("status") == "PASS":
-        if backend.get("rf_constrained_mapping_found") or result.get("tier") in {
-            "RF_CONSTRAINED_MAPPED",
-            "RF_COMPLETE",
-            "MANIFEST_COMPLETE",
-            "FUNCTIONAL_RTL_VALIDATED",
-        }:
+        strict_backend_evidence = (
+            backend.get("rf_constrained_mapping_found") is True
+            or backend.get("mapping_status") == "rf_constrained_success"
+        )
+        if strict_backend_evidence:
             return "FEASIBLE_II"
         if result.get("tier") == "ROUTE_MAPPED":
             if _has_resource_proof(result):

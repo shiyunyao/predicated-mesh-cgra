@@ -1077,18 +1077,34 @@ void runNegativeCases() {
          "pointer Select must not be treated as a scratchpad base");
 
   const auto pathSensitive = lower(kPathSensitiveMemoryOrder, "path_sensitive", context);
-  expect(!pathSensitive.ok() && pathSensitive.status ==
-                                    cgra::frontend::llvm_frontend::LLVMFrontendStatus::
-                                        UnsupportedIfSideEffect,
-         "reducible MayAlias Stores receive conservative order before side-effect lowering; status=" +
+  expect(pathSensitive.ok(),
+         "reducible MayAlias branch Stores must lower with Predicate-SSA and conservative order; "
+         "status=" +
              std::string(cgra::frontend::llvm_frontend::toString(pathSensitive.status)) +
              " message=" + pathSensitive.message);
+  expect(pathSensitive.provenance.predicateSSA &&
+             pathSensitive.provenance.predicateSSA->stores.size() == 2 &&
+             std::ranges::count_if(pathSensitive.provenance.memoryDependences,
+                                   [](const auto& dependence) {
+                                     return dependence.reason.starts_with(
+                                         "conservative_total_order");
+                                   }) == 2,
+         "opposite-arm MayAlias Stores need independent predicates plus d0/d1 total order");
+  cgra::frontend::llvm_frontend::LLVMFrontendOptions pathSensitiveOptions;
+  pathSensitiveOptions.functionName = "path_sensitive";
+  expect(cgra::frontend::llvm_frontend::verifyFrontendResult(
+             *pathSensitive.normalizedModule, pathSensitiveOptions, pathSensitive)
+             .ok(),
+         "independent verifier must reconstruct conservative opposite-arm Store order");
 
   const auto oppositeArmStores = lower(kNoAliasOppositeArmStores, "noalias_opposite_arms", context);
-  expect(!oppositeArmStores.ok() &&
-             oppositeArmStores.status ==
-                 cgra::frontend::llvm_frontend::LLVMFrontendStatus::UnsupportedIfSideEffect,
-         "NoAlias removes memory ordering, but two Store predicate polarities remain outside V0");
+  expect(oppositeArmStores.ok() && oppositeArmStores.provenance.predicateSSA &&
+             oppositeArmStores.provenance.predicateSSA->stores.size() == 2 &&
+             std::ranges::none_of(oppositeArmStores.provenance.memoryDependences,
+                                  [](const auto& dependence) {
+                                    return dependence.sourceAccess != dependence.destinationAccess;
+                                  }),
+         "NoAlias opposite-arm Stores keep independent predicates without pair ordering");
 }
 
 void runVerifierCorruptionCases() {

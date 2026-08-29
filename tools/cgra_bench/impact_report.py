@@ -291,7 +291,7 @@ def generate(historical: pathlib.Path, checkpoint: pathlib.Path, final: pathlib.
                   f"- Final timeout count: `{_count(final_summary, 'timeout_count')}`",
                   f"- Final compiler-bug count: `{_count(final_summary, 'compiler_bug_count')}`",
                   "- A timeout, budget exhaustion, or ordinary RF rejection is retained as a compiler/harness blocker; it is not rewritten as architecture infeasibility.",
-                  "- The final full-corpus run used the fixed `m32` profile with a two-second per-case timeout to produce a complete accounting artifact. Its timeout count remains a release blocker.",
+                  "- The final full-corpus run used the fixed `m32` profile and the runner's configured per-case timeout. Any timeout count remains a release blocker.",
                   "", "## Per-Case Final Results", ""])
     lines.extend(_case_table(final_results))
     lines.extend(["", "## Reproducibility and Test Evidence", "",
@@ -304,19 +304,19 @@ def generate(historical: pathlib.Path, checkpoint: pathlib.Path, final: pathlib.
                   "| Package | Local status | Evidence |",
                   "|---|---|---|",
                   "| U000 | PARTIAL | B0/B1 full attempts and fixed six-case smoke artifacts retained; m32 probe failed |",
-                  "| U021 | PARTIAL | recurrence ingress options, provenance, independent verifier, 25/25 CTest; real benchmark RF-to-strict-success gate not demonstrated |",
+                  "| U021 | PARTIAL | recurrence ingress options, provenance, independent verifier, and strict Stage/RF regressions pass; real benchmark RF-to-strict-success gate not demonstrated |",
                   "| U022 | IMPLEMENTED, GATE OPEN | independent absolute-time constructive scheduler, deterministic placement/routing, and real Stage/RF complete checker; corpus coverage gate not demonstrated |",
                   "| U025 | IMPLEMENTED | admissibility proof gating, per-case compile metrics, migration CSVs, automated report |",
                   "| U023 | PARTIAL | dynamic-address support plus stable conservative path-sensitive memory ordering; full provenance/backend corpus gate remains open |",
-                  "| U024 | PARTIAL | Predicate-SSA analysis component and multi-diamond tests exist; production lowering remains limited to one internal branch |",
+                  "| U024 | IMPLEMENTED, GATE OPEN | Predicate-SSA analysis, multi-diamond/nested-store lowering, conditional-recurrence lowering, and independent verifier coverage are integrated; unsafe predicated loads and dynamic exits remain explicit rejects |",
                   "| U026 | IMPLEMENTED | local Makefile target plus complete-accounting audit artifact |",
                   "| U027 | NOT STARTED | no MVE was introduced or hidden behind the RF checker |",
                   "", "## Final Terminal Histogram", ""])
     lines.extend(f"- `{key}`: {value}" for key, value in sorted(_histogram(final_summary).items()))
     lines.extend(["", "## Limitations", "",
                   "- The host does not provide the 32-bit libc headers required by the official m32 C/C++ build profile; no native run is substituted for it.",
-                  "- The final bounded full run reconciles all 34 enabled source units and 17 discovered loops, but records 10 explicit stage timeouts and therefore does not satisfy the strict release gate.",
-                  "- U022 has an independent constructive mapper, but the strict 45/51 corpus gate is not proven in this host environment; U023 and U024 remain incomplete as described above."])
+                  "- The final bounded full run reconciles the source/loop set available under the fixed `m32` build profile; missing 32-bit libc headers can reduce the loop denominator and must not be compared with hosted results as if equivalent.",
+                  "- The strict corpus gate is not proven in this host environment; remaining failures are retained as explicit build, timeout, mapper, or architecture diagnostics rather than being reclassified."])
     output.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return result
 

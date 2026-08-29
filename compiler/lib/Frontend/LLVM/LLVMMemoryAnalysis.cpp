@@ -560,11 +560,27 @@ bool instructionBefore(const llvm::Instruction& lhs, const llvm::Instruction& rh
 // guaranteed to execute.
 std::optional<std::unordered_map<const llvm::BasicBlock*, std::size_t>>
 conservativeBlockOrder(const llvm::Loop& loop) {
-  std::unordered_map<const llvm::BasicBlock*, std::size_t> layout;
-  std::size_t ordinal = 0;
-  for (const auto& block : *loop.getHeader()->getParent())
-    if (loop.contains(&block))
-      layout.emplace(&block, ordinal++);
+  std::unordered_map<const llvm::BasicBlock*, std::size_t> cfgOrdinal;
+  std::vector<const llvm::BasicBlock*> worklist{loop.getHeader()};
+  while (!worklist.empty()) {
+    const auto* block = worklist.back();
+    worklist.pop_back();
+    if (!loop.contains(block) || cfgOrdinal.contains(block))
+      continue;
+    cfgOrdinal.emplace(block, cfgOrdinal.size());
+    const auto* branch = llvm::dyn_cast<llvm::BranchInst>(block->getTerminator());
+    if (!branch)
+      continue;
+    // Push in reverse so successor 0, whose index carries branch polarity, is
+    // visited first. This is independent of textual block placement/names.
+    for (unsigned index = branch->getNumSuccessors(); index > 0; --index) {
+      const auto* successor = branch->getSuccessor(index - 1);
+      if (successor != loop.getHeader() && loop.contains(successor))
+        worklist.push_back(successor);
+    }
+  }
+  if (cfgOrdinal.size() != loop.getNumBlocks())
+    return std::nullopt;
 
   std::unordered_map<const llvm::BasicBlock*, std::size_t> indegree;
   for (const auto* block : loop.blocks())
@@ -579,7 +595,7 @@ conservativeBlockOrder(const llvm::Loop& loop) {
   std::set<std::pair<std::size_t, const llvm::BasicBlock*>> ready;
   for (const auto& [block, degree] : indegree)
     if (degree == 0)
-      ready.emplace(layout.at(block), block);
+      ready.emplace(cfgOrdinal.at(block), block);
 
   std::unordered_map<const llvm::BasicBlock*, std::size_t> order;
   while (!ready.empty()) {
@@ -591,7 +607,7 @@ conservativeBlockOrder(const llvm::Loop& loop) {
         continue;
       auto& degree = indegree.at(successor);
       if (--degree == 0)
-        ready.emplace(layout.at(successor), successor);
+        ready.emplace(cfgOrdinal.at(successor), successor);
     }
   }
   if (order.size() != indegree.size())

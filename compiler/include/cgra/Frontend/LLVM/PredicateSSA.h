@@ -8,6 +8,7 @@
 
 namespace llvm {
 class BasicBlock;
+class BranchInst;
 class Loop;
 class Value;
 } // namespace llvm
@@ -39,13 +40,24 @@ struct BlockPredicate {
   std::shared_ptr<const PredicateExpression> expression;
 };
 
+struct EdgePredicate {
+  const llvm::BasicBlock* source = nullptr;
+  const llvm::BasicBlock* destination = nullptr;
+  std::shared_ptr<const PredicateExpression> expression;
+};
+
 struct PredicateSSAResult {
   PredicateSSAStatus status = PredicateSSAStatus::NonReducibleBody;
   std::string message;
+  std::vector<const llvm::BasicBlock*> orderedBlocks;
+  std::vector<const llvm::BranchInst*> internalBranches;
   std::vector<BlockPredicate> blockPredicates;
+  std::vector<EdgePredicate> edgePredicates;
 
   bool ok() const noexcept { return status == PredicateSSAStatus::Success; }
   const BlockPredicate* forBlock(const llvm::BasicBlock* block) const noexcept;
+  const EdgePredicate* forEdge(const llvm::BasicBlock* source,
+                               const llvm::BasicBlock* destination) const noexcept;
 };
 
 // Builds predicates for the loop-body CFG without changing LLVM IR.  Loop

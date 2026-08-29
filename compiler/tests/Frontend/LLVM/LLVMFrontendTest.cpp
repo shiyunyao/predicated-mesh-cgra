@@ -600,6 +600,75 @@ exit:
 }
 )IR";
 
+const char* kSequentialPredicateSSA = R"IR(
+define i32 @sequential_predicate_ssa(i32 %x, i32 %y) {
+entry:
+  br label %loop
+loop:
+  %iv = phi i32 [ 0, %entry ], [ %inc, %merge2 ]
+  %p = icmp ult i32 %x, %y
+  br i1 %p, label %then1, label %else1
+then1:
+  %a = add i32 %x, 3
+  br label %merge1
+else1:
+  %b = sub i32 %y, 2
+  br label %merge1
+merge1:
+  %v = phi i32 [ %a, %then1 ], [ %b, %else1 ]
+  %q = icmp eq i32 %iv, 0
+  br i1 %q, label %then2, label %else2
+then2:
+  %c = mul i32 %v, 2
+  br label %merge2
+else2:
+  %d = add i32 %v, 7
+  br label %merge2
+merge2:
+  %w = phi i32 [ %c, %then2 ], [ %d, %else2 ]
+  %inc = add i32 %iv, 1
+  %done = icmp ult i32 %inc, 2
+  br i1 %done, label %loop, label %exit
+exit:
+  %out = phi i32 [ %w, %merge2 ]
+  ret i32 %out
+}
+)IR";
+
+const char* kPredicateSSAConditionalRecurrence = R"IR(
+define i32 @predicate_ssa_recurrence(i32 %seed, i32 %limit) {
+entry:
+  br label %loop
+loop:
+  %state = phi i32 [ %seed, %entry ], [ %next, %merge2 ]
+  %iv = phi i32 [ 0, %entry ], [ %inc, %merge2 ]
+  %p = icmp ult i32 %state, %limit
+  br i1 %p, label %update1, label %keep1
+update1:
+  %u1 = add i32 %state, 1
+  br label %merge1
+keep1:
+  br label %merge1
+merge1:
+  %v = phi i32 [ %u1, %update1 ], [ %state, %keep1 ]
+  %q = icmp eq i32 %iv, 0
+  br i1 %q, label %update2, label %keep2
+update2:
+  %u2 = add i32 %v, 2
+  br label %merge2
+keep2:
+  br label %merge2
+merge2:
+  %next = phi i32 [ %u2, %update2 ], [ %v, %keep2 ]
+  %inc = add i32 %iv, 1
+  %done = icmp ult i32 %inc, 3
+  br i1 %done, label %loop, label %exit
+exit:
+  %out = phi i32 [ %next, %merge2 ]
+  ret i32 %out
+}
+)IR";
+
 const char* kTriangle = R"IR(
 define i32 @triangle(i32 %x, i32 %y) {
 entry:
@@ -793,6 +862,34 @@ else:
 merge:
   %inc = add i32 %iv, 1
   %done = icmp ult i32 %inc, 2
+  br i1 %done, label %loop, label %exit
+exit:
+  ret void
+}
+)IR";
+
+const char* kNestedPredicateSSAStores = R"IR(
+define void @nested_predicate_stores(i32 %x, i32* %a, i32* %b) {
+entry:
+  br label %loop
+loop:
+  %iv = phi i32 [ 0, %entry ], [ %inc, %outer.merge ]
+  %p = icmp ult i32 %x, 9
+  br i1 %p, label %inner.cond, label %outer.merge
+inner.cond:
+  %q = icmp ult i32 %iv, 2
+  br i1 %q, label %store.a, label %store.b
+store.a:
+  store i32 %x, i32* %a
+  br label %inner.merge
+store.b:
+  store i32 %iv, i32* %b
+  br label %inner.merge
+inner.merge:
+  br label %outer.merge
+outer.merge:
+  %inc = add i32 %iv, 1
+  %done = icmp ult i32 %inc, 3
   br i1 %done, label %loop, label %exit
 exit:
   ret void
@@ -1612,6 +1709,62 @@ void testPredicationLowering() {
           .ok(),
       "predicate SSA verifier");
 
+  auto sequentialPredicateSSA = parse(kSequentialPredicateSSA, context);
+  options.functionName = "sequential_predicate_ssa";
+  const auto sequentialResult =
+      cgra::frontend::llvm_frontend::lowerInnermostLoop(*sequentialPredicateSSA, options);
+  if (!sequentialResult.ok())
+    std::cerr << "sequential Predicate-SSA status="
+              << cgra::frontend::llvm_frontend::toString(sequentialResult.status)
+              << " message=" << sequentialResult.message << '\n';
+  expect(sequentialResult.ok(), "multiple sequential diamonds must lower through Predicate-SSA");
+  expect(sequentialResult.metadata->loopShape == "predicate_ssa",
+         "multiple branches must report the Predicate-SSA loop shape");
+  expect(sequentialResult.provenance.predicateSSA.has_value(),
+         "multiple branches must retain Predicate-SSA provenance");
+  expect(sequentialResult.provenance.predicateSSA->internalBranchCount == 2 &&
+             sequentialResult.provenance.predicateSSA->merges.size() == 2,
+         "Predicate-SSA must account for both branches and both merge PHIs");
+  expect(std::ranges::count_if(sequentialResult.dfg->nodes(), [](const auto& node) {
+           return node.opcode == cgra::ir::Opcode::Select;
+         }) == 2,
+         "two sequential diamonds must produce two semantic Selects");
+  const auto sequentialVerification = cgra::frontend::llvm_frontend::verifyFrontendResult(
+      *sequentialPredicateSSA, options, sequentialResult);
+  if (!sequentialVerification.ok())
+    std::cerr << sequentialVerification.format() << '\n';
+  expect(sequentialVerification.ok(),
+         "independent verifier must reconstruct sequential Predicate-SSA merges");
+  auto wrongPredicateExpression = sequentialResult;
+  wrongPredicateExpression.provenance.predicateSSA->merges.front().predicateExpression = "false";
+  expect(!cgra::frontend::llvm_frontend::verifyFrontendResult(
+              *sequentialPredicateSSA, options, wrongPredicateExpression)
+              .ok(),
+         "Predicate-SSA verifier must reject corrupted merge polarity provenance");
+
+  auto predicateRecurrence = parse(kPredicateSSAConditionalRecurrence, context);
+  options.functionName = "predicate_ssa_recurrence";
+  const auto predicateRecurrenceResult =
+      cgra::frontend::llvm_frontend::lowerInnermostLoop(*predicateRecurrence, options);
+  if (!predicateRecurrenceResult.ok())
+    std::cerr << "Predicate-SSA recurrence status="
+              << cgra::frontend::llvm_frontend::toString(predicateRecurrenceResult.status)
+              << " message=" << predicateRecurrenceResult.message << '\n';
+  expect(predicateRecurrenceResult.ok(),
+         "conditional recurrence across multiple branches must lower as Select recurrence");
+  expect(std::ranges::any_of(predicateRecurrenceResult.dfg->edges(), [&](const auto& edge) {
+           return edge.kind() == cgra::ir::Edge::Kind::Data && edge.distance == 1 &&
+                  predicateRecurrenceResult.dfg->node(edge.src).opcode == cgra::ir::Opcode::Select;
+         }),
+         "Predicate-SSA conditional recurrence must use a Select as its distance-one producer");
+  const auto predicateRecurrenceVerification =
+      cgra::frontend::llvm_frontend::verifyFrontendResult(*predicateRecurrence, options,
+                                                          predicateRecurrenceResult);
+  if (!predicateRecurrenceVerification.ok())
+    std::cerr << predicateRecurrenceVerification.format() << '\n';
+  expect(predicateRecurrenceVerification.ok(),
+         "independent verifier must reconstruct a Predicate-SSA conditional recurrence");
+
   auto diamond = parse(kDiamond, context);
   options.functionName = "diamond";
   const auto diamondResult = cgra::frontend::llvm_frontend::lowerInnermostLoop(*diamond, options);
@@ -1832,8 +1985,12 @@ void testPredicationLowering() {
 
   expectStatus(kPredicatedLoad, "predicated_load",
                cgra::frontend::llvm_frontend::LLVMFrontendStatus::PredicatedLoadUnsupported);
-  expectStatus(kMultipleBranches, "multiple_branches",
-               cgra::frontend::llvm_frontend::LLVMFrontendStatus::MultipleInternalBranches);
+  auto multipleBranches = parse(kMultipleBranches, context);
+  options.functionName = "multiple_branches";
+  const auto multipleBranchResult =
+      cgra::frontend::llvm_frontend::lowerInnermostLoop(*multipleBranches, options);
+  expect(multipleBranchResult.ok(),
+         "reducible nested branches without side effects must lower through Predicate-SSA");
   expectStatus(kUnsafeSpeculation, "unsafe_speculation",
                cgra::frontend::llvm_frontend::LLVMFrontendStatus::UnsafeSpeculation);
   auto multipleStores = parse(kMultipleStores, context);
@@ -1845,6 +2002,30 @@ void testPredicationLowering() {
                                                              multipleStoreResult)
              .ok(),
          "multiple Store memory/predicate semantics must verify");
+
+  auto nestedStores = parse(kNestedPredicateSSAStores, context);
+  options.functionName = "nested_predicate_stores";
+  const auto nestedStoreResult =
+      cgra::frontend::llvm_frontend::lowerInnermostLoop(*nestedStores, options);
+  if (!nestedStoreResult.ok())
+    std::cerr << "nested Predicate-SSA Store status="
+              << cgra::frontend::llvm_frontend::toString(nestedStoreResult.status)
+              << " message=" << nestedStoreResult.message << '\n';
+  expect(nestedStoreResult.ok(),
+         "nested mutually exclusive Stores must retain independent commit predicates");
+  expect(nestedStoreResult.provenance.predicateSSA &&
+             nestedStoreResult.provenance.predicateSSA->stores.size() == 2,
+         "both nested Stores must be present in Predicate-SSA provenance");
+  expect(std::ranges::count_if(nestedStoreResult.dfg->nodes(), [](const auto& node) {
+           return node.opcode == cgra::ir::Opcode::Store && node.operandTypes.size() == 3;
+         }) == 2,
+         "nested branch Stores must remain two separately predicated semantic Stores");
+  const auto nestedStoreVerification = cgra::frontend::llvm_frontend::verifyFrontendResult(
+      *nestedStores, options, nestedStoreResult);
+  if (!nestedStoreVerification.ok())
+    std::cerr << nestedStoreVerification.format() << '\n';
+  expect(nestedStoreVerification.ok(),
+         "independent verifier must reconstruct both nested Store predicates");
 
   auto gepStore = parse(kGEPStore, context);
   options.functionName = "gep_store";

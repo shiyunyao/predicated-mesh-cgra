@@ -7,6 +7,12 @@ class AdmissibilityTests(unittest.TestCase):
     def test_raw_mapping_without_rf_witness_is_a_compiler_bug(self):
         self.assertEqual(terminal_status({"status": "PASS", "tier": "ROUTE_MAPPED"}), "COMPILER_BUG")
 
+    def test_legacy_strict_tier_without_backend_evidence_is_not_success(self):
+        self.assertEqual(
+            terminal_status({"status": "PASS", "tier": "RF_CONSTRAINED_MAPPED"}),
+            "COMPILER_BUG",
+        )
+
     def test_raw_mapping_with_rejected_rf_candidates_is_not_resource_proof(self):
         result = {"status": "PASS", "tier": "ROUTE_MAPPED", "backend": {"stats": {
             "rf_rejected_by_reason": {"rf_register_depth_infeasible": 1}}}}

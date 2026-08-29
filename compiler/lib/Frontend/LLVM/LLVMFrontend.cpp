@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 #include "cgra/Frontend/LLVM/LLVMFrontend.h"
+#include "cgra/Frontend/LLVM/PredicateSSA.h"
 
 #include "cgra/IR/DFGBuilder.h"
 #include "cgra/IR/DFGSerialization.h"
@@ -49,6 +50,7 @@ struct LoopSelection {
   llvm::BasicBlock* preheader = nullptr;
   llvm::BranchInst* branch = nullptr;
   std::optional<LinearLoopRegionDescriptor> linearRegion;
+  std::optional<PredicateSSAResult> predicateSSA;
   bool loopEntryCanonicalized = false;
   std::uint32_t coalescedStorePairs = 0;
   std::uint32_t forwardedBranchLoads = 0;
@@ -1001,6 +1003,21 @@ struct IfLoweringState {
     std::string role;
   };
 
+  struct PredicateMerge {
+    const llvm::PHINode* phi = nullptr;
+    std::shared_ptr<const PredicateExpression> predicate;
+    const llvm::Value* trueValue = nullptr;
+    const llvm::Value* falseValue = nullptr;
+    const llvm::BasicBlock* trueBlock = nullptr;
+    const llvm::BasicBlock* falseBlock = nullptr;
+  };
+
+  struct SyntheticPredicateNode {
+    ir::NodeId node = 0;
+    const llvm::Instruction* anchor = nullptr;
+    std::string role;
+  };
+
   explicit IfLoweringState(LoopSelection& selected) : selection(selected) {}
   LoopSelection& selection;
   BranchRegion region;
@@ -1019,6 +1036,9 @@ struct IfLoweringState {
   std::unordered_set<const llvm::Instruction*> recurrenceBackedges;
   std::unordered_map<const llvm::GetElementPtrInst*, GEPAddressNodes> gepAddressNodes;
   std::vector<SyntheticAddressNode> syntheticAddressNodes;
+  std::vector<PredicateMerge> predicateMerges;
+  std::vector<SyntheticPredicateNode> syntheticPredicateNodes;
+  std::unordered_map<const PredicateExpression*, ir::NodeId> predicateExpressionNodes;
   LLVMFrontendProvenance provenance;
 };
 
@@ -1039,9 +1059,15 @@ bool discoverIfRecurrences(IfLoweringState& state, const llvm::Module& module,
     const auto* backedge = llvm::dyn_cast<llvm::Instruction>(
         phi->getIncomingValue(static_cast<unsigned>(backedgeIndex)));
     const auto* backedgePhi = llvm::dyn_cast_or_null<llvm::PHINode>(backedge);
-    const bool conditionalSelectBackedge = backedgePhi && state.region.branch &&
-                                           backedgePhi->getParent() == state.region.mergeBlock &&
-                                           backedgePhi->getNumIncomingValues() == 2;
+    const bool structuredSelectBackedge =
+        backedgePhi && state.region.branch && backedgePhi->getParent() == state.region.mergeBlock &&
+        backedgePhi->getNumIncomingValues() == 2;
+    const bool predicateSSASelectBackedge =
+        backedgePhi && state.selection.predicateSSA &&
+        backedgePhi->getParent() != state.selection.loop->getHeader() &&
+        backedgePhi->getNumIncomingValues() == 2;
+    const bool conditionalSelectBackedge =
+        structuredSelectBackedge || predicateSSASelectBackedge;
     const bool pointerRecurrence =
         phi->getType()->isPointerTy() &&
         llvm::isa_and_nonnull<llvm::GetElementPtrInst, llvm::SelectInst, llvm::PHINode>(backedge);
@@ -1213,6 +1239,9 @@ void collectTerminationSlice(IfLoweringState& state) {
   }
   if (state.region.condition)
     collectSlice(state.region.condition, *state.selection.loop, state.predicateSlice);
+  if (state.selection.predicateSSA)
+    for (const auto* branch : state.selection.predicateSSA->internalBranches)
+      collectSlice(branch->getCondition(), *state.selection.loop, state.predicateSlice);
 }
 
 std::string externalNameForIf(const llvm::Value& value, std::uint32_t ordinal) {
@@ -1350,6 +1379,14 @@ LLVMFrontendResult lowerStructuredLoop(llvm::Module& module, const LLVMFrontendO
   IfLoweringState state{selection};
   if (discoveredRegion)
     state.region = *discoveredRegion;
+  if (selection.predicateSSA) {
+    LLVMPredicateSSAProvenance predicateProvenance;
+    predicateProvenance.internalBranchCount =
+        static_cast<std::uint32_t>(selection.predicateSSA->internalBranches.size());
+    for (const auto* block : selection.predicateSSA->orderedBlocks)
+      predicateProvenance.orderedBlocks.push_back(blockName(*selection.function, block));
+    state.provenance.predicateSSA = std::move(predicateProvenance);
+  }
   collectTerminationSlice(state);
 
   if (!discoverIfRecurrences(state, module, error))
@@ -1476,11 +1513,51 @@ LLVMFrontendResult lowerStructuredLoop(llvm::Module& module, const LLVMFrontendO
       state.selectOrder.push_back(phi);
       mergePhis.push_back(phi);
     }
+  } else if (selection.predicateSSA) {
+    for (const auto* block : selection.predicateSSA->orderedBlocks) {
+      if (block == selection.loop->getHeader())
+        continue;
+      for (const auto& instruction : *block) {
+        const auto* phi = llvm::dyn_cast<llvm::PHINode>(&instruction);
+        if (!phi)
+          break;
+        if (phi->getNumIncomingValues() != 2 || phi->getType()->isIntegerTy(1))
+          return failure(LLVMFrontendStatus::UnsupportedControlMerge,
+                         LLVMFrontendDiagnosticCode::LLVM_FRONTEND_UNSUPPORTED_CONTROL_MERGE,
+                         "Predicate-SSA V1 requires a two-input non-predicate merge PHI",
+                         &selection, phi);
+        const auto* trueBlock = phi->getIncomingBlock(0);
+        const auto* falseBlock = phi->getIncomingBlock(1);
+        const auto* edge = selection.predicateSSA->forEdge(trueBlock, block);
+        if (!edge || !edge->expression)
+          return failure(LLVMFrontendStatus::UnsupportedControlMerge,
+                         LLVMFrontendDiagnosticCode::LLVM_FRONTEND_UNSUPPORTED_CONTROL_MERGE,
+                         "Predicate-SSA merge has no independently reconstructed edge predicate",
+                         &selection, phi);
+        const auto type = phi->getType()->isPointerTy() ? addressValueType(module, *phi)
+                                                        : valueType(*phi);
+        if (!type)
+          return failure(LLVMFrontendStatus::UnsupportedLLVMType,
+                         LLVMFrontendDiagnosticCode::LLVM_FRONTEND_UNSUPPORTED_TYPE,
+                         "Predicate-SSA merge must have a supported scalar or address type",
+                         &selection, phi);
+        const auto select =
+            builder.addNode(ir::Opcode::Select, {ir::ValueType::predicate(), *type, *type}, *type);
+        state.selects.emplace(phi, select);
+        state.selectOrder.push_back(phi);
+        state.predicateMerges.push_back({phi, edge->expression, phi->getIncomingValue(0),
+                                         phi->getIncomingValue(1), trueBlock, falseBlock});
+        mergePhis.push_back(phi);
+      }
+    }
   }
 
   std::vector<llvm::BasicBlock*> blocks;
   if (selection.linearRegion)
     blocks = selection.linearRegion->orderedBlocks;
+  else if (selection.predicateSSA)
+    for (const auto* block : selection.predicateSSA->orderedBlocks)
+      blocks.push_back(const_cast<llvm::BasicBlock*>(block));
   else
     blocks.assign(selection.loop->getBlocks().begin(), selection.loop->getBlocks().end());
 
@@ -1608,10 +1685,18 @@ LLVMFrontendResult lowerStructuredLoop(llvm::Module& module, const LLVMFrontendO
         continue;
       }
       if (const auto* load = llvm::dyn_cast<llvm::LoadInst>(&instruction)) {
-        if (discoveredRegion && valueIsInBranch(*load, state.region, *selection.loop))
+        const auto* blockPredicate = selection.predicateSSA
+                                         ? selection.predicateSSA->forBlock(load->getParent())
+                                         : nullptr;
+        const bool predicateSSALoad =
+            blockPredicate && blockPredicate->expression &&
+            blockPredicate->expression->kind != PredicateExpression::Kind::True;
+        if ((discoveredRegion && valueIsInBranch(*load, state.region, *selection.loop)) ||
+            predicateSSALoad)
           return failure(LLVMFrontendStatus::PredicatedLoadUnsupported,
                          LLVMFrontendDiagnosticCode::LLVM_FRONTEND_PREDICATED_LOAD_UNSUPPORTED,
-                         "branch-local conditional Load has no V0 suppression mechanism",
+                         "branch-local conditional Load has no proven-safe suppression or "
+                         "speculation mechanism",
                          &selection, load);
         const auto access = std::ranges::find_if(
             memoryAnalysis.accesses, [&](const auto& item) { return item.instruction == load; });
@@ -1642,9 +1727,16 @@ LLVMFrontendResult lowerStructuredLoop(llvm::Module& module, const LLVMFrontendO
                        &instruction);
       const bool safeToSpeculate = llvm::isa<llvm::PtrToIntInst>(instruction) ||
                                    llvm::isSafeToSpeculativelyExecute(&instruction);
+      const auto* blockPredicate = selection.predicateSSA
+                                       ? selection.predicateSSA->forBlock(instruction.getParent())
+                                       : nullptr;
+      const bool predicateSSAInstruction =
+          blockPredicate && blockPredicate->expression &&
+          blockPredicate->expression->kind != PredicateExpression::Kind::True;
       if (!isPureInstruction(instruction) ||
           (discoveredRegion && !state.predicateSlice.contains(&instruction) &&
-           valueIsInBranch(instruction, state.region, *selection.loop) && !safeToSpeculate)) {
+           valueIsInBranch(instruction, state.region, *selection.loop) && !safeToSpeculate) ||
+          (predicateSSAInstruction && !safeToSpeculate)) {
         return failure(LLVMFrontendStatus::UnsafeSpeculation,
                        LLVMFrontendDiagnosticCode::LLVM_FRONTEND_UNSAFE_SPECULATION,
                        "branch-local instruction is not safe to speculate", &selection,
@@ -1798,9 +1890,101 @@ LLVMFrontendResult lowerStructuredLoop(llvm::Module& module, const LLVMFrontendO
     return std::nullopt;
   };
 
+  std::function<const llvm::Instruction*(const std::shared_ptr<const PredicateExpression>&)>
+      predicateAnchor;
+  predicateAnchor = [&](const std::shared_ptr<const PredicateExpression>& expression)
+      -> const llvm::Instruction* {
+    if (!expression)
+      return nullptr;
+    if (expression->kind == PredicateExpression::Kind::Value)
+      return llvm::dyn_cast_or_null<llvm::Instruction>(expression->value);
+    for (const auto& child : expression->operands)
+      if (const auto* anchor = predicateAnchor(child))
+        return anchor;
+    return nullptr;
+  };
+
+  std::function<std::optional<ir::EdgeId>(
+      const std::shared_ptr<const PredicateExpression>&, ir::NodeId, std::uint32_t,
+      const llvm::Instruction*)>
+      predicateProvider;
+  predicateProvider = [&](const std::shared_ptr<const PredicateExpression>& expression,
+                          ir::NodeId destination, std::uint32_t operand,
+                          const llvm::Instruction* anchor) -> std::optional<ir::EdgeId> {
+    if (!expression)
+      return std::nullopt;
+    if (expression->kind == PredicateExpression::Kind::Value) {
+      return expression->value ? provider(*expression->value, destination, operand, true)
+                               : std::nullopt;
+    }
+    if (expression->kind == PredicateExpression::Kind::True ||
+        expression->kind == PredicateExpression::Kind::False) {
+      const auto* constant = llvm::ConstantInt::get(
+          llvm::Type::getInt1Ty(module.getContext()),
+          expression->kind == PredicateExpression::Kind::True ? 1 : 0);
+      builder.bindConstant(destination, operand,
+                           getIfConstant(state, builder, *constant,
+                                         ir::ValueType::predicate()));
+      return std::nullopt;
+    }
+
+    auto node = state.predicateExpressionNodes.find(expression.get());
+    if (node == state.predicateExpressionNodes.end()) {
+      std::string operation;
+      std::size_t arity = 0;
+      switch (expression->kind) {
+      case PredicateExpression::Kind::Not:
+        operation = "PNOT";
+        arity = 1;
+        break;
+      case PredicateExpression::Kind::And:
+        operation = "PAND";
+        arity = 2;
+        break;
+      case PredicateExpression::Kind::Or:
+        operation = "POR";
+        arity = 2;
+        break;
+      case PredicateExpression::Kind::True:
+      case PredicateExpression::Kind::False:
+      case PredicateExpression::Kind::Value:
+        break;
+      }
+      if (operation.empty() || expression->operands.size() != arity)
+        return std::nullopt;
+      const auto predicateNode = builder.addCustomNode(
+          operation, std::vector<ir::ValueType>(arity, ir::ValueType::predicate()),
+          ir::ValueType::predicate());
+      node = state.predicateExpressionNodes.emplace(expression.get(), predicateNode).first;
+      state.syntheticPredicateNodes.push_back(
+          {predicateNode, predicateAnchor(expression) ? predicateAnchor(expression) : anchor,
+           "PREDICATE_SSA_" + operation});
+      for (std::uint32_t index = 0; index < arity; ++index)
+        predicateProvider(expression->operands[index], predicateNode, index, anchor);
+    }
+    return builder.addPredicateEdge(node->second, destination, operand);
+  };
+
   // Wire Select nodes representing merge PHIs and direct LLVM Select nodes.
   for (const auto* phi : state.selectOrder) {
     const auto selectNode = state.selects.at(phi);
+    if (selection.predicateSSA) {
+      const auto merge = std::ranges::find(state.predicateMerges, phi,
+                                           &IfLoweringState::PredicateMerge::phi);
+      if (merge == state.predicateMerges.end())
+        return failure(LLVMFrontendStatus::UnsupportedControlMerge,
+                       LLVMFrontendDiagnosticCode::LLVM_FRONTEND_UNSUPPORTED_CONTROL_MERGE,
+                       "Predicate-SSA Select has no merge plan", &selection, phi);
+      predicateProvider(merge->predicate, selectNode, 0, phi);
+      provider(*merge->trueValue, selectNode, 1, false);
+      provider(*merge->falseValue, selectNode, 2, false);
+      state.provenance.predicateSSA->merges.push_back(
+          {valueSummary(*phi), selectNode, predicateExpressionKey(*merge->predicate),
+           blockName(*selection.function, merge->trueBlock),
+           blockName(*selection.function, merge->falseBlock), valueSummary(*merge->trueValue),
+           valueSummary(*merge->falseValue), phi, merge->trueValue, merge->falseValue});
+      continue;
+    }
     const int trueIndex = phi->getBasicBlockIndex(state.region.trueBlock);
     const int falseIndex = phi->getBasicBlockIndex(state.region.falseBlock) >= 0
                                ? phi->getBasicBlockIndex(state.region.falseBlock)
@@ -1961,7 +2145,14 @@ LLVMFrontendResult lowerStructuredLoop(llvm::Module& module, const LLVMFrontendO
   }
 
   for (const auto* store : stores) {
-    const bool conditional = discoveredRegion && isConditionalStore(*store, state.region);
+    const auto* blockPredicate = selection.predicateSSA
+                                     ? selection.predicateSSA->forBlock(store->getParent())
+                                     : nullptr;
+    const bool predicateSSAStore =
+        blockPredicate && blockPredicate->expression &&
+        blockPredicate->expression->kind != PredicateExpression::Kind::True;
+    const bool conditional =
+        (discoveredRegion && isConditionalStore(*store, state.region)) || predicateSSAStore;
     const auto addressType = addressValueType(module, *store->getPointerOperand());
     const auto dataType = store->getValueOperand()->getType()->isPointerTy()
                               ? pointerTokenType(module, selection, *store->getValueOperand())
@@ -1986,7 +2177,11 @@ LLVMFrontendResult lowerStructuredLoop(llvm::Module& module, const LLVMFrontendO
     provider(*store->getPointerOperand(), storeNode, 0, false);
     const auto dataEdge = provider(*store->getValueOperand(), storeNode, 1, false);
     static_cast<void>(dataEdge);
-    if (conditional) {
+    if (predicateSSAStore) {
+      predicateProvider(blockPredicate->expression, storeNode, 2, store);
+      state.provenance.predicateSSA->stores.push_back(
+          {storeNode, predicateExpressionKey(*blockPredicate->expression), store});
+    } else if (conditional) {
       auto predicate = state.nodes.find(state.region.condition);
       if (predicate == state.nodes.end())
         return failure(LLVMFrontendStatus::UnsupportedBranchCondition,
@@ -2090,7 +2285,9 @@ LLVMFrontendResult lowerStructuredLoop(llvm::Module& module, const LLVMFrontendO
   metadata.addressUnitBytes = options.addressUnitBytes;
   metadata.requiresTripCount = true;
   metadata.staticTripCount = inferStaticTripCount(selection);
-  metadata.loopShape = selection.linearRegion ? "linear_multiblock" : "structured";
+  metadata.loopShape = selection.predicateSSA
+                           ? "predicate_ssa"
+                           : selection.linearRegion ? "linear_multiblock" : "structured";
   metadata.loopEntryCanonicalized = selection.loopEntryCanonicalized;
   metadata.coalescedStorePairs = selection.coalescedStorePairs;
   metadata.forwardedBranchLoads = selection.forwardedBranchLoads;
@@ -2132,6 +2329,14 @@ LLVMFrontendResult lowerStructuredLoop(llvm::Module& module, const LLVMFrontendO
                                       blockName(*selection.function, synthetic.gep->getParent()),
                                       ordinals.at(synthetic.gep), synthetic.role, synthetic.gep});
   }
+  for (const auto& synthetic : state.syntheticPredicateNodes) {
+    if (!synthetic.anchor)
+      continue;
+    state.provenance.nodes.push_back(
+        {synthetic.node, selection.function->getName().str(),
+         blockName(*selection.function, synthetic.anchor->getParent()),
+         ordinals.at(synthetic.anchor), synthetic.role, synthetic.anchor});
+  }
   for (const auto* value : state.selectOrder) {
     const auto node = state.selects.at(value);
     state.provenance.nodes.push_back({node, selection.function->getName().str(),
@@ -2160,29 +2365,88 @@ LLVMFrontendResult lowerSelectedLoop(llvm::Module& module, const LLVMFrontendOpt
     return error;
   if (!canonicalizeLoopEntry(*selected, error))
     return error;
-  bool hasInternalBranch = false;
+  std::uint32_t internalBranchCount = 0;
   bool hasDirectSelect = false;
   bool hasMemory = false;
   for (auto* block : selected->loop->getBlocks()) {
     if (const auto* branch = llvm::dyn_cast<llvm::BranchInst>(block->getTerminator()))
       if (branch->isConditional() && selected->loop->contains(branch->getSuccessor(0)) &&
           selected->loop->contains(branch->getSuccessor(1)))
-        hasInternalBranch = true;
+        ++internalBranchCount;
     for (const auto& instruction : *block)
       if (llvm::isa<llvm::SelectInst>(instruction))
         hasDirectSelect = true;
       else if (isMemoryInstruction(instruction))
         hasMemory = true;
   }
-  if (hasInternalBranch || hasDirectSelect || hasMemory || selected->loop->getBlocks().size() > 1) {
-    auto region = discoverBranchRegion(*selected, error);
-    if (hasInternalBranch && !region)
-      return error;
+  if (internalBranchCount != 0 || hasDirectSelect || hasMemory ||
+      selected->loop->getBlocks().size() > 1) {
+    std::optional<BranchRegion> region;
+    if (internalBranchCount == 1) {
+      region = discoverBranchRegion(*selected, error);
+      if (!region)
+        return error;
+    } else if (internalBranchCount > 1) {
+      auto predicateSSA = buildPredicateSSA(*selected->loop);
+      if (!predicateSSA.ok()) {
+        const auto code = predicateSSA.status == PredicateSSAStatus::DynamicExit
+                              ? LLVMFrontendDiagnosticCode::LLVM_FRONTEND_UNSUPPORTED_CONTROL_FLOW
+                              : LLVMFrontendDiagnosticCode::LLVM_FRONTEND_MULTIPLE_INTERNAL_BRANCHES;
+        return failure(LLVMFrontendStatus::UnsupportedControlFlow, code, predicateSSA.message,
+                       &*selected);
+      }
+      for (const auto* block : predicateSSA.orderedBlocks) {
+        const auto* predicate = predicateSSA.forBlock(block);
+        const bool conditional = predicate && predicate->expression &&
+                                 predicate->expression->kind != PredicateExpression::Kind::True;
+        if (!conditional)
+          continue;
+        for (const auto& instruction : *block) {
+          if (ignoredInstruction(instruction) || instruction.isTerminator() ||
+              llvm::isa<llvm::PHINode, llvm::StoreInst>(instruction))
+            continue;
+          if (llvm::isa<llvm::LoadInst>(instruction))
+            return failure(LLVMFrontendStatus::PredicatedLoadUnsupported,
+                           LLVMFrontendDiagnosticCode::LLVM_FRONTEND_PREDICATED_LOAD_UNSUPPORTED,
+                           "Predicate-SSA cannot speculate a branch-local Load without an "
+                           "independent safety proof",
+                           &*selected, &instruction);
+          if (instruction.mayHaveSideEffects())
+            return failure(LLVMFrontendStatus::UnsupportedIfSideEffect,
+                           LLVMFrontendDiagnosticCode::LLVM_FRONTEND_UNSUPPORTED_IF_SIDE_EFFECT,
+                           "Predicate-SSA branch contains an unsupported side effect", &*selected,
+                           &instruction);
+          if (!llvm::isa<llvm::PtrToIntInst>(instruction) &&
+              !llvm::isSafeToSpeculativelyExecute(&instruction))
+            return failure(LLVMFrontendStatus::UnsafeSpeculation,
+                           LLVMFrontendDiagnosticCode::LLVM_FRONTEND_UNSAFE_SPECULATION,
+                           "Predicate-SSA branch instruction is not safe to speculate", &*selected,
+                           &instruction);
+        }
+      }
+      selected->predicateSSA = std::move(predicateSSA);
+    }
     if (region) {
       forwardRedundantBranchLoads(*selected, *region);
       coalesceSameAddressStores(*selected, *region);
+      const bool trueStore = std::ranges::any_of(*region->trueBlock, [](const auto& instruction) {
+        return llvm::isa<llvm::StoreInst>(instruction);
+      });
+      const bool falseStore =
+          std::ranges::any_of(*region->falseBlock, [](const auto& instruction) {
+            return llvm::isa<llvm::StoreInst>(instruction);
+          });
+      if (trueStore && falseStore) {
+        auto predicateSSA = buildPredicateSSA(*selected->loop);
+        if (!predicateSSA.ok())
+          return failure(LLVMFrontendStatus::UnsupportedIfSideEffect,
+                         LLVMFrontendDiagnosticCode::LLVM_FRONTEND_UNSUPPORTED_IF_SIDE_EFFECT,
+                         predicateSSA.message, &*selected);
+        selected->predicateSSA = std::move(predicateSSA);
+        region.reset();
+      }
     }
-    if (selected->loop->getBlocks().size() > 1 && !region) {
+    if (selected->loop->getBlocks().size() > 1 && !region && !selected->predicateSSA) {
       const auto linear = discoverLinearLoopRegion(*selected->loop);
       if (!linear.ok()) {
         LLVMFrontendDiagnosticCode code =
@@ -2754,6 +3018,25 @@ std::string LLVMFrontendResult::toJson() const {
                                  {"true_value", select.trueValue},
                                  {"false_value", select.falseValue}});
     root["provenance"]["if_conversions"].push_back(std::move(item));
+  }
+  if (provenance.predicateSSA) {
+    Json predicate = {{"internal_branch_count", provenance.predicateSSA->internalBranchCount},
+                      {"ordered_blocks", provenance.predicateSSA->orderedBlocks},
+                      {"merges", Json::array()},
+                      {"stores", Json::array()}};
+    for (const auto& merge : provenance.predicateSSA->merges)
+      predicate["merges"].push_back(
+          {{"phi", merge.phi},
+           {"node", merge.node},
+           {"predicate_expression", merge.predicateExpression},
+           {"true_block", merge.trueBlock},
+           {"false_block", merge.falseBlock},
+           {"true_value", merge.trueValue},
+           {"false_value", merge.falseValue}});
+    for (const auto& store : provenance.predicateSSA->stores)
+      predicate["stores"].push_back(
+          {{"node", store.node}, {"predicate_expression", store.predicateExpression}});
+    root["provenance"]["predicate_ssa"] = std::move(predicate);
   }
   for (const auto& access : provenance.memoryAccesses)
     root["provenance"]["memory_accesses"].push_back(

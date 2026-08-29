@@ -2,12 +2,14 @@
 #include "cgra/Frontend/LLVM/PredicateSSA.h"
 
 #include <llvm/Analysis/LoopInfo.h>
+#include <llvm/ADT/SmallVector.h>
 #include <llvm/IR/BasicBlock.h>
 #include <llvm/IR/CFG.h>
 #include <llvm/IR/Instructions.h>
 #include <llvm/IR/Value.h>
 
 #include <algorithm>
+#include <functional>
 #include <map>
 #include <set>
 #include <unordered_map>
@@ -142,6 +144,15 @@ const BlockPredicate* PredicateSSAResult::forBlock(const llvm::BasicBlock* block
   return found == blockPredicates.end() ? nullptr : &*found;
 }
 
+const EdgePredicate* PredicateSSAResult::forEdge(const llvm::BasicBlock* source,
+                                                 const llvm::BasicBlock* destination) const
+    noexcept {
+  const auto found = std::ranges::find_if(edgePredicates, [&](const auto& edge) {
+    return edge.source == source && edge.destination == destination;
+  });
+  return found == edgePredicates.end() ? nullptr : &*found;
+}
+
 PredicateSSAResult buildPredicateSSA(const llvm::Loop& loop) {
   PredicateSSAResult result;
   const auto* header = loop.getHeader();
@@ -151,22 +162,65 @@ PredicateSSAResult buildPredicateSSA(const llvm::Loop& loop) {
     return result;
   }
 
-  std::unordered_map<const llvm::BasicBlock*, std::size_t> layout;
-  std::size_t ordinal = 0;
-  for (const auto& block : *header->getParent())
-    if (loop.contains(&block))
-      layout.emplace(&block, ordinal++);
+  llvm::SmallVector<llvm::BasicBlock*, 4> exitingBlocks;
+  llvm::SmallVector<llvm::BasicBlock*, 4> exitBlocks;
+  loop.getExitingBlocks(exitingBlocks);
+  loop.getExitBlocks(exitBlocks);
+  if (exitingBlocks.size() != 1 || exitBlocks.size() != 1) {
+    result.status = PredicateSSAStatus::DynamicExit;
+    result.message = "predicate SSA requires one normal selected-loop exit";
+    return result;
+  }
+
+  // Derive tie-breaking ordinals from CFG successor order rather than LLVM
+  // textual block layout. Successor indices carry branch polarity semantics;
+  // block placement and labels do not.
+  std::unordered_map<const llvm::BasicBlock*, std::size_t> cfgOrdinal;
+  std::vector<const llvm::BasicBlock*> discovery;
+  std::function<void(const llvm::BasicBlock*)> discover = [&](const llvm::BasicBlock* block) {
+    if (!loop.contains(block) || cfgOrdinal.contains(block))
+      return;
+    cfgOrdinal.emplace(block, discovery.size());
+    discovery.push_back(block);
+    const auto* branch = llvm::dyn_cast<llvm::BranchInst>(block->getTerminator());
+    if (!branch)
+      return;
+    for (unsigned index = 0; index < branch->getNumSuccessors(); ++index) {
+      const auto* successor = branch->getSuccessor(index);
+      if (successor != header)
+        discover(successor);
+    }
+  };
+  discover(header);
+  if (discovery.size() != loop.getNumBlocks()) {
+    result.status = PredicateSSAStatus::NonReducibleBody;
+    result.message = "loop body contains a side entry or unreachable in-loop block";
+    return result;
+  }
 
   std::unordered_map<const llvm::BasicBlock*, std::size_t> indegree;
   for (const auto* block : loop.blocks())
     indegree.emplace(block, 0);
   for (const auto* block : loop.blocks()) {
+    bool hasSideEntry = false;
+    if (block != header)
+      for (const auto* predecessor : llvm::predecessors(block))
+        hasSideEntry |= !loop.contains(predecessor);
+    if (hasSideEntry) {
+      result.status = PredicateSSAStatus::NonReducibleBody;
+      result.message = "loop body contains an external side entry";
+      return result;
+    }
     const auto* terminator = block->getTerminator();
     if (!terminator || (!llvm::isa<llvm::BranchInst>(terminator))) {
       result.status = PredicateSSAStatus::UnsupportedTerminator;
       result.message = "predicate SSA requires branch-only loop body CFG";
       return result;
     }
+    const auto* branch = llvm::cast<llvm::BranchInst>(terminator);
+    if (branch->isConditional() && loop.contains(branch->getSuccessor(0)) &&
+        loop.contains(branch->getSuccessor(1)))
+      result.internalBranches.push_back(branch);
     for (const auto* successor : llvm::successors(block)) {
       if (!loop.contains(successor) || successor == header)
         continue;
@@ -176,7 +230,7 @@ PredicateSSAResult buildPredicateSSA(const llvm::Loop& loop) {
   std::set<std::pair<std::size_t, const llvm::BasicBlock*>> ready;
   for (const auto& [block, degree] : indegree)
     if (degree == 0)
-      ready.emplace(layout.at(block), block);
+      ready.emplace(cfgOrdinal.at(block), block);
   std::vector<const llvm::BasicBlock*> order;
   while (!ready.empty()) {
     const auto [_, block] = *ready.begin();
@@ -187,7 +241,7 @@ PredicateSSAResult buildPredicateSSA(const llvm::Loop& loop) {
         continue;
       auto& degree = indegree.at(successor);
       if (--degree == 0)
-        ready.emplace(layout.at(successor), successor);
+        ready.emplace(cfgOrdinal.at(successor), successor);
     }
   }
   if (order.size() != indegree.size()) {
@@ -214,6 +268,7 @@ PredicateSSAResult buildPredicateSSA(const llvm::Loop& loop) {
       auto edge = edgePredicate(found->second, *predecessor, *block, loop, result);
       if (!edge)
         return result;
+      result.edgePredicates.push_back({predecessor, block, edge});
       incoming.push_back(std::move(edge));
     }
     if (incoming.empty()) {
@@ -226,6 +281,10 @@ PredicateSSAResult buildPredicateSSA(const llvm::Loop& loop) {
 
   result.status = PredicateSSAStatus::Success;
   result.message.clear();
+  result.orderedBlocks = order;
+  std::ranges::sort(result.internalBranches, [&](const auto* lhs, const auto* rhs) {
+    return cfgOrdinal.at(lhs->getParent()) < cfgOrdinal.at(rhs->getParent());
+  });
   for (const auto* block : order)
     result.blockPredicates.push_back({block, predicates.at(block)});
   return result;

@@ -105,8 +105,15 @@ def _find_family_manifest(out: pathlib.Path) -> pathlib.Path | None:
 def _mapping_verified(item: dict[str, Any]) -> bool:
     backend = item.get("backend")
     if not isinstance(backend, dict):
-        return item.get("diagnostic_code") == "MODULO_MAPPING_VERIFIED"
-    return backend.get("mapping_status") in {"rf_constrained_success", "success"}
+        # Without the backend envelope there is no evidence that Stage/RF
+        # legality was checked.  Legacy diagnostic-only results are therefore
+        # raw observations, never strict finite-RF successes.
+        return False
+    # A raw route candidate is not a strict mapping.  Only the explicit
+    # finite-RF result status is accepted here; legacy ``success`` values
+    # predate the research/hardware separation and are intentionally not
+    # trusted as strict evidence.
+    return backend.get("mapping_status") == "rf_constrained_success"
 
 
 def _computational_family_gate(
@@ -327,7 +334,7 @@ def report(out: pathlib.Path, corpus: dict[str, Any], results: list[dict[str, An
             return False
         if "rf_constrained_mapping_found" in backend:
             return bool(backend["rf_constrained_mapping_found"])
-        return backend.get("mapping_status") in {"rf_constrained_success", "success"}
+        return backend.get("mapping_status") == "rf_constrained_success"
 
     completed_modulo_mappings = sum(
         int(stats.get("completed_modulo_mappings", 0)) for stats in backend_stats

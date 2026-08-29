@@ -536,6 +536,14 @@ if(CGRA_BUILD_TESTS)
   )
 
   cgra_add_test(
+    NAME cgra-predicate-ssa-backend-test
+    TYPE semantic
+    SOURCES tests/Frontend/LLVM/PredicateSSABackendTest.cpp
+    LIBRARIES cgra_frontend_composition cgra_pipeline ${CGRA_LLVM_LIBS}
+    DEFINITIONS CGRA_REPOSITORY_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/.."
+  )
+
+  cgra_add_test(
     NAME cgra-llvm-memory-backend-test
     TYPE semantic
     SOURCES tests/Frontend/LLVM/LLVMMemoryBackendTest.cpp
