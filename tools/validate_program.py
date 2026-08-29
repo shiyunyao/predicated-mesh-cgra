@@ -11,7 +11,12 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 ALLOWED_OBSERVATION_MODES = {"trace_only", "top_output", "future_readback", "unsupported"}
 REQUIRED_TOP_LEVEL = {"schema", "name", "version", "target", "run", "program"}
 REQUIRED_TILE_KEYS = {"row", "col", "control", "const_memory", "scratchpad_preload"}
-LOOP_KEYS = {"enabled", "prologue_cycles", "ii", "trip_count", "epilogue_cycles"}
+REQUIRED_LOOP_KEYS = {"enabled", "prologue_cycles", "ii", "trip_count", "epilogue_cycles"}
+OPTIONAL_LOOP_KEYS = {
+    "logical_ii", "rotation_period_iterations", "control_period_cycles",
+    "software_rotating_registers",
+}
+LOOP_KEYS = REQUIRED_LOOP_KEYS | OPTIONAL_LOOP_KEYS
 HEX32_PREFIX = "0x"
 
 
@@ -136,7 +141,7 @@ def validate_program(manifest):
     if loop is not None:
         require(isinstance(loop, dict), "loop must be an object when present", errors)
         if isinstance(loop, dict):
-            missing_loop = sorted(LOOP_KEYS - set(loop))
+            missing_loop = sorted(REQUIRED_LOOP_KEYS - set(loop))
             extra_loop = sorted(set(loop) - LOOP_KEYS)
             require(not missing_loop, f"loop missing keys: {missing_loop}", errors)
             require(not extra_loop, f"loop has unsupported keys: {extra_loop}", errors)
@@ -148,21 +153,32 @@ def validate_program(manifest):
                 require(type(value) is int, f"loop.{field} must be an integer", errors)
                 if type(value) is int:
                     require(0 <= value <= 0xffff_ffff, f"loop.{field} must fit unsigned 32 bits", errors)
+            if "logical_ii" in loop:
+                require(loop["logical_ii"] == loop.get("ii"), "loop.logical_ii must equal loop.ii", errors)
+            if "rotation_period_iterations" in loop:
+                require(type(loop["rotation_period_iterations"]) is int and loop["rotation_period_iterations"] > 0,
+                        "loop.rotation_period_iterations must be a positive integer", errors)
+            if "control_period_cycles" in loop:
+                control_period = loop["control_period_cycles"]
+                require(type(control_period) is int and control_period > 0,
+                        "loop.control_period_cycles must be a positive integer", errors)
+            else:
+                control_period = loop.get("ii", 0)
             numeric = all(
                 type(loop.get(field)) is int
                 for field in ("prologue_cycles", "ii", "trip_count", "epilogue_cycles")
             )
             if numeric:
-                loop_span = loop["prologue_cycles"] + loop["ii"] + loop["epilogue_cycles"]
+                loop_span = loop["prologue_cycles"] + control_period + loop["epilogue_cycles"]
                 require(
                     loop_span <= ctrl_depth,
-                    f"loop phase span P+II+E exceeds control memory depth: {loop_span} > {ctrl_depth}",
+                    f"loop phase span P+control_period+E exceeds control memory depth: {loop_span} > {ctrl_depth}",
                     errors,
                 )
                 if loop_enabled:
                     require(loop["ii"] > 0, "loop.ii must be positive when loop.enabled is true", errors)
                     require(loop["trip_count"] > 0, "loop.trip_count must be positive when loop.enabled is true", errors)
-                    loop_total = loop_total_cycles(loop)
+                    loop_total = loop["prologue_cycles"] + loop["trip_count"] * control_period + loop["epilogue_cycles"]
 
     run = manifest.get("run")
     require(isinstance(run, dict), "run must be an object", errors)
@@ -172,8 +188,8 @@ def validate_program(manifest):
         if isinstance(run_cycles, int):
             if loop_enabled and loop_total is not None:
                 require(
-                    run_cycles == loop_total,
-                    f"run.run_cycles must equal P+trip_count*II+E ({loop_total}) in loop mode",
+                    run_cycles == loop["prologue_cycles"] + loop["trip_count"] * control_period + loop["epilogue_cycles"],
+                    f"run.run_cycles must equal P+trip_count*control_period+E in loop mode",
                     errors,
                 )
             else:

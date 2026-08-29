@@ -106,6 +106,10 @@ struct CompileDFGStats {
   std::uint64_t postMappingAbort = 0;
   std::uint64_t maxStage = 0;
   std::uint64_t storageSegments = 0;
+  std::uint64_t rotationFamilies = 0;
+  std::uint32_t maxRotationFactor = 1;
+  std::uint32_t rotationPeriodIterations = 1;
+  std::uint32_t controlPeriodCycles = 0;
   std::uint64_t prologueCycles = 0;
   std::uint64_t kernelRepeats = 0;
   std::uint64_t epilogueCycles = 0;

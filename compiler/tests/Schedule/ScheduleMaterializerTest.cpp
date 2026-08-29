@@ -177,6 +177,45 @@ void testRecurrenceBoundary(const cgra::TargetModel& model) {
   expect(sawBoundary, "recurrence boundary seed is materialized in the finite prefix");
 }
 
+void testSoftwareRotationSuperkernel(const cgra::TargetModel& model) {
+  cgra::target::TargetDFG dfg;
+  const auto legal = cgra::target::TargetLegalizer::legalize(cgra::ir::fixtures::recurrence(), model);
+  if (!legal.ok())
+    throw std::runtime_error(legal.format());
+  dfg = *legal.dfg;
+  auto mapperOptions = options();
+  mapperOptions.rfPortAware.enabled = false;
+  const auto mapped = cgra::mapping::ModuloMapper::map(dfg, model, mapperOptions);
+  if (!mapped.ok())
+    throw std::runtime_error(mapped.format());
+  const auto staged = cgra::schedule::StageScheduler::schedule(dfg, model, *mapped.mapping);
+  if (!staged.ok())
+    throw std::runtime_error(staged.format());
+  cgra::register_allocation::RFAllocationOptions rfOptions;
+  rfOptions.enableSoftwareRotation = true;
+  const auto allocated = cgra::register_allocation::RFAllocator::allocate(
+      dfg, model, *staged.mapping, rfOptions);
+  if (!allocated.ok())
+    throw std::runtime_error(allocated.format());
+  expect(allocated.mapping->rotationPeriodIterations() == 2,
+         "recurrence rotation uses a two-iteration control period");
+  for (const auto tripCount : {1ULL, 2ULL, 3ULL, 4ULL, 5ULL, 7ULL}) {
+    cgra::schedule::ScheduleMaterializationRequest request;
+    request.tripCount = tripCount;
+    const auto materialized = cgra::schedule::ScheduleMaterializer::materialize(
+        dfg, model, *allocated.mapping, request);
+    if (!materialized.ok())
+      throw std::runtime_error("rotating recurrence materialization: " + materialized.format());
+    expect(materialized.schedule->controlPeriodCycles() ==
+               2 * materialized.schedule->logicalII(),
+           "materialized schedule records the expanded control period");
+    expect(cgra::schedule::MaterializedScheduleVerifier::verify(
+               dfg, model, *allocated.mapping, request, *materialized.schedule)
+               .ok(),
+           "rotating recurrence schedule passes independent verification");
+  }
+}
+
 void testInvalidTripCount(const cgra::TargetModel& model) {
   cgra::target::TargetDFG dfg;
   const auto mapping = mapFixture(cgra::ir::fixtures::simpleAdd(), model, dfg);
@@ -193,6 +232,7 @@ int main() {
     const auto canonical = target();
     testSimpleAndLargeTripCount(canonical);
     testRecurrenceBoundary(readOldTarget());
+    testSoftwareRotationSuperkernel(canonical);
     testInvalidTripCount(canonical);
     testBudgetAndCorruption(canonical);
     std::cout << "schedule materialization tests passed\n";

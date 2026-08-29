@@ -20,6 +20,8 @@ void usage(const char* name) {
                " [--mapping-objective optimize-ii|find-any-feasible]"
                " [--enable-feasibility-fallback] [--low-ii-window N] [--max-safe-ii N]"
                " [--enable-recurrence-ingress]"
+               " [--enable-software-rotation] [--max-rotation-factor N]"
+               " [--max-control-period N]"
                " [--max-ii N] [--min-ii N] [--max-node-candidates N]"
                " [--max-backtracks N] [--max-route-calls N] [--max-route-states N]"
                " [--no-virtual-hold]\n";
@@ -89,6 +91,12 @@ int main(int argc, char** argv) {
         options.backend.mapper.feasibilityFallback.maxSafeII = std::stoul(next());
       } else if (arg == "--enable-recurrence-ingress") {
         options.backend.normalizeRecurrenceIngress = true;
+      } else if (arg == "--enable-software-rotation") {
+        options.backend.rfAllocation.enableSoftwareRotation = true;
+      } else if (arg == "--max-rotation-factor") {
+        options.backend.rfAllocation.maxRotationFactor = std::stoul(next());
+      } else if (arg == "--max-control-period") {
+        options.backend.rfAllocation.maxControlPeriodCycles = std::stoul(next());
       }
       else if (arg == "--max-ii")
         options.backend.mapper.maxII = std::stoul(next());

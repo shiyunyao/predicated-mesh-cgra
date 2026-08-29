@@ -362,14 +362,20 @@ RFAllocationVerificationReport RFAllocationVerifier::verify(const cgra::target::
          rhsIndex < mapping.storageRequirements().segments().size(); ++rhsIndex) {
       const auto& rhs = mapping.storageRequirements().segments()[rhsIndex];
       const auto& rhsAllocation = *allocations.at(rhs.id);
-      if (lhsAllocation.family.phaseCount > 1 || rhsAllocation.family.phaseCount > 1)
-        continue;
-      if (!(lhsAllocation.reg == rhsAllocation.reg))
+      if (lhsAllocation.reg.tile != rhsAllocation.reg.tile ||
+          lhsAllocation.reg.bank != rhsAllocation.reg.bank)
         continue;
       const auto* bank = target.registerBank(lhs.domain, lhs.tile.row, lhs.tile.col);
-      if (periodicLifetimesConflict(lhs, rhs, ii, bank->sameAddressReadWritePolicy))
+      std::vector<std::uint32_t> lhsRegisters;
+      std::vector<std::uint32_t> rhsRegisters;
+      for (const auto& phase : lhsAllocation.family.phases)
+        lhsRegisters.push_back(phase.reg.index);
+      for (const auto& phase : rhsAllocation.family.phases)
+        rhsRegisters.push_back(phase.reg.index);
+      if (bank && phasePeriodicLifetimesConflict(lhs, lhsRegisters, rhs, rhsRegisters, ii,
+                                                 bank->sameAddressReadWritePolicy))
         add(report, RFAllocationVerificationCode::RFA_PERIODIC_REGISTER_CONFLICT,
-            "two storage lifetimes conflict under fixed-register periodic reuse", lhs.id, rhs.id);
+            "two storage lifetimes conflict under phase-periodic register reuse", lhs.id, rhs.id);
     }
   }
   return report;

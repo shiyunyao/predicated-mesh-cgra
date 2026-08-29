@@ -421,18 +421,51 @@ RFAllocationResult RFAllocator::allocate(const cgra::target::TargetDFG& dfg,
       const auto* bank = banks[requirement.segment];
       allocation.family.phaseCount = requirement.minimumPhaseCount;
       allocation.family.phases.clear();
+      std::vector<std::uint32_t> phaseRegisters;
+      phaseRegisters.reserve(requirement.minimumPhaseCount);
       for (std::uint32_t phase = 0; phase < requirement.minimumPhaseCount; ++phase) {
-        const auto color = phase < bank->allocatableIndices.size()
-                               ? bank->allocatableIndices[phase]
-                               : std::numeric_limits<std::uint32_t>::max();
-        if (color == std::numeric_limits<std::uint32_t>::max()) {
+        const auto preferred = phase == 0 ? allocation.reg.index : std::numeric_limits<std::uint32_t>::max();
+        std::optional<std::uint32_t> selected;
+        for (const auto color : bank->allocatableIndices) {
+          if (color == preferred || (phase != 0 && color != allocation.reg.index)) {
+            if (std::find(phaseRegisters.begin(), phaseRegisters.end(), color) !=
+                phaseRegisters.end())
+              continue;
+            std::vector<std::uint32_t> candidate = phaseRegisters;
+            candidate.push_back(color);
+            bool conflicts = false;
+            for (const auto& other : allocations) {
+              if (other.segment == allocation.segment || other.family.phases.empty() ||
+                  other.reg.tile != allocation.reg.tile || other.reg.bank != allocation.reg.bank)
+                continue;
+              std::vector<std::uint32_t> otherRegisters;
+              otherRegisters.reserve(other.family.phases.size());
+              for (const auto& otherPhase : other.family.phases)
+                otherRegisters.push_back(otherPhase.reg.index);
+              if (phasePeriodicLifetimesConflict(
+                      requirements.segment(requirement.segment), candidate,
+                      requirements.segment(other.segment), otherRegisters, ii,
+                      bank->sameAddressReadWritePolicy)) {
+                conflicts = true;
+                break;
+              }
+            }
+            if (!conflicts) {
+              selected = color;
+              break;
+            }
+          }
+        }
+        if (!selected) {
           result.status = RFAllocationStatus::RegisterDepthInfeasible;
           add(result, RFAllocationDiagnosticCode::RFA_REGISTER_DEPTH_INFEASIBLE,
-              "software rotation requires more distinct registers than the target bank exposes",
+              "software rotation phase family conflicts with finite RF registers",
               requirements.segment(requirement.segment).edge, requirement.segment,
               requirements.segment(requirement.segment).tile, bank->id);
           return result;
         }
+        const auto color = *selected;
+        phaseRegisters.push_back(color);
         allocation.family.phases.push_back(
             {phase, {allocation.reg.tile, allocation.reg.bank, color}});
       }

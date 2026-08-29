@@ -180,6 +180,8 @@ SchedulePhase parsePhase(const Json& value) {
 std::string MaterializedScheduleSerialization::dump(const MaterializedSchedule& schedule) {
   std::ostringstream output;
   output << "MaterializedSchedule II=" << schedule.ii() << " trip_count=" << schedule.tripCount()
+         << " rotation_period_iterations=" << schedule.rotationPeriodIterations()
+         << " control_period_cycles=" << schedule.controlPeriodCycles()
          << " prologue=" << schedule.prologue().cycles.size()
          << " kernel_repeats=" << schedule.kernel().repeatCount
          << " epilogue=" << schedule.epilogue().cycles.size() << '\n';
@@ -189,6 +191,9 @@ std::string MaterializedScheduleSerialization::dump(const MaterializedSchedule& 
 std::string MaterializedScheduleSerialization::toJson(const MaterializedSchedule& schedule) {
   Json root = {{"schema", "cgra.materialized_schedule.debug.v1"},
                {"ii", schedule.ii()},
+               {"logical_ii", schedule.logicalII()},
+               {"rotation_period_iterations", schedule.rotationPeriodIterations()},
+               {"control_period_cycles", schedule.controlPeriodCycles()},
                {"trip_count", schedule.tripCount()},
                {"time_origin_shift", schedule.timeOriginShift()},
                {"total_logical_cycles", schedule.totalLogicalCycles()},
@@ -205,6 +210,15 @@ MaterializedSchedule MaterializedScheduleSerialization::parse(std::string_view j
   if (required<std::string>(root, "schema") != "cgra.materialized_schedule.debug.v1")
     throw std::invalid_argument("unsupported materialized schedule schema");
   const auto ii = required<std::uint32_t>(root, "ii");
+  const auto logicalII = root.contains("logical_ii") ? required<std::uint32_t>(root, "logical_ii") : ii;
+  const auto rotationPeriod = root.contains("rotation_period_iterations")
+                                   ? required<std::uint32_t>(root, "rotation_period_iterations")
+                                   : 1U;
+  const auto controlPeriod = root.contains("control_period_cycles")
+                                  ? required<std::uint32_t>(root, "control_period_cycles")
+                                  : ii;
+  if (logicalII != ii || rotationPeriod == 0 || controlPeriod == 0)
+    throw std::invalid_argument("invalid materialized schedule period metadata");
   const auto tripCount = required<std::uint64_t>(root, "trip_count");
   const auto shift = required<std::uint64_t>(root, "time_origin_shift");
   const auto total = required<std::uint64_t>(root, "total_logical_cycles");
@@ -213,8 +227,8 @@ MaterializedSchedule MaterializedScheduleSerialization::parse(std::string_view j
   const auto& kernel = root.at("kernel");
   const auto repeatCount = required<std::uint64_t>(kernel, "repeat_count");
   const auto kernelPhase = parsePhase(kernel.at("cycles"));
-  return MaterializedSchedule(ii, tripCount, shift, total, prologue,
-                              {kernelPhase.cycles, repeatCount}, epilogue);
+  return MaterializedSchedule(ii, tripCount, shift, total, rotationPeriod, controlPeriod,
+                              prologue, {kernelPhase.cycles, repeatCount}, epilogue);
 }
 
 void MaterializedScheduleSerialization::writeJson(const MaterializedSchedule& schedule,

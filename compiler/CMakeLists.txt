@@ -95,6 +95,7 @@ add_library(cgra_mapping
   lib/Mapping/ResourceReservation.cpp
   lib/Mapping/ModuloMappingVerifier.cpp
   lib/Mapping/ModuloRouteSearch.cpp
+  lib/Mapping/RFPortReservation.cpp
   lib/Mapping/ModuloMapper.cpp
   lib/Mapping/ConstructiveModuloMapper.cpp
   lib/Mapping/ExactModuloOracle.cpp
@@ -375,6 +376,14 @@ if(CGRA_BUILD_TESTS)
     NAME cgra-modulo-route-search-tests
     TYPE semantic
     SOURCES tests/Mapping/ModuloRouteSearchTest.cpp tests/IR/Fixtures.cpp
+    LIBRARIES cgra_mapping
+    DEFINITIONS CGRA_REPOSITORY_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/.."
+  )
+
+  cgra_add_test(
+    NAME cgra-rf-port-reservation-tests
+    TYPE semantic
+    SOURCES tests/Mapping/RFPortReservationTest.cpp
     LIBRARIES cgra_mapping
     DEFINITIONS CGRA_REPOSITORY_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/.."
   )

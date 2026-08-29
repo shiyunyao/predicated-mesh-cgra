@@ -59,6 +59,8 @@ public:
   std::span<const StorageAllocation> allocations() const noexcept { return allocations_; }
   PhysicalRegister registerFor(StorageSegmentId segment) const;
   PhysicalRegister registerFor(StorageSegmentId segment, std::int64_t logicalIteration) const;
+  std::uint32_t rotationPeriodIterations() const;
+  std::uint32_t controlPeriodCycles(std::uint32_t logicalII) const;
   const StorageAllocation& allocationFor(StorageSegmentId segment) const;
   std::optional<PhysicalRegister> registerForVirtualHold(cgra::target::TargetEdgeId edge,
                                                          std::uint32_t transportActionIndex) const;

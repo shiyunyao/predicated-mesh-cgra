@@ -204,7 +204,8 @@ def run_case(case: dict[str, Any], root: pathlib.Path, corpus: pathlib.Path, out
              timeout: int, functional_cases: dict[str, dict[str, Any]],
              mapping_profile: dict[str, int], pipeline_lane: str = "hardware",
              source_abi: str = "m32", mapping_objective: str = "optimize-ii",
-             normalize_recurrence_ingress: bool = False) -> list[dict[str, Any]]:
+             normalize_recurrence_ingress: bool = False,
+             enable_software_rotation: bool = False) -> list[dict[str, Any]]:
     if not case.get("enabled", True):
         return [{"id": case["id"], "kernel": case["kernel"], "source": case["source"], "loop_header": None, "tier": "DISCOVERED", "terminal_stage": "S0_CORPUS_DISCOVERY", "status": "EXCLUDED", "stages": [{"stage": "S0_CORPUS_DISCOVERY", "status": "EXCLUDED"}], "category": "CORPUS", "owner": "HARNESS", "diagnostic_code": "EXPLICIT_EXCLUSION", "message": case.get("exclusion", "explicitly excluded"), "excluded": True}]
     source = corpus / case["source"]
@@ -386,6 +387,8 @@ def run_case(case: dict[str, Any], root: pathlib.Path, corpus: pathlib.Path, out
             compile_command.extend(["--mode", "mapping-research"])
             if normalize_recurrence_ingress:
                 compile_command.append("--enable-recurrence-ingress")
+            if enable_software_rotation:
+                compile_command.append("--enable-software-rotation")
             if mapping_objective == "find-any-feasible":
                 compile_command.extend([
                     "--mapping-objective", "find-any-feasible",
@@ -502,6 +505,7 @@ def main() -> int:
     parser.add_argument("--lane", choices=("hardware", "mapping-research"), default="hardware")
     parser.add_argument("--mapping-objective", choices=("optimize-ii", "find-any-feasible"), default="optimize-ii")
     parser.add_argument("--enable-recurrence-ingress", action="store_true")
+    parser.add_argument("--enable-software-rotation", action="store_true")
     parser.add_argument(
         "--source-abi",
         choices=("m32", "native"),
@@ -605,6 +609,7 @@ def main() -> int:
                 "source_abi": args.source_abi,
                 "mapping_objective": args.mapping_objective,
                 "normalize_recurrence_ingress": args.enable_recurrence_ingress,
+                "enable_software_rotation": args.enable_software_rotation,
                 "timeout_seconds": args.timeout,
                 "mapping": mapping_profile,
             },
@@ -628,6 +633,7 @@ def main() -> int:
                         args.source_abi,
                         args.mapping_objective,
                         args.enable_recurrence_ingress,
+                        args.enable_software_rotation,
                     )
                 )
             except Exception as error:  # every case must have a terminal result
@@ -650,6 +656,7 @@ def main() -> int:
                 "source_abi": args.source_abi,
                 "mapping_objective": args.mapping_objective,
                 "normalize_recurrence_ingress": args.enable_recurrence_ingress,
+                "enable_software_rotation": args.enable_software_rotation,
                 "timeout_seconds": args.timeout,
                 "mapping": mapping_profile,
             }

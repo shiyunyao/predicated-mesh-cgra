@@ -29,6 +29,9 @@ struct RepeatingKernel {
 class MaterializedSchedule {
 public:
   std::uint32_t ii() const noexcept { return ii_; }
+  std::uint32_t logicalII() const noexcept { return ii_; }
+  std::uint32_t rotationPeriodIterations() const noexcept { return rotationPeriodIterations_; }
+  std::uint32_t controlPeriodCycles() const noexcept { return controlPeriodCycles_; }
   std::uint64_t tripCount() const noexcept { return tripCount_; }
   std::uint64_t timeOriginShift() const noexcept { return timeOriginShift_; }
   std::uint64_t totalLogicalCycles() const noexcept { return totalLogicalCycles_; }
@@ -48,7 +51,16 @@ private:
                        RepeatingKernel kernel, SchedulePhase epilogue)
       : ii_(ii), tripCount_(tripCount), timeOriginShift_(timeOriginShift),
         totalLogicalCycles_(totalLogicalCycles), prologue_(std::move(prologue)),
-        kernel_(std::move(kernel)), epilogue_(std::move(epilogue)) {}
+        kernel_(std::move(kernel)), epilogue_(std::move(epilogue)),
+        rotationPeriodIterations_(1), controlPeriodCycles_(ii) {}
+  MaterializedSchedule(std::uint32_t ii, std::uint64_t tripCount, std::uint64_t timeOriginShift,
+                       std::uint64_t totalLogicalCycles, std::uint32_t rotationPeriodIterations,
+                       std::uint32_t controlPeriodCycles, SchedulePhase prologue,
+                       RepeatingKernel kernel, SchedulePhase epilogue)
+      : ii_(ii), tripCount_(tripCount), timeOriginShift_(timeOriginShift),
+        totalLogicalCycles_(totalLogicalCycles), prologue_(std::move(prologue)),
+        kernel_(std::move(kernel)), epilogue_(std::move(epilogue)),
+        rotationPeriodIterations_(rotationPeriodIterations), controlPeriodCycles_(controlPeriodCycles) {}
 
   std::uint32_t ii_ = 0;
   std::uint64_t tripCount_ = 0;
@@ -57,6 +69,8 @@ private:
   SchedulePhase prologue_;
   RepeatingKernel kernel_;
   SchedulePhase epilogue_;
+  std::uint32_t rotationPeriodIterations_ = 1;
+  std::uint32_t controlPeriodCycles_ = 0;
 };
 
 } // namespace cgra::schedule

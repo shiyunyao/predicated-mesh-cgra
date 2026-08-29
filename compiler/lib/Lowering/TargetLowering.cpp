@@ -593,7 +593,7 @@ struct Lowerer {
       prologue.cycles.push_back(lowerCycle(schedule.prologue().cycles[cycle], cycle));
     RepeatingTargetKernel kernel;
     kernel.repeatCount = schedule.kernel().repeatCount;
-    for (std::uint32_t cycle = 0; cycle < schedule.ii(); ++cycle) {
+    for (std::uint32_t cycle = 0; cycle < schedule.controlPeriodCycles(); ++cycle) {
       if (cycle < schedule.kernel().body.size())
         kernel.body.push_back(lowerCycle(schedule.kernel().body[cycle], cycle));
       else
@@ -603,8 +603,9 @@ struct Lowerer {
     for (std::uint32_t cycle = 0; cycle < schedule.epilogue().cycles.size(); ++cycle)
       epilogue.cycles.push_back(lowerCycle(schedule.epilogue().cycles[cycle], cycle));
     stats.semanticCycles = prologue.cycles.size() + kernel.body.size() + epilogue.cycles.size();
-    return TargetControlProgram(schedule.ii(), schedule.tripCount(), std::move(prologue),
-                                std::move(kernel), std::move(epilogue));
+    return TargetControlProgram(schedule.ii(), schedule.tripCount(),
+                                schedule.rotationPeriodIterations(), schedule.controlPeriodCycles(),
+                                std::move(prologue), std::move(kernel), std::move(epilogue));
   }
 };
 
@@ -659,7 +660,8 @@ Json buildManifestJson(const TargetDFG& dfg, const TargetModel& target,
   // in the explicit boundary image; one idle kernel iteration preserves that
   // image without duplicating an event.
   const auto replayTripCount = kernelRepeats == 0 ? std::uint64_t{1} : kernelRepeats;
-  const auto runCycles = prologue + replayTripCount * static_cast<std::uint64_t>(ii) + epilogue;
+  const auto controlPeriod = program.controlPeriodCycles();
+  const auto runCycles = prologue + replayTripCount * static_cast<std::uint64_t>(controlPeriod) + epilogue;
   Json root;
   root["schema"] = "cgra.program_manifest.v1";
   root["name"] = options.programName;
@@ -674,6 +676,10 @@ Json buildManifestJson(const TargetDFG& dfg, const TargetModel& target,
   root["loop"] = Json{{"enabled", true},
                       {"prologue_cycles", prologue},
                       {"ii", ii},
+                      {"logical_ii", program.logicalII()},
+                      {"rotation_period_iterations", program.rotationPeriodIterations()},
+                      {"control_period_cycles", controlPeriod},
+                      {"software_rotating_registers", program.rotationPeriodIterations() > 1},
                       // The v1 loop descriptor repeats the compact kernel image.  Its
                       // repeat count may differ from the source trip count when boundary
                       // instances are already represented in the prologue/epilogue.
@@ -751,7 +757,10 @@ bool TargetControlProgramVerifier::verify(const TargetDFG& dfg, const TargetMode
       *error = std::move(message);
     return false;
   };
-  if (program.ii() != schedule.ii() || program.tripCount() != schedule.tripCount())
+  if (program.ii() != schedule.ii() || program.tripCount() != schedule.tripCount() ||
+      program.logicalII() != schedule.logicalII() ||
+      program.rotationPeriodIterations() != schedule.rotationPeriodIterations() ||
+      program.controlPeriodCycles() != schedule.controlPeriodCycles())
     return fail("control program metadata does not match materialized schedule");
   const auto tileCount = static_cast<std::size_t>(target.array().rows) * target.array().cols;
   auto verifyPhase = [&](const TargetControlPhase& phase) {
@@ -761,7 +770,7 @@ bool TargetControlProgramVerifier::verify(const TargetDFG& dfg, const TargetMode
     return true;
   };
   if (!verifyPhase(program.prologue()) || !verifyPhase(program.epilogue()) ||
-      program.kernel().body.size() != program.ii() ||
+      program.kernel().body.size() != program.controlPeriodCycles() ||
       !verifyPhase(TargetControlPhase{program.kernel().body}))
     return fail("control phase shape is invalid");
   for (const auto& phase :

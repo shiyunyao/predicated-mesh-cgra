@@ -3,6 +3,8 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <limits>
+#include <numeric>
 #include <stdexcept>
 
 namespace cgra::register_allocation {
@@ -20,7 +22,11 @@ RFAllocatedMapping::RFAllocatedMapping(cgra::schedule::StagedMapping staged,
 }
 
 PhysicalRegister RFAllocatedMapping::registerFor(StorageSegmentId segment) const {
-  return allocationFor(segment).reg;
+  const auto& allocation = allocationFor(segment);
+  if (allocation.family.phaseCount != 1)
+    throw std::logic_error(
+        "periodic register family requires registerFor(segment, logicalIteration)");
+  return allocation.reg;
 }
 
 PhysicalRegister RFAllocatedMapping::registerFor(StorageSegmentId segment,
@@ -36,6 +42,26 @@ PhysicalRegister RFAllocatedMapping::registerFor(StorageSegmentId segment,
     if (entry.phase == static_cast<std::uint32_t>(phase))
       return entry.reg;
   throw std::logic_error("periodic register family is missing a phase allocation");
+}
+
+std::uint32_t RFAllocatedMapping::rotationPeriodIterations() const {
+  std::uint64_t period = 1;
+  for (const auto& allocation : allocations_) {
+    const auto factor = allocation.family.phaseCount == 0 ? 1 : allocation.family.phaseCount;
+    const auto gcd = std::gcd(period, static_cast<std::uint64_t>(factor));
+    const auto scaled = period / gcd;
+    if (scaled > std::numeric_limits<std::uint32_t>::max() / factor)
+      throw std::overflow_error("rotation period exceeds uint32 range");
+    period = scaled * factor;
+  }
+  return static_cast<std::uint32_t>(period);
+}
+
+std::uint32_t RFAllocatedMapping::controlPeriodCycles(std::uint32_t logicalII) const {
+  const auto period = rotationPeriodIterations();
+  if (logicalII != 0 && period > std::numeric_limits<std::uint32_t>::max() / logicalII)
+    throw std::overflow_error("control period exceeds uint32 range");
+  return period * logicalII;
 }
 
 const StorageAllocation& RFAllocatedMapping::allocationFor(StorageSegmentId segment) const {
@@ -54,7 +80,7 @@ RFAllocatedMapping::registerForVirtualHold(cgra::target::TargetEdgeId edge,
     for (const auto& origin : segment.origins) {
       if (origin.kind == StorageOriginKind::ExplicitVirtualHold && origin.edge == edge &&
           origin.transportActionIndex && *origin.transportActionIndex == transportActionIndex)
-        return registerFor(segment.id);
+        return registerFor(segment.id, 0);
     }
   }
   return std::nullopt;
@@ -65,7 +91,7 @@ RFAllocatedMapping::registerForTerminalSlack(cgra::target::TargetEdgeId edge) co
   for (const auto& segment : requirements_.segments()) {
     for (const auto& origin : segment.origins) {
       if (origin.kind == StorageOriginKind::TerminalSlack && origin.edge == edge)
-        return registerFor(segment.id);
+        return registerFor(segment.id, 0);
     }
   }
   return std::nullopt;

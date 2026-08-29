@@ -218,6 +218,23 @@ ScheduleMaterializer::materialize(const cgra::target::TargetDFG& dfg,
         "RF allocated mapping has zero initiation interval");
     return result;
   }
+  std::uint32_t rotationPeriodIterations = 1;
+  std::uint32_t controlPeriodCycles = ii;
+  try {
+    rotationPeriodIterations = mapping.rotationPeriodIterations();
+    controlPeriodCycles = mapping.controlPeriodCycles(ii);
+  } catch (const std::overflow_error& error) {
+    result.status = ScheduleMaterializationStatus::ArithmeticOverflow;
+    add(result, ScheduleMaterializationDiagnosticCode::MAT_TIME_ARITHMETIC_OVERFLOW,
+        error.what());
+    return result;
+  }
+  if (rotationPeriodIterations == 0 || controlPeriodCycles == 0) {
+    result.status = ScheduleMaterializationStatus::PhaseFactorizationError;
+    add(result, ScheduleMaterializationDiagnosticCode::MAT_PHASE_FACTORIZATION_FAILED,
+        "rotation period metadata is zero");
+    return result;
+  }
 
   try {
     std::vector<PeriodicStream> streams;
@@ -464,10 +481,27 @@ ScheduleMaterializer::materialize(const cgra::target::TargetDFG& dfg,
       return result;
     }
 
+    // A repeating body must start and end on a complete rotation period so
+    // that its static register addresses repeat at the same logical phase.
+    if (begin <= end && rotationPeriodIterations > 1) {
+      const auto remainder = begin % rotationPeriodIterations;
+      const auto advance = remainder == 0 ? 0 : rotationPeriodIterations - remainder;
+      if (advance > end - begin)
+        begin = 1, end = 0;
+      else
+        begin += advance;
+      if (begin <= end) {
+        const auto length = end - begin + 1;
+        end -= length % rotationPeriodIterations;
+      }
+    }
+
     const bool hasKernel = !streams.empty() && begin <= end;
     std::uint64_t kernelRepeatCount = 0;
     if (hasKernel && !addUnsigned(end - begin, 1, kernelRepeatCount))
       throw std::overflow_error("kernel repeat count overflows uint64");
+    if (hasKernel)
+      kernelRepeatCount /= rotationPeriodIterations;
     std::uint64_t kernelStartCycle = 0;
     std::uint64_t kernelEndCycle = 0;
     std::uint64_t endPlusOne = 0;
@@ -487,7 +521,8 @@ ScheduleMaterializer::materialize(const cgra::target::TargetDFG& dfg,
 
     SchedulePhase prologue{std::vector<CycleBundle>(prologueCycles)};
     SchedulePhase epilogue{std::vector<CycleBundle>(epilogueCycles)};
-    RepeatingKernel kernel{std::vector<CycleBundle>(hasKernel ? ii : 0), kernelRepeatCount};
+    RepeatingKernel kernel{std::vector<CycleBundle>(hasKernel ? controlPeriodCycles : 0),
+                           kernelRepeatCount};
     std::uint64_t explicitEvents = 0;
     std::uint64_t plannedExplicitEvents = oneShots.size();
     auto appendExplicit = [&](const Event& event, std::uint64_t cycle) {
@@ -507,6 +542,8 @@ ScheduleMaterializer::materialize(const cgra::target::TargetDFG& dfg,
         throw std::overflow_error("event iteration provenance overflows signed 64-bit");
       Event event = stream.event;
       event.logicalIteration = logical;
+      if (event.segment)
+        event.physicalRegister = mapping.registerFor(*event.segment, logical);
       std::int64_t cycleSigned = 0;
       std::int64_t span = 0;
       if (!mulSigned(static_cast<std::int64_t>(index), ii, span) ||
@@ -521,15 +558,28 @@ ScheduleMaterializer::materialize(const cgra::target::TargetDFG& dfg,
       if (hasKernel) {
         const auto kernelIndex = begin - firstPeriod;
         if (kernelIndex >= stream.count)
-          throw std::logic_error("stream does not cover kernel begin");
-        Event event = stream.event;
-        event.logicalIteration += static_cast<std::int64_t>(kernelIndex);
-        std::uint64_t cycleOffset = 0;
-        std::uint64_t cycle = 0;
-        if (!mulUnsigned(kernelIndex, ii, cycleOffset) ||
-            !addUnsigned(static_cast<std::uint64_t>(stream.firstLogicalTime), cycleOffset, cycle))
-          throw std::overflow_error("kernel event cycle overflows uint64");
-        kernel.body[cycle % ii].events.push_back(std::move(event));
+          throw std::logic_error("stream does not cover kernel begin (begin=" +
+                                 std::to_string(begin) + ", first=" +
+                                 std::to_string(firstPeriod) + ", index=" +
+                                 std::to_string(kernelIndex) + ", count=" +
+                                 std::to_string(stream.count) + ")");
+        for (std::uint32_t rotation = 0; rotation < rotationPeriodIterations; ++rotation) {
+          const auto streamIndex = kernelIndex + rotation;
+          if (streamIndex >= stream.count)
+            throw std::logic_error("stream does not cover complete rotation period");
+          Event event = stream.event;
+          if (!addSigned(event.logicalIteration, static_cast<std::int64_t>(streamIndex),
+                         event.logicalIteration))
+            throw std::overflow_error("kernel event iteration provenance overflows signed 64-bit");
+          if (event.segment)
+            event.physicalRegister = mapping.registerFor(*event.segment, event.logicalIteration);
+          std::uint64_t cycleOffset = 0;
+          std::uint64_t cycle = 0;
+          if (!mulUnsigned(streamIndex, ii, cycleOffset) ||
+              !addUnsigned(static_cast<std::uint64_t>(stream.firstLogicalTime), cycleOffset, cycle))
+            throw std::overflow_error("kernel event cycle overflows uint64");
+          kernel.body[cycle % controlPeriodCycles].events.push_back(std::move(event));
+        }
       }
       const auto before = hasKernel ? begin - firstPeriod : stream.count;
       std::uint64_t after = 0;
@@ -562,9 +612,9 @@ ScheduleMaterializer::materialize(const cgra::target::TargetDFG& dfg,
     result.stats.explicitPrologueCycles = prologue.cycles.size();
     result.stats.explicitEpilogueCycles = epilogue.cycles.size();
     result.stats.kernelRepeatCount = kernel.repeatCount;
-    result.schedule =
-        MaterializedSchedule(ii, request.tripCount, shift, maxCycle, std::move(prologue),
-                             std::move(kernel), std::move(epilogue));
+    result.schedule = MaterializedSchedule(
+        ii, request.tripCount, shift, maxCycle, rotationPeriodIterations, controlPeriodCycles,
+        std::move(prologue), std::move(kernel), std::move(epilogue));
     const auto verification =
         MaterializedScheduleVerifier::verify(dfg, target, mapping, request, *result.schedule);
     if (!verification.ok()) {

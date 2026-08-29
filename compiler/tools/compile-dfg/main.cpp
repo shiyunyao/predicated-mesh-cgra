@@ -20,6 +20,8 @@ void usage(const char* name) {
                " [--mapping-objective optimize-ii|find-any-feasible]"
                " [--enable-feasibility-fallback] [--low-ii-window N] [--max-safe-ii N]"
                " [--enable-recurrence-ingress]"
+               " [--enable-software-rotation] [--max-rotation-factor N]"
+               " [--max-control-period N]"
                " [--max-ii N] [--min-ii N] [--no-virtual-hold]\n";
 }
 
@@ -84,6 +86,12 @@ int main(int argc, char** argv) {
         options.mapper.feasibilityFallback.maxSafeII = std::stoul(next());
       } else if (arg == "--enable-recurrence-ingress") {
         options.normalizeRecurrenceIngress = true;
+      } else if (arg == "--enable-software-rotation") {
+        options.rfAllocation.enableSoftwareRotation = true;
+      } else if (arg == "--max-rotation-factor") {
+        options.rfAllocation.maxRotationFactor = std::stoul(next());
+      } else if (arg == "--max-control-period") {
+        options.rfAllocation.maxControlPeriodCycles = std::stoul(next());
       }
       else if (arg == "--no-virtual-hold")
         options.mapper.routeOptions.allowVirtualHold = false;

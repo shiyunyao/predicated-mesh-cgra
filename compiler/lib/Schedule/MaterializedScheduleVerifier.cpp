@@ -194,10 +194,27 @@ MaterializedScheduleVerificationReport MaterializedScheduleVerifier::verify(
         "materialized schedule metadata disagrees with request or mapping");
     return report;
   }
-  if ((schedule.kernel().repeatCount == 0 && !schedule.kernel().body.empty()) ||
-      (schedule.kernel().repeatCount != 0 && schedule.kernel().body.size() != schedule.ii())) {
+  std::uint32_t expectedRotationPeriod = 1;
+  std::uint32_t expectedControlPeriod = schedule.ii();
+  try {
+    expectedRotationPeriod = mapping.rotationPeriodIterations();
+    expectedControlPeriod = mapping.controlPeriodCycles(schedule.ii());
+  } catch (const std::overflow_error& error) {
+    add(report, MaterializedScheduleVerificationCode::MAT_OUTPUT_OVERFLOW, error.what());
+    return report;
+  }
+  if (schedule.logicalII() != schedule.ii() ||
+      schedule.rotationPeriodIterations() != expectedRotationPeriod ||
+      schedule.controlPeriodCycles() != expectedControlPeriod) {
     add(report, MaterializedScheduleVerificationCode::MAT_KERNEL_SHAPE_INVALID,
-        "kernel body must be empty when not repeated and contain exactly II cycles otherwise");
+        "rotation period metadata disagrees with the RF allocation");
+    return report;
+  }
+  if ((schedule.kernel().repeatCount == 0 && !schedule.kernel().body.empty()) ||
+      (schedule.kernel().repeatCount != 0 &&
+       schedule.kernel().body.size() != schedule.controlPeriodCycles())) {
+    add(report, MaterializedScheduleVerificationCode::MAT_KERNEL_SHAPE_INVALID,
+        "kernel body must be empty when not repeated and contain exactly the control period otherwise");
     return report;
   }
   if (schedule.totalLogicalCycles() == 0) {
@@ -332,7 +349,8 @@ MaterializedScheduleVerificationReport MaterializedScheduleVerifier::verify(
         "kernel cycle count overflows uint64");
     return report;
   }
-  const auto kernelCycles = schedule.kernel().repeatCount * static_cast<std::uint64_t>(ii);
+  const auto kernelCycles = schedule.kernel().repeatCount *
+                            static_cast<std::uint64_t>(schedule.controlPeriodCycles());
   if (kernelStart > schedule.totalLogicalCycles() ||
       kernelCycles > schedule.totalLogicalCycles() - kernelStart ||
       schedule.epilogue().cycles.size() !=
@@ -613,6 +631,7 @@ MaterializedScheduleVerificationReport MaterializedScheduleVerifier::verify(
           std::int64_t repeatDelta = 0;
           std::int64_t rangeEnd = 0;
           if (!toSigned(schedule.kernel().repeatCount - 1, repeatDelta) ||
+              !mulSigned(repeatDelta, schedule.rotationPeriodIterations(), repeatDelta) ||
               !addSigned(event.logicalIteration, repeatDelta, rangeEnd))
             add(report, MaterializedScheduleVerificationCode::MAT_OUTPUT_OVERFLOW,
                 "kernel event iteration range overflows signed time");

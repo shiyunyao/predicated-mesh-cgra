@@ -25,6 +25,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <fstream>
 #include <stdexcept>
 #include <string>
@@ -192,6 +193,10 @@ std::string CompileDFGResult::toJson() const {
                {"post_mapping_abort", stats.postMappingAbort},
                {"max_stage", stats.maxStage},
                {"storage_segments", stats.storageSegments},
+               {"rotation_families", stats.rotationFamilies},
+               {"max_rotation_factor", stats.maxRotationFactor},
+               {"rotation_period_iterations", stats.rotationPeriodIterations},
+               {"control_period_cycles", stats.controlPeriodCycles},
                {"prologue_cycles", stats.prologueCycles},
                {"kernel_repeats", stats.kernelRepeats},
                {"epilogue_cycles", stats.epilogueCycles}}},
@@ -373,6 +378,20 @@ CompileDFGResult compileGenericDFG(const ir::DFG& dfg, const TargetModel& target
       if (!allocated.ok())
         return failure(result, CompileDFGStatus::RFAllocationFailure, allocated.format(), artifacts);
       result.stats.storageSegments = allocated.mapping->storageRequirements().segments().size();
+      result.stats.rotationFamilies = std::count_if(
+          allocated.mapping->allocations().begin(), allocated.mapping->allocations().end(),
+          [](const auto& allocation) { return allocation.family.phaseCount > 1; });
+      result.stats.maxRotationFactor = 1;
+      for (const auto& allocation : allocated.mapping->allocations())
+        result.stats.maxRotationFactor =
+            std::max(result.stats.maxRotationFactor, allocation.family.phaseCount);
+      try {
+        result.stats.rotationPeriodIterations = allocated.mapping->rotationPeriodIterations();
+        result.stats.controlPeriodCycles =
+            allocated.mapping->controlPeriodCycles(mapped.mapping->ii());
+      } catch (const std::overflow_error& error) {
+        return failure(result, CompileDFGStatus::RFVerificationFailure, error.what(), artifacts);
+      }
       artifacts.write("13_rf_allocated_mapping.json",
                       register_allocation::toJson(*allocated.mapping));
       const auto rfReport =
@@ -419,6 +438,20 @@ CompileDFGResult compileGenericDFG(const ir::DFG& dfg, const TargetModel& target
     if (!allocated.ok())
       return failure(result, CompileDFGStatus::RFAllocationFailure, allocated.format(), artifacts);
     result.stats.storageSegments = allocated.mapping->storageRequirements().segments().size();
+    result.stats.rotationFamilies = std::count_if(
+        allocated.mapping->allocations().begin(), allocated.mapping->allocations().end(),
+        [](const auto& allocation) { return allocation.family.phaseCount > 1; });
+    result.stats.maxRotationFactor = 1;
+    for (const auto& allocation : allocated.mapping->allocations())
+      result.stats.maxRotationFactor =
+          std::max(result.stats.maxRotationFactor, allocation.family.phaseCount);
+    try {
+      result.stats.rotationPeriodIterations = allocated.mapping->rotationPeriodIterations();
+      result.stats.controlPeriodCycles =
+          allocated.mapping->controlPeriodCycles(mapped.mapping->ii());
+    } catch (const std::overflow_error& error) {
+      return failure(result, CompileDFGStatus::RFVerificationFailure, error.what(), artifacts);
+    }
     artifacts.write("13_rf_allocated_mapping.json",
                     register_allocation::toJson(*allocated.mapping));
     const auto rfReport =
