@@ -3,6 +3,7 @@
 
 #include "cgra/Analysis/MIIAnalyzer.h"
 #include "cgra/Mapping/ModuloMappingVerifier.h"
+#include "cgra/Mapping/PartialRFEventAnalysis.h"
 #include "cgra/Mapping/ModuloResourceModel.h"
 #include "cgra/Target/TargetDFGVerifier.h"
 
@@ -45,6 +46,7 @@ struct EdgeReservation {
   EdgeId id = 0;
   ReservationDelta reservation;
   MappedDependence dependence;
+  std::optional<RFPortReservationDelta> rfPorts;
 };
 
 struct CandidateState {
@@ -54,6 +56,7 @@ struct CandidateState {
   std::uint32_t ii;
   ModuloResourceModel resources;
   ResourceReservationTable reservations;
+  RFPortReservationTable rfPortReservations;
   std::map<NodeId, NodePlacement> moduloPlacements;
   std::map<NodeId, AbsoluteNodePlacement> absolutePlacements;
   std::map<EdgeId, EdgeReservation> edges;
@@ -63,7 +66,7 @@ struct CandidateState {
   CandidateState(const target::TargetDFG& graph, const TargetModel& model,
                  const ConstructiveModuloMapperOptions& mapperOptions, std::uint32_t period)
       : dfg(graph), target(model), options(mapperOptions), ii(period), resources(model, period),
-        reservations(resources) {
+        reservations(resources), rfPortReservations(model) {
     schedule.period = period;
   }
 
@@ -99,7 +102,8 @@ struct CandidateState {
           std::get<ir::MemoryEdgeInfo>(edge.info).dependence);
       edges.emplace(edgeId,
                     EdgeReservation{edgeId, {},
-                                    MappedDependence{edgeId, edge.kind(), separation, std::nullopt}});
+                                    MappedDependence{edgeId, edge.kind(), separation, std::nullopt},
+                                    std::nullopt});
       schedule.transports.emplace(edgeId,
                                   AbsoluteTransport{edgeId,
                                                     absolutePlacements.at(edge.src).issueCycle,
@@ -124,13 +128,42 @@ struct CandidateState {
     if (!route.ok())
       return false;
     ++stats.routeSuccesses;
-    const auto ids = routeResources(*route.plan, producer);
-    const auto reservation = reservations.tryReserve(ids, {ReservationOwnerKind::Edge, edgeId});
-    if (!reservation)
-      return false;
     const auto dependence = MappedDependence{edgeId, edge.kind(),
                                              route.plan->requiredSeparationCycles, route.plan};
-    edges.emplace(edgeId, EdgeReservation{edgeId, *reservation, dependence});
+    std::optional<RFPortReservationDelta> rfReservation;
+    if (options.rfPortAware.enabled &&
+        (options.rfPortAware.reserveExplicitHoldEvents ||
+         options.rfPortAware.reserveMandatoryTerminalEvents)) {
+      const auto chain = derivePartialStorageChain(
+          dfg, target, edge, producer, consumer, dependence, ii,
+          options.rfPortAware.reserveMandatoryTerminalEvents);
+      if (!chain.definiteEvents.empty()) {
+        ++stats.rfPortMatchCalls;
+        const auto portResult = rfPortReservations.tryReserve(chain.definiteEvents);
+        if (!portResult.ok()) {
+          ++stats.rfPortMatchFailures;
+          if (portResult.status == RFPortReservationStatus::ReadCapacityExceeded)
+            ++stats.rfReadPortEarlyRejects;
+          else if (portResult.status == RFPortReservationStatus::WriteCapacityExceeded)
+            ++stats.rfWritePortEarlyRejects;
+          else if (portResult.status == RFPortReservationStatus::WriteSourceCompatibilityFailure)
+            ++stats.rfWriteSourceEarlyRejects;
+          return false;
+        }
+        stats.rfPortEventsCommitted += chain.definiteEvents.size();
+        rfReservation = *portResult.delta;
+      }
+    }
+    const auto ids = routeResources(*route.plan, producer);
+    const auto reservation = reservations.tryReserve(ids, {ReservationOwnerKind::Edge, edgeId});
+    if (!reservation) {
+      if (rfReservation) {
+        rfPortReservations.undo(*rfReservation);
+        ++stats.rfPortRollbackCount;
+      }
+      return false;
+    }
+    edges.emplace(edgeId, EdgeReservation{edgeId, *reservation, dependence, rfReservation});
     schedule.transports.emplace(edgeId,
                                 AbsoluteTransport{edgeId,
                                                   absolutePlacements.at(edge.src).issueCycle,
@@ -146,6 +179,10 @@ struct CandidateState {
         continue;
       if (!edge->second.reservation.resources.empty())
         reservations.undo(edge->second.reservation);
+      if (edge->second.rfPorts) {
+        rfPortReservations.undo(*edge->second.rfPorts);
+        ++stats.rfPortRollbackCount;
+      }
       edges.erase(edge);
       schedule.transports.erase(*it);
     }

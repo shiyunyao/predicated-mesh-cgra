@@ -2,9 +2,11 @@
 #pragma once
 
 #include "cgra/Mapping/ModuloMapperResult.h"
+#include "cgra/Mapping/ModuloMapper.h"
 #include "cgra/Mapping/ModuloRouteSearch.h"
 #include "cgra/Mapping/ModuloMapperBudget.h"
 #include "cgra/Mapping/CompleteMappingChecker.h"
+#include "cgra/Mapping/RFPortReservation.h"
 
 #include <cstdint>
 #include <map>
@@ -41,6 +43,7 @@ struct ConstructiveModuloMapperOptions {
   CompleteMappingChecker completeMappingChecker;
   ModuloMapperBudget budget;
   RouteSearchOptions routeOptions;
+  RFPortAwareMappingOptions rfPortAware;
 };
 
 struct ConstructiveModuloMapperStats {
@@ -56,6 +59,13 @@ struct ConstructiveModuloMapperStats {
   std::uint64_t routeNoPaths = 0;
   std::uint64_t routeBudgetExceeded = 0;
   std::uint64_t routeStateExpansions = 0;
+  std::uint64_t rfPortMatchCalls = 0;
+  std::uint64_t rfPortMatchFailures = 0;
+  std::uint64_t rfReadPortEarlyRejects = 0;
+  std::uint64_t rfWritePortEarlyRejects = 0;
+  std::uint64_t rfWriteSourceEarlyRejects = 0;
+  std::uint64_t rfPortEventsCommitted = 0;
+  std::uint64_t rfPortRollbackCount = 0;
 };
 
 ModuloMapperResult mapConstructively(const target::TargetDFG& dfg, const TargetModel& target,

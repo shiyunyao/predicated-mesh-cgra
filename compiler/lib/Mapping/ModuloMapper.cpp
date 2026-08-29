@@ -784,6 +784,7 @@ ModuloMapperResult ModuloMapper::map(const cgra::target::TargetDFG& dfg,
     constructiveOptions.completeMappingChecker = options.completeMappingChecker;
     constructiveOptions.budget = options.budget;
     constructiveOptions.routeOptions = options.routeOptions;
+    constructiveOptions.rfPortAware = options.rfPortAware;
     auto constructive = mapConstructively(dfg, target, constructiveOptions);
 
     result.fallbackAttempts += constructive.stats.iiAttempts;
@@ -798,6 +799,13 @@ ModuloMapperResult ModuloMapper::map(const cgra::target::TargetDFG& dfg,
     result.stats.routeNoPaths += constructive.stats.routeNoPaths;
     result.stats.routeBudgetExceeded += constructive.stats.routeBudgetExceeded;
     result.stats.totalRouteStateExpansions += constructive.stats.totalRouteStateExpansions;
+    result.stats.rfPortMatchCalls += constructive.stats.rfPortMatchCalls;
+    result.stats.rfPortMatchFailures += constructive.stats.rfPortMatchFailures;
+    result.stats.rfReadPortEarlyRejects += constructive.stats.rfReadPortEarlyRejects;
+    result.stats.rfWritePortEarlyRejects += constructive.stats.rfWritePortEarlyRejects;
+    result.stats.rfWriteSourceEarlyRejects += constructive.stats.rfWriteSourceEarlyRejects;
+    result.stats.rfPortEventsCommitted += constructive.stats.rfPortEventsCommitted;
+    result.stats.rfPortRollbackCount += constructive.stats.rfPortRollbackCount;
     result.stats.completedModuloMappings += constructive.stats.completedModuloMappings;
     result.stats.postMappingRejected += constructive.stats.postMappingRejected;
     result.stats.stageRejected += constructive.stats.stageRejected;
