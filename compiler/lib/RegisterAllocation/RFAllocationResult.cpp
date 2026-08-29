@@ -27,6 +27,10 @@ std::string_view toString(RFAllocationStatus status) noexcept {
     return "same_address_rw_conflict";
   case RFAllocationStatus::RegisterDepthInfeasible:
     return "register_depth_infeasible";
+  case RFAllocationStatus::RotationFactorOverflow:
+    return "rotation_factor_overflow";
+  case RFAllocationStatus::RotationPeriodExceedsControlMemory:
+    return "rotation_period_exceeds_control_memory";
   case RFAllocationStatus::BudgetExceeded:
     return "budget_exceeded";
   case RFAllocationStatus::VerificationFailure:
@@ -63,6 +67,10 @@ std::string_view toString(RFAllocationDiagnosticCode code) noexcept {
     return "RFA_SAME_ADDRESS_RW_CONFLICT";
   case RFAllocationDiagnosticCode::RFA_REGISTER_DEPTH_INFEASIBLE:
     return "RFA_REGISTER_DEPTH_INFEASIBLE";
+  case RFAllocationDiagnosticCode::RFA_ROTATION_FACTOR_OVERFLOW:
+    return "RFA_ROTATION_FACTOR_OVERFLOW";
+  case RFAllocationDiagnosticCode::RFA_ROTATION_PERIOD_EXCEEDS_CONTROL_MEMORY:
+    return "RFA_ROTATION_PERIOD_EXCEEDS_CONTROL_MEMORY";
   case RFAllocationDiagnosticCode::RFA_COLORING_BUDGET_EXCEEDED:
     return "RFA_COLORING_BUDGET_EXCEEDED";
   case RFAllocationDiagnosticCode::RFA_UNKNOWN_STORAGE_SEGMENT:

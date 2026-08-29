@@ -12,6 +12,9 @@ struct RFAllocationBudget {
 
 struct RFAllocationOptions {
   RFAllocationBudget budget;
+  bool enableSoftwareRotation = false;
+  std::uint32_t maxRotationFactor = 0;
+  std::uint32_t maxControlPeriodCycles = 0;
 };
 
 } // namespace cgra::register_allocation

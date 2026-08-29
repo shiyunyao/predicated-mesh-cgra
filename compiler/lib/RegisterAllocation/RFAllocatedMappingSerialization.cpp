@@ -74,6 +74,10 @@ std::string RFAllocatedMappingSerialization::toJson(const RFAllocatedMapping& ma
                         {"register", allocation.reg.index},
                         {"read_port", allocation.readPort},
                         {"write_port", allocation.writePort}};
+    segmentJson["phase_count"] = allocation.family.phaseCount;
+    segmentJson["phases"] = Json::array();
+    for (const auto& phase : allocation.family.phases)
+      segmentJson["phases"].push_back({{"phase", phase.phase}, {"register", phase.reg.index}});
     if (allocation.boundaryWritePort)
       segmentJson["boundary_write_port"] = *allocation.boundaryWritePort;
     root["storage_segments"].push_back(std::move(segmentJson));
@@ -125,14 +129,34 @@ RFAllocatedMapping RFAllocatedMappingSerialization::parse(std::string_view jsonT
                                     domain, required<std::uint64_t>(entry, "write_time"),
                                     required<std::uint64_t>(entry, "read_time"),
                                     std::move(origins)});
-    allocations.push_back(
-        {id,
-         {tile, required<std::string>(entry, "bank"), required<std::uint32_t>(entry, "register")},
-         entry.contains("read_port") ? entry.at("read_port").get<std::uint32_t>() : 0U,
-         entry.contains("write_port") ? entry.at("write_port").get<std::uint32_t>() : 0U,
-         entry.contains("boundary_write_port") && !entry.at("boundary_write_port").is_null()
-             ? std::optional<std::uint32_t>(entry.at("boundary_write_port").get<std::uint32_t>())
-             : std::nullopt});
+    const auto bankName = required<std::string>(entry, "bank");
+    const auto registerIndex = required<std::uint32_t>(entry, "register");
+    PeriodicRegisterFamily family;
+    family.segment = id;
+    family.phaseCount = entry.contains("phase_count")
+                            ? entry.at("phase_count").get<std::uint32_t>()
+                            : 1U;
+    if (entry.contains("phases")) {
+      for (const auto& phase : entry.at("phases"))
+        family.phases.push_back(
+            {required<std::uint32_t>(phase, "phase"),
+             {tile, bankName, required<std::uint32_t>(phase, "register")}});
+    }
+    if (family.phases.empty())
+      family.phases.push_back({0, {tile, bankName, registerIndex}});
+    allocations.push_back({id,
+                            {tile, bankName, registerIndex},
+                            entry.contains("read_port") ? entry.at("read_port").get<std::uint32_t>()
+                                                         : 0U,
+                            entry.contains("write_port")
+                                ? entry.at("write_port").get<std::uint32_t>()
+                                : 0U,
+                            entry.contains("boundary_write_port") &&
+                                    !entry.at("boundary_write_port").is_null()
+                                ? std::optional<std::uint32_t>(
+                                      entry.at("boundary_write_port").get<std::uint32_t>())
+                                : std::nullopt,
+                            std::move(family)});
   }
   StorageRequirements requirements(staged.modulo().ii(), std::move(requirementsSegments));
   return RFAllocatedMapping(staged, std::move(requirements), std::move(allocations));

@@ -125,6 +125,7 @@ public:
   const LoopExecutionDesc& loopExecution() const noexcept { return loopExecution_; }
   const ControlLayout& controlLayout() const noexcept { return controlLayout_; }
   unsigned constantMemoryDepth() const noexcept { return constantMemoryDepth_; }
+  unsigned controlMemoryDepth() const noexcept { return controlMemoryDepth_; }
   TileControl defaultTileControl() const noexcept { return TileControl{}; }
   const std::vector<LsuTileDesc>& lsuTiles() const noexcept { return lsuTiles_; }
   bool supportsValueType(const ir::ValueType& type) const noexcept;
@@ -165,6 +166,7 @@ private:
   LoopExecutionDesc loopExecution_;
   ControlLayout controlLayout_;
   unsigned constantMemoryDepth_ = 0;
+  unsigned controlMemoryDepth_ = 0;
   std::vector<LsuTileDesc> lsuTiles_;
   std::unordered_map<std::string, std::unordered_map<std::string, unsigned>> encodings_;
   std::unordered_map<std::string, std::unordered_map<unsigned, std::string>> reverseEncodings_;

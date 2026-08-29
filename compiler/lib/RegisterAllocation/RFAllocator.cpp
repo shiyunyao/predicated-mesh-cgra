@@ -3,6 +3,8 @@
 
 #include "cgra/RegisterAllocation/PeriodicLifetime.h"
 #include "cgra/RegisterAllocation/RFAllocationVerifier.h"
+#include "cgra/RegisterAllocation/RFPortMatcher.h"
+#include "cgra/RegisterAllocation/RotationFactorAnalysis.h"
 #include "cgra/RegisterAllocation/StorageRequirementAnalysis.h"
 #include "cgra/Target/TargetDFGVerifier.h"
 
@@ -266,13 +268,40 @@ RFAllocationResult RFAllocator::allocate(const cgra::target::TargetDFG& dfg,
     }
     banks[segment.id] = bank;
     groups[{segment.tile, bank->id}].push_back(segment.id);
-    if (fixedRegisterSelfOverlaps(segment, ii, bank->sameAddressReadWritePolicy)) {
+    if (!options.enableSoftwareRotation &&
+        fixedRegisterSelfOverlaps(segment, ii, bank->sameAddressReadWritePolicy)) {
       result.status = RFAllocationStatus::FixedRegisterSelfOverlap;
       add(result, RFAllocationDiagnosticCode::RFA_FIXED_REGISTER_SELF_OVERLAP,
           "storage lifetime overlaps its own next II-periodic iteration (write=" +
               std::to_string(segment.writeTime) + " read=" + std::to_string(segment.readTime) +
               " ii=" + std::to_string(ii) + ")",
           segment.edge, segment.id, segment.tile, bank->id);
+      return result;
+    }
+  }
+
+  RotationPlan rotationPlan;
+  if (options.enableSoftwareRotation) {
+    // The current target uses one same-address policy per bank domain. Analyze
+    // each domain separately when a future target gives them different rules.
+    const auto policy = requirements.segments().empty()
+                            ? cgra::SameAddressReadWritePolicy::Forbidden
+                            : banks[requirements.segments().front().id]->sameAddressReadWritePolicy;
+    rotationPlan = analyzeRotationFactors(requirements.segments(), ii, policy,
+                                          target.controlMemoryDepth(),
+                                          options.maxRotationFactor,
+                                          options.maxControlPeriodCycles);
+    if (!rotationPlan.ok()) {
+      result.status = rotationPlan.status == RotationAnalysisStatus::RotationFactorOverflow
+                          ? RFAllocationStatus::RotationFactorOverflow
+                      : rotationPlan.status == RotationAnalysisStatus::RotationPeriodExceedsControlMemory
+                          ? RFAllocationStatus::RotationPeriodExceedsControlMemory
+                          : RFAllocationStatus::ArithmeticOverflow;
+      add(result,
+          rotationPlan.status == RotationAnalysisStatus::RotationFactorOverflow
+              ? RFAllocationDiagnosticCode::RFA_ROTATION_FACTOR_OVERFLOW
+              : RFAllocationDiagnosticCode::RFA_ROTATION_PERIOD_EXCEEDS_CONTROL_MEMORY,
+          rotationPlan.diagnostic);
       return result;
     }
   }
@@ -382,11 +411,38 @@ RFAllocationResult RFAllocator::allocate(const cgra::target::TargetDFG& dfg,
                            {segment.tile, banks[segment.id]->id, *colors[segment.id]},
                            0,
                            0,
-                           std::nullopt});
+                           std::nullopt,
+                           {segment.id, 1,
+                            {{0, {segment.tile, banks[segment.id]->id, *colors[segment.id]}}}}});
+
+  if (options.enableSoftwareRotation) {
+    for (const auto& requirement : rotationPlan.segments) {
+      auto& allocation = allocations[requirement.segment];
+      const auto* bank = banks[requirement.segment];
+      allocation.family.phaseCount = requirement.minimumPhaseCount;
+      allocation.family.phases.clear();
+      for (std::uint32_t phase = 0; phase < requirement.minimumPhaseCount; ++phase) {
+        const auto color = phase < bank->allocatableIndices.size()
+                               ? bank->allocatableIndices[phase]
+                               : std::numeric_limits<std::uint32_t>::max();
+        if (color == std::numeric_limits<std::uint32_t>::max()) {
+          result.status = RFAllocationStatus::RegisterDepthInfeasible;
+          add(result, RFAllocationDiagnosticCode::RFA_REGISTER_DEPTH_INFEASIBLE,
+              "software rotation requires more distinct registers than the target bank exposes",
+              requirements.segment(requirement.segment).edge, requirement.segment,
+              requirements.segment(requirement.segment).tile, bank->id);
+          return result;
+        }
+        allocation.family.phases.push_back(
+            {phase, {allocation.reg.tile, allocation.reg.bank, color}});
+      }
+      allocation.reg = allocation.family.phases.front().reg;
+    }
+  }
 
   // Assign exact physical ports independently for every modulo slot.  The
-  // matching is deliberately bipartite rather than first-fit: a future target
-  // may expose asymmetric read sinks or a non-trivial write-source matrix.
+  // shared matcher is deliberately bipartite rather than first-fit: a target
+  // may expose asymmetric sinks or a non-trivial write-source matrix.
   using PortKey = std::tuple<BankKey, std::uint32_t>;
   std::map<PortKey, std::vector<SegmentIndex>> readEvents;
   std::map<PortKey, std::vector<SegmentIndex>> writeEvents;
@@ -402,55 +458,41 @@ RFAllocationResult RFAllocator::allocate(const cgra::target::TargetDFG& dfg,
   const auto assignPorts = [&](const auto& events, bool writes) -> bool {
     for (const auto& [key, eventIds] : events) {
       const auto* bank = banks[eventIds.front()];
-      const auto portCount = writes ? bank->writePorts : bank->readPorts;
-      std::vector<SegmentIndex> matched(portCount, requirements.segments().size());
-      std::vector<SegmentIndex> order = eventIds;
-      std::ranges::sort(order);
-      const auto candidates = [&](SegmentIndex segmentId, unsigned port) {
-        if (!writes)
-          return true;
-        const auto source =
-            storageWriteSource(dfg, target, mapping, requirements.segment(segmentId));
-        const auto it = bank->writePortSources.find("W" + std::to_string(port));
-        return it != bank->writePortSources.end() &&
-               std::ranges::find(it->second, source) != it->second.end();
-      };
-      std::function<bool(SegmentIndex, std::vector<bool>&)> augment =
-          [&](SegmentIndex segmentId, std::vector<bool>& visited) {
-            for (unsigned port = 0; port < portCount; ++port) {
-              if (visited[port] || !candidates(segmentId, port))
-                continue;
-              visited[port] = true;
-              if (matched[port] == requirements.segments().size() ||
-                  augment(matched[port], visited)) {
-                matched[port] = segmentId;
-                return true;
-              }
-            }
-            return false;
-          };
-      for (const auto segmentId : order) {
-        std::vector<bool> visited(portCount, false);
-        if (!augment(segmentId, visited)) {
-          result.status =
-              writes ? RFAllocationStatus::WritePortConflict : RFAllocationStatus::ReadPortConflict;
-          add(result,
-              writes ? RFAllocationDiagnosticCode::RFA_WRITE_PORT_CONFLICT
-                     : RFAllocationDiagnosticCode::RFA_READ_PORT_CONFLICT,
-              writes ? "no source-compatible physical RF write-port matching exists"
-                     : "no compatible physical RF read-port matching exists",
-              requirements.segment(segmentId).edge, segmentId, std::get<0>(key).tile,
-              std::get<0>(key).bank);
-          return false;
-        }
-      }
-      for (unsigned port = 0; port < portCount; ++port) {
-        if (matched[port] == requirements.segments().size())
-          continue;
+      std::vector<RFPortEvent> normalized;
+      normalized.reserve(eventIds.size());
+      for (const auto segmentId : eventIds) {
+        RFPortEvent event;
+        event.id = segmentId;
+        event.kind = writes ? RFPortEventKind::PeriodicWrite : RFPortEventKind::PeriodicRead;
+        event.tile = std::get<0>(key).tile;
+        event.domain = requirements.segment(segmentId).domain;
+        event.slot = std::get<1>(key);
+        event.segment = static_cast<std::uint32_t>(segmentId);
         if (writes)
-          allocations[matched[port]].writePort = port;
+          event.writeSource = storageWriteSource(dfg, target, mapping,
+                                                 requirements.segment(segmentId));
+        normalized.push_back(std::move(event));
+      }
+      const auto matched = matchRFPorts(*bank, normalized);
+      if (!matched.ok()) {
+        const auto segmentId = eventIds.front();
+        result.status = writes ? RFAllocationStatus::WritePortConflict
+                               : RFAllocationStatus::ReadPortConflict;
+        add(result,
+            writes ? RFAllocationDiagnosticCode::RFA_WRITE_PORT_CONFLICT
+                   : RFAllocationDiagnosticCode::RFA_READ_PORT_CONFLICT,
+            writes ? "no source-compatible physical RF write-port matching exists"
+                   : "no compatible physical RF read-port matching exists",
+            requirements.segment(segmentId).edge, segmentId, std::get<0>(key).tile,
+            std::get<0>(key).bank);
+        return false;
+      }
+      for (const auto& assignment : matched.assignments) {
+        const auto segmentId = static_cast<SegmentIndex>(assignment.eventId);
+        if (writes)
+          allocations[segmentId].writePort = assignment.port;
         else
-          allocations[matched[port]].readPort = port;
+          allocations[segmentId].readPort = assignment.port;
       }
     }
     return true;
@@ -475,43 +517,32 @@ RFAllocationResult RFAllocator::allocate(const cgra::target::TargetDFG& dfg,
   }
   for (const auto& [key, eventIds] : boundaryEvents) {
     const auto* bank = banks[eventIds.front()];
-    std::vector<SegmentIndex> matched(bank->writePorts, requirements.segments().size());
-    std::vector<SegmentIndex> order = eventIds;
-    std::ranges::sort(order);
-    const auto candidates = [&](SegmentIndex segmentId, unsigned port) {
-      const auto source = boundaryWriteSource(dfg, requirements.segment(segmentId));
-      const auto it = bank->writePortSources.find("W" + std::to_string(port));
-      return it != bank->writePortSources.end() &&
-             std::ranges::find(it->second, source) != it->second.end();
-    };
-    std::function<bool(SegmentIndex, std::vector<bool>&)> augment =
-        [&](SegmentIndex segmentId, std::vector<bool>& visited) {
-          for (unsigned port = 0; port < bank->writePorts; ++port) {
-            if (visited[port] || !candidates(segmentId, port))
-              continue;
-            visited[port] = true;
-            if (matched[port] == requirements.segments().size() ||
-                augment(matched[port], visited)) {
-              matched[port] = segmentId;
-              return true;
-            }
-          }
-          return false;
-        };
-    for (const auto segmentId : order) {
-      std::vector<bool> visited(bank->writePorts, false);
-      if (!augment(segmentId, visited)) {
-        result.status = RFAllocationStatus::WritePortConflict;
-        add(result, RFAllocationDiagnosticCode::RFA_WRITE_PORT_CONFLICT,
-            "no source-compatible physical RF write-port matching exists for recurrence boundary",
-            requirements.segment(segmentId).edge, segmentId, std::get<0>(key).tile,
-            std::get<0>(key).bank);
-        return result;
-      }
+    std::vector<RFPortEvent> normalized;
+    normalized.reserve(eventIds.size());
+    for (const auto segmentId : eventIds) {
+      RFPortEvent event;
+      event.id = segmentId;
+      event.kind = RFPortEventKind::BoundaryWrite;
+      event.tile = std::get<0>(key).tile;
+      event.domain = requirements.segment(segmentId).domain;
+      event.slot = std::get<1>(key);
+      event.segment = static_cast<std::uint32_t>(segmentId);
+      event.writeSource = boundaryWriteSource(dfg, requirements.segment(segmentId));
+      normalized.push_back(std::move(event));
     }
-    for (unsigned port = 0; port < bank->writePorts; ++port)
-      if (matched[port] != requirements.segments().size())
-        allocations[matched[port]].boundaryWritePort = port;
+    const auto matched = matchRFPorts(*bank, normalized);
+    if (!matched.ok()) {
+      const auto segmentId = eventIds.front();
+      result.status = RFAllocationStatus::WritePortConflict;
+      add(result, RFAllocationDiagnosticCode::RFA_WRITE_PORT_CONFLICT,
+          "no source-compatible physical RF write-port matching exists for recurrence boundary",
+          requirements.segment(segmentId).edge, segmentId, std::get<0>(key).tile,
+          std::get<0>(key).bank);
+      return result;
+    }
+    for (const auto& assignment : matched.assignments)
+      allocations[static_cast<SegmentIndex>(assignment.eventId)].boundaryWritePort =
+          assignment.port;
   }
 
   struct RegisterEventCounts {

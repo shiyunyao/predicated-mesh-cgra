@@ -2,6 +2,7 @@
 #include "cgra/RegisterAllocation/RFAllocationVerifier.h"
 
 #include "cgra/RegisterAllocation/PeriodicLifetime.h"
+#include "cgra/RegisterAllocation/RFPortMatcher.h"
 #include "cgra/RegisterAllocation/StorageRequirementAnalysis.h"
 #include "cgra/Schedule/StageAssignmentVerifier.h"
 #include "cgra/Target/TargetDFGVerifier.h"
@@ -202,6 +203,8 @@ RFAllocationVerificationReport RFAllocationVerifier::verify(const cgra::target::
   std::map<PortKey, PortCounts> ports;
   std::map<PortKey, std::set<std::uint32_t>> readAssignments;
   std::map<PortKey, std::set<std::uint32_t>> writeAssignments;
+  std::map<PortKey, std::vector<RFPortEvent>> readEvents;
+  std::map<PortKey, std::vector<RFPortEvent>> writeEvents;
   for (const auto& segment : mapping.storageRequirements().segments()) {
     const auto& allocation = *allocations.at(segment.id);
     const auto* bank = target.registerBank(segment.domain, segment.tile.row, segment.tile.col);
@@ -211,6 +214,27 @@ RFAllocationVerificationReport RFAllocationVerifier::verify(const cgra::target::
     auto& read = ports[{segment.tile, allocation.reg.bank,
                         static_cast<std::uint32_t>(segment.readTime % ii)}];
     ++read.reads;
+    RFPortEvent readEvent;
+    readEvent.id = segment.id;
+    readEvent.kind = RFPortEventKind::PeriodicRead;
+    readEvent.tile = segment.tile;
+    readEvent.domain = segment.domain;
+    readEvent.slot = static_cast<std::uint32_t>(segment.readTime % ii);
+    readEvent.segment = segment.id;
+    readEvents[{segment.tile, allocation.reg.bank,
+                static_cast<std::uint32_t>(segment.readTime % ii)}]
+        .push_back(std::move(readEvent));
+    RFPortEvent writeEvent;
+    writeEvent.id = segment.id;
+    writeEvent.kind = RFPortEventKind::PeriodicWrite;
+    writeEvent.tile = segment.tile;
+    writeEvent.domain = segment.domain;
+    writeEvent.slot = static_cast<std::uint32_t>(segment.writeTime % ii);
+    writeEvent.segment = segment.id;
+    writeEvent.writeSource = storageWriteSource(dfg, target, mapping.staged(), segment);
+    writeEvents[{segment.tile, allocation.reg.bank,
+                 static_cast<std::uint32_t>(segment.writeTime % ii)}]
+        .push_back(std::move(writeEvent));
     if (write.writes > bank->writePorts)
       add(report, RFAllocationVerificationCode::RFA_WRITE_PORT_CONFLICT,
           "allocated RF writes exceed target port capacity", segment.id);
@@ -259,6 +283,25 @@ RFAllocationVerificationReport RFAllocationVerifier::verify(const cgra::target::
           segment.id);
     }
   }
+
+  // Rebuild source-compatible matchings independently from the serialized
+  // port numbers. The checks below then confirm that the allocation records
+  // one of the valid assignments returned by the shared contract matcher.
+  const auto verifyMatches = [&](const auto& events, bool writes) {
+    for (const auto& [key, normalized] : events) {
+      const auto domain = normalized.front().domain;
+      const auto* bank = target.registerBank(domain, key.tile.row, key.tile.col);
+      if (!bank)
+        continue;
+      const auto match = matchRFPorts(*bank, normalized);
+      if (!match.ok())
+        add(report, writes ? RFAllocationVerificationCode::RFA_WRITE_PORT_CONFLICT
+                           : RFAllocationVerificationCode::RFA_READ_PORT_CONFLICT,
+            "shared RF port matcher rejects reconstructed access events");
+    }
+  };
+  verifyMatches(readEvents, false);
+  verifyMatches(writeEvents, true);
 
   struct RegisterEventCounts {
     std::uint32_t reads = 0;

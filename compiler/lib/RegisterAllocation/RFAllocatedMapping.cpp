@@ -2,6 +2,7 @@
 #include "cgra/RegisterAllocation/RFAllocatedMapping.h"
 
 #include <algorithm>
+#include <cstdint>
 #include <stdexcept>
 
 namespace cgra::register_allocation {
@@ -20,6 +21,21 @@ RFAllocatedMapping::RFAllocatedMapping(cgra::schedule::StagedMapping staged,
 
 PhysicalRegister RFAllocatedMapping::registerFor(StorageSegmentId segment) const {
   return allocationFor(segment).reg;
+}
+
+PhysicalRegister RFAllocatedMapping::registerFor(StorageSegmentId segment,
+                                                 std::int64_t logicalIteration) const {
+  const auto& allocation = allocationFor(segment);
+  if (allocation.family.phaseCount <= 1 || allocation.family.phases.empty())
+    return allocation.reg;
+  const auto phaseCount = static_cast<std::int64_t>(allocation.family.phaseCount);
+  auto phase = logicalIteration % phaseCount;
+  if (phase < 0)
+    phase += phaseCount;
+  for (const auto& entry : allocation.family.phases)
+    if (entry.phase == static_cast<std::uint32_t>(phase))
+      return entry.reg;
+  throw std::logic_error("periodic register family is missing a phase allocation");
 }
 
 const StorageAllocation& RFAllocatedMapping::allocationFor(StorageSegmentId segment) const {

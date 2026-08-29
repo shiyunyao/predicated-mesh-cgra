@@ -284,6 +284,10 @@ TargetModel TargetModel::loadFromFile(const std::filesystem::path& path) {
       root.at("parameters").contains("const_mem_depth"))
     model.constantMemoryDepth_ =
         positiveUnsigned(root.at("parameters"), "const_mem_depth", "parameters");
+  if (root.contains("parameters") && root.at("parameters").is_object() &&
+      root.at("parameters").contains("ctrl_mem_depth"))
+    model.controlMemoryDepth_ =
+        positiveUnsigned(root.at("parameters"), "ctrl_mem_depth", "parameters");
 
   model.dataRF_ = parseRegisterFile(root, "data_rf", RegisterBankDomain::Data, model.array_.rows,
                                     model.array_.cols);
@@ -938,6 +942,8 @@ TargetModel TargetModel::loadFromFile(const std::filesystem::path& path) {
   }
 
   const auto& params = requiredObject(root, "parameters", "");
+  if (model.controlMemoryDepth_ == 0 && params.contains("ctrl_mem_depth"))
+    model.controlMemoryDepth_ = positiveUnsigned(params, "ctrl_mem_depth", "parameters");
   if (params.contains("scratchpad_addr_width"))
     model.memory_.scratchpadAddressWidthBits =
         positiveUnsigned(params, "scratchpad_addr_width", "parameters");

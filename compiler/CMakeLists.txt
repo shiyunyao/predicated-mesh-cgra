@@ -75,6 +75,14 @@ target_link_libraries(cgra_ir PUBLIC nlohmann_json::nlohmann_json)
 cgra_enable_warnings(cgra_ir)
 cgra_enable_sanitizers(cgra_ir)
 
+add_library(cgra_rf_contract
+  lib/RegisterAllocation/RFPortMatcher.cpp
+)
+target_include_directories(cgra_rf_contract PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(cgra_rf_contract PUBLIC cgra_target cgra_ir)
+cgra_enable_warnings(cgra_rf_contract)
+cgra_enable_sanitizers(cgra_rf_contract)
+
 # TargetLegalizer consumes the Generic DFG verifier, so expose that dependency
 # through the target library for downstream users of the legalization API.
 target_link_libraries(cgra_target PUBLIC cgra_ir)
@@ -105,11 +113,12 @@ target_link_libraries(cgra_analysis PUBLIC cgra_target cgra_ir)
 cgra_enable_warnings(cgra_analysis)
 cgra_enable_sanitizers(cgra_analysis)
 
-target_link_libraries(cgra_mapping PUBLIC cgra_analysis)
+target_link_libraries(cgra_mapping PUBLIC cgra_analysis cgra_rf_contract)
 
 add_library(cgra_register_allocation
   lib/RegisterAllocation/StorageRequirementAnalysis.cpp
   lib/RegisterAllocation/PeriodicLifetime.cpp
+  lib/RegisterAllocation/RotationFactorAnalysis.cpp
   lib/RegisterAllocation/RFAllocatedMapping.cpp
   lib/RegisterAllocation/RFAllocationResult.cpp
   lib/RegisterAllocation/RFAllocatedMappingSerialization.cpp
@@ -117,7 +126,7 @@ add_library(cgra_register_allocation
   lib/RegisterAllocation/RFAllocationVerifier.cpp
 )
 target_include_directories(cgra_register_allocation PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
-target_link_libraries(cgra_register_allocation PUBLIC cgra_schedule cgra_target cgra_ir)
+target_link_libraries(cgra_register_allocation PUBLIC cgra_schedule cgra_target cgra_ir cgra_rf_contract)
 cgra_enable_warnings(cgra_register_allocation)
 cgra_enable_sanitizers(cgra_register_allocation)
 
@@ -430,6 +439,22 @@ if(CGRA_BUILD_TESTS)
     NAME cgra-rf-allocation-tests
     TYPE semantic
     SOURCES tests/RegisterAllocation/RFAllocationTest.cpp tests/IR/Fixtures.cpp
+    LIBRARIES cgra_register_allocation
+    DEFINITIONS CGRA_REPOSITORY_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/.."
+  )
+
+  cgra_add_test(
+    NAME cgra-rf-port-matcher-tests
+    TYPE semantic
+    SOURCES tests/RegisterAllocation/RFPortMatcherTest.cpp
+    LIBRARIES cgra_rf_contract
+    DEFINITIONS CGRA_REPOSITORY_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/.."
+  )
+
+  cgra_add_test(
+    NAME cgra-rotation-factor-tests
+    TYPE semantic
+    SOURCES tests/RegisterAllocation/RotationFactorAnalysisTest.cpp
     LIBRARIES cgra_register_allocation
     DEFINITIONS CGRA_REPOSITORY_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/.."
   )
