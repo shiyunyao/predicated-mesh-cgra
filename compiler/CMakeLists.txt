@@ -94,6 +94,8 @@ add_library(cgra_mapping
   lib/Mapping/ModuloResourceModel.cpp
   lib/Mapping/ResourceReservation.cpp
   lib/Mapping/ModuloMappingVerifier.cpp
+  lib/Mapping/StageDifferenceAnalysis.cpp
+  lib/Mapping/PartialRFEventAnalysis.cpp
   lib/Mapping/ModuloRouteSearch.cpp
   lib/Mapping/RFPortReservation.cpp
   lib/Mapping/ModuloMapper.cpp
@@ -384,6 +386,22 @@ if(CGRA_BUILD_TESTS)
     NAME cgra-rf-port-reservation-tests
     TYPE semantic
     SOURCES tests/Mapping/RFPortReservationTest.cpp
+    LIBRARIES cgra_mapping
+    DEFINITIONS CGRA_REPOSITORY_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/.."
+  )
+
+  cgra_add_test(
+    NAME cgra-stage-difference-tests
+    TYPE semantic
+    SOURCES tests/Mapping/StageDifferenceAnalysisTest.cpp
+    LIBRARIES cgra_mapping
+    DEFINITIONS CGRA_REPOSITORY_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/.."
+  )
+
+  cgra_add_test(
+    NAME cgra-partial-rf-event-tests
+    TYPE semantic
+    SOURCES tests/Mapping/PartialRFEventAnalysisTest.cpp
     LIBRARIES cgra_mapping
     DEFINITIONS CGRA_REPOSITORY_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/.."
   )

@@ -2,6 +2,7 @@
 #pragma once
 
 #include "cgra/Schedule/StageSchedulingResult.h"
+#include "cgra/Mapping/StageDifferenceAnalysis.h"
 #include "cgra/Target/TargetDFG.h"
 #include "cgra/Target/TargetModel.h"
 
@@ -9,7 +10,9 @@
 
 namespace cgra::schedule {
 
-std::int64_t ceilDivSigned(std::int64_t numerator, std::int64_t positiveDenominator);
+inline std::int64_t ceilDivSigned(std::int64_t numerator, std::int64_t positiveDenominator) {
+  return cgra::mapping::ceilDivSigned(numerator, positiveDenominator);
+}
 
 class StageScheduler {
 public:

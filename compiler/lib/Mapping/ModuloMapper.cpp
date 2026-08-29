@@ -4,6 +4,7 @@
 #include "cgra/Analysis/MIIAnalyzer.h"
 #include "cgra/Mapping/ConstructiveModuloMapper.h"
 #include "cgra/Mapping/ModuloMappingVerifier.h"
+#include "cgra/Mapping/PartialRFEventAnalysis.h"
 #include "cgra/Mapping/RFPortReservation.h"
 #include "cgra/RegisterAllocation/RFPortEvent.h"
 #include "cgra/Target/TargetDFGVerifier.h"
@@ -29,30 +30,6 @@ namespace {
 using Json = nlohmann::json;
 using NodeId = cgra::target::TargetNodeId;
 using EdgeId = cgra::target::TargetEdgeId;
-
-std::string resultSource(cgra::TargetResultSource source) {
-  switch (source) {
-  case cgra::TargetResultSource::FuDataResult:
-    return "FU_DATA_RESULT";
-  case cgra::TargetResultSource::FuPredicateResult:
-    return "FU_PRED_RESULT";
-  case cgra::TargetResultSource::LsuLoadData:
-    return "LSU_LOAD_DATA";
-  case cgra::TargetResultSource::None:
-    return {};
-  }
-  return {};
-}
-
-std::string incomingSource(Direction direction, cgra::RegisterBankDomain domain) {
-  const auto incoming = opposite(direction);
-  const char* name = incoming == Direction::North   ? "NORTH"
-                     : incoming == Direction::South ? "SOUTH"
-                     : incoming == Direction::East  ? "EAST"
-                                                     : "WEST";
-  return std::string(name) +
-         (domain == cgra::RegisterBankDomain::Data ? "_DATA_IN" : "_PRED_IN");
-}
 
 void addDiagnostic(ModuloMapperResult& result, ModuloMapperDiagnosticCode code, std::string message,
                    std::optional<std::uint32_t> ii = std::nullopt,
@@ -100,6 +77,7 @@ struct CandidateDelta {
   std::vector<EdgeId> edges;
   std::vector<ReservationDelta> edgeReservations;
   std::vector<RFPortReservationDelta> rfPortReservations;
+  std::vector<EdgeId> deferredFinalHoldReads;
 };
 
 class MappingSearchState {
@@ -325,50 +303,20 @@ private:
     }
     ++result_.stats.routeSuccesses;
     const auto routeIds = routeResources(*route.plan, producer);
+    const MappedDependence routeDependence{edge.id, edge.kind(),
+                                           route.plan->requiredSeparationCycles, route.plan};
 
-    if (options_.rfPortAware.enabled && options_.rfPortAware.reserveExplicitHoldEvents) {
-      std::vector<cgra::register_allocation::RFPortEvent> events;
-      const ModuloTimeDomain time(ii_);
-      for (std::size_t actionIndex = 0; actionIndex < route.plan->actions.size(); ++actionIndex) {
-        const auto* hold = std::get_if<VirtualHold>(&route.plan->actions[actionIndex]);
-        if (!hold)
-          continue;
-        const auto source = [&] {
-          if (actionIndex > 0) {
-            if (const auto* previous =
-                    std::get_if<LinkStep>(&route.plan->actions[actionIndex - 1]))
-              return incomingSource(previous->direction,
-                                     hold->domain == NetworkDomain::Data
-                                         ? cgra::RegisterBankDomain::Data
-                                         : cgra::RegisterBankDomain::Predicate);
-          }
-          return resultSource(target_.operation(dfg_.node(edge.src).operation).resultSource);
-        }();
-        const auto domain = hold->domain == NetworkDomain::Data
-                                ? cgra::RegisterBankDomain::Data
-                                : cgra::RegisterBankDomain::Predicate;
-        const auto baseId = (static_cast<std::uint64_t>(edge.id) << 32) |
-                            static_cast<std::uint64_t>(actionIndex << 1);
-        cgra::register_allocation::RFPortEvent write;
-        write.id = baseId;
-        write.kind = cgra::register_allocation::RFPortEventKind::PeriodicWrite;
-        write.tile = hold->tile;
-        write.domain = domain;
-        write.slot = time.advance(producer.issueSlot, hold->captureElapsed).value();
-        write.writeSource = source;
-        write.edge = edge.id;
-        write.transportActionIndex = static_cast<std::uint32_t>(actionIndex);
-        cgra::register_allocation::RFPortEvent read = write;
-        read.id = baseId | 1U;
-        read.kind = cgra::register_allocation::RFPortEventKind::PeriodicRead;
-        read.slot = time.advance(producer.issueSlot, hold->releaseElapsed).value();
-        read.writeSource.reset();
-        events.push_back(std::move(write));
-        events.push_back(std::move(read));
-      }
-      if (!events.empty()) {
+    if (options_.rfPortAware.enabled &&
+        (options_.rfPortAware.reserveExplicitHoldEvents ||
+         options_.rfPortAware.reserveMandatoryTerminalEvents)) {
+      const auto chain = derivePartialStorageChain(
+          dfg_, target_, edge, producer, consumer, routeDependence, ii_,
+          options_.rfPortAware.reserveMandatoryTerminalEvents);
+      if (chain.hasDeferredFinalHoldRead)
+        delta.deferredFinalHoldReads.push_back(edge.id);
+      if (!chain.definiteEvents.empty()) {
         ++result_.stats.rfPortMatchCalls;
-        const auto reservation = rfPortReservations_.tryReserve(events);
+        const auto reservation = rfPortReservations_.tryReserve(chain.definiteEvents);
         if (!reservation.ok()) {
           ++result_.stats.rfPortMatchFailures;
           if (reservation.status == RFPortReservationStatus::ReadCapacityExceeded)
@@ -382,7 +330,7 @@ private:
                         std::nullopt, edge.id);
           return SearchOutcome::Exhausted;
         }
-        result_.stats.rfPortEventsCommitted += events.size();
+        result_.stats.rfPortEventsCommitted += chain.definiteEvents.size();
         delta.rfPortReservations.push_back(*reservation.delta);
       }
     }

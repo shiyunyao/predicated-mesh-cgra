@@ -73,19 +73,6 @@ witnessFor(const std::vector<NodeId>& nodes,
 
 } // namespace
 
-std::int64_t ceilDivSigned(std::int64_t numerator, std::int64_t positiveDenominator) {
-  if (positiveDenominator <= 0)
-    throw std::invalid_argument("signed ceil division requires a positive denominator");
-  const auto quotient = numerator / positiveDenominator;
-  const auto remainder = numerator % positiveDenominator;
-  if (remainder != 0 && numerator > 0) {
-    if (quotient == std::numeric_limits<std::int64_t>::max())
-      throw std::overflow_error("signed ceil division overflows int64");
-    return quotient + 1;
-  }
-  return quotient;
-}
-
 StageSchedulingResult StageScheduler::schedule(const cgra::target::TargetDFG& dfg,
                                                const cgra::TargetModel& target,
                                                const cgra::mapping::ModuloMapping& mapping) {
@@ -134,19 +121,9 @@ StageSchedulingResult StageScheduler::schedule(const cgra::target::TargetDFG& df
       const auto source = mapping.placement(edge.src);
       const auto destination = mapping.placement(edge.dst);
       const auto dependence = mapping.dependence(edge.id);
-      const auto slotDifference = static_cast<std::int64_t>(destination.issueSlot.value()) -
-                                  static_cast<std::int64_t>(source.issueSlot.value());
-      const auto numerator =
-          static_cast<std::int64_t>(dependence.requiredSeparationCycles) - slotDifference;
-      auto delta = ceilDivSigned(numerator, static_cast<std::int64_t>(mapping.ii()));
-      if (static_cast<std::int64_t>(edge.distance) > delta &&
-          delta < std::numeric_limits<std::int64_t>::min() + edge.distance) {
-        result.status = StageSchedulingStatus::ArithmeticOverflow;
-        add(result, StageSchedulingDiagnosticCode::STAGE_CONSTRAINT_ARITHMETIC_OVERFLOW,
-            "stage constraint distance subtraction overflows int64", std::nullopt, edge.id);
-        return result;
-      }
-      delta -= static_cast<std::int64_t>(edge.distance);
+      const auto requirement = cgra::mapping::minimumStageDifference(
+          edge, source, destination, dependence, mapping.ii());
+      const auto delta = requirement.minimumStageDelta;
       const StageConstraint constraint{edge.id, edge.src,      edge.dst,
                                        delta,   edge.distance, dependence.requiredSeparationCycles};
       constraints.push_back(constraint);
