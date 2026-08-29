@@ -7,8 +7,9 @@
 
 namespace cgra::mapping {
 
-std::optional<RFPortReservationDelta> RFPortReservationTable::tryReserve(
+RFPortReservationResult RFPortReservationTable::tryReserve(
     std::span<const cgra::register_allocation::RFPortEvent> events) {
+  RFPortReservationResult result;
   std::map<RFPortReservationKey, std::vector<cgra::register_allocation::RFPortEvent>> additions;
   for (const auto& event : events) {
     const bool writes = event.kind != cgra::register_allocation::RFPortEventKind::PeriodicRead;
@@ -18,8 +19,12 @@ std::optional<RFPortReservationDelta> RFPortReservationTable::tryReserve(
   RFPortReservationDelta delta;
   for (const auto& [key, newEvents] : additions) {
     const auto* bank = target_.registerBank(key.domain, key.tile.row, key.tile.col);
-    if (!bank)
-      return std::nullopt;
+    if (!bank) {
+      result.status = RFPortReservationStatus::MissingRegisterBank;
+      result.failure = RFPortReservationFailure{result.status, key, {}};
+      undo(delta);
+      return result;
+    }
     const auto found = entries_.find(key);
     RFPortReservationSnapshot snapshot;
     snapshot.key = key;
@@ -36,11 +41,23 @@ std::optional<RFPortReservationDelta> RFPortReservationTable::tryReserve(
       // Restore all keys touched by this transaction, including keys matched
       // successfully before the failing key was visited.
       undo(delta);
-      return std::nullopt;
+      result.status = key.writes
+                          ? (match.status == cgra::register_allocation::RFPortMatchStatus::CapacityExceeded
+                                 ? RFPortReservationStatus::WriteCapacityExceeded
+                                 : match.status == cgra::register_allocation::RFPortMatchStatus::SourceCompatibilityFailure
+                                     ? RFPortReservationStatus::WriteSourceCompatibilityFailure
+                                     : RFPortReservationStatus::InvalidEventSet)
+                          : (match.status == cgra::register_allocation::RFPortMatchStatus::CapacityExceeded
+                                 ? RFPortReservationStatus::ReadCapacityExceeded
+                                 : RFPortReservationStatus::InvalidEventSet);
+      result.failure = RFPortReservationFailure{result.status, key, match.conflictingEvents};
+      return result;
     }
     entries_[key] = {std::move(merged), match.assignments};
   }
-  return delta;
+  result.status = RFPortReservationStatus::Success;
+  result.delta = std::move(delta);
+  return result;
 }
 
 void RFPortReservationTable::undo(const RFPortReservationDelta& delta) {

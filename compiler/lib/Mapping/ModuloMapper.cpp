@@ -369,27 +369,21 @@ private:
       if (!events.empty()) {
         ++result_.stats.rfPortMatchCalls;
         const auto reservation = rfPortReservations_.tryReserve(events);
-        if (!reservation) {
+        if (!reservation.ok()) {
           ++result_.stats.rfPortMatchFailures;
-          // A rejected transaction can contain both the hold's write and
-          // release read. Attribute the rejection to each event class that
-          // was present; the reservation table deliberately rolls back the
-          // whole transaction atomically.
-          if (std::ranges::any_of(events, [](const auto& event) {
-                return event.kind == cgra::register_allocation::RFPortEventKind::PeriodicRead;
-              }))
+          if (reservation.status == RFPortReservationStatus::ReadCapacityExceeded)
             ++result_.stats.rfReadPortEarlyRejects;
-          if (std::ranges::any_of(events, [](const auto& event) {
-                return event.kind != cgra::register_allocation::RFPortEventKind::PeriodicRead;
-              }))
+          else if (reservation.status == RFPortReservationStatus::WriteCapacityExceeded)
             ++result_.stats.rfWritePortEarlyRejects;
+          else if (reservation.status == RFPortReservationStatus::WriteSourceCompatibilityFailure)
+            ++result_.stats.rfWriteSourceEarlyRejects;
           addDiagnostic(result_, ModuloMapperDiagnosticCode::MAP_NODE_RESOURCE_CONFLICT,
                         "route candidate rejected by mapping-time RF port matching", ii_,
                         std::nullopt, edge.id);
           return SearchOutcome::Exhausted;
         }
         result_.stats.rfPortEventsCommitted += events.size();
-        delta.rfPortReservations.push_back(*reservation);
+        delta.rfPortReservations.push_back(*reservation.delta);
       }
     }
     const auto reservation = reservations_.tryReserve(std::span<const ResourceId>(routeIds),

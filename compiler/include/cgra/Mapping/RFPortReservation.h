@@ -32,11 +32,36 @@ struct RFPortReservationDelta {
   std::vector<RFPortReservationSnapshot> previous;
 };
 
+enum class RFPortReservationStatus {
+  Success,
+  MissingRegisterBank,
+  ReadCapacityExceeded,
+  WriteCapacityExceeded,
+  WriteSourceCompatibilityFailure,
+  InvalidEventSet,
+};
+
+struct RFPortReservationFailure {
+  RFPortReservationStatus status = RFPortReservationStatus::InvalidEventSet;
+  RFPortReservationKey key;
+  std::vector<std::uint64_t> conflictingEvents;
+};
+
+struct RFPortReservationResult {
+  RFPortReservationStatus status = RFPortReservationStatus::InvalidEventSet;
+  std::optional<RFPortReservationDelta> delta;
+  std::optional<RFPortReservationFailure> failure;
+
+  bool ok() const noexcept {
+    return status == RFPortReservationStatus::Success && delta.has_value();
+  }
+};
+
 class RFPortReservationTable {
 public:
   explicit RFPortReservationTable(const cgra::TargetModel& target) : target_(target) {}
 
-  std::optional<RFPortReservationDelta>
+  RFPortReservationResult
   tryReserve(std::span<const cgra::register_allocation::RFPortEvent> events);
 
   void undo(const RFPortReservationDelta& delta);
