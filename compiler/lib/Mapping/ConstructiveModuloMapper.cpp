@@ -269,10 +269,7 @@ std::vector<NodeId> orderedNodes(const target::TargetDFG& dfg, const TargetModel
     std::set<NodeId> active;
     criticality(dfg, node.id, critical, active);
   }
-  std::vector<NodeId> result;
-  for (const auto& node : dfg.nodes())
-    result.push_back(node.id);
-  std::ranges::sort(result, [&](NodeId lhs, NodeId rhs) {
+  const auto priority = [&](NodeId lhs, NodeId rhs) {
     const auto& left = dfg.node(lhs);
     const auto& right = dfg.node(rhs);
     const auto leftIngress = left.operation.starts_with("PASS") ? 0U : 1U;
@@ -291,7 +288,60 @@ std::vector<NodeId> orderedNodes(const target::TargetDFG& dfg, const TargetModel
            std::tuple{rightIngress, rightMemory,
                       std::numeric_limits<std::uint64_t>::max() - critical[rhs], rightDomain,
                       std::numeric_limits<std::uint64_t>::max() - fanout(rhs), rhs};
-  });
+  };
+
+  // A priority-only sort can place a consumer before its distance-zero
+  // producer.  Constructive scheduling needs the producer's absolute issue
+  // time first, so use a deterministic Kahn order and apply the placement
+  // priority only among currently-ready nodes. Loop-carried and memory edges
+  // are intentionally excluded: they constrain separation, not same-iteration
+  // value readiness.
+  std::map<NodeId, std::uint32_t> indegree;
+  std::map<NodeId, std::vector<NodeId>> successors;
+  for (const auto& node : dfg.nodes())
+    indegree.emplace(node.id, 0);
+  for (const auto& edge : dfg.edges()) {
+    if (edge.distance != 0 || edge.kind() == ir::Edge::Kind::Memory)
+      continue;
+    ++indegree[edge.dst];
+    successors[edge.src].push_back(edge.dst);
+  }
+  for (auto& [_, users] : successors)
+    std::ranges::sort(users);
+  struct ReadyCompare {
+    decltype(priority)* compare;
+    bool operator()(NodeId lhs, NodeId rhs) const {
+      if (lhs == rhs)
+        return false;
+      return (*compare)(lhs, rhs);
+    }
+  };
+  ReadyCompare compare{&priority};
+  std::set<NodeId, ReadyCompare> ready(compare);
+  for (const auto& [node, degree] : indegree)
+    if (degree == 0)
+      ready.insert(node);
+  std::vector<NodeId> result;
+  result.reserve(dfg.nodes().size());
+  while (!ready.empty()) {
+    const auto node = *ready.begin();
+    ready.erase(ready.begin());
+    result.push_back(node);
+    for (const auto user : successors[node])
+      if (--indegree[user] == 0)
+        ready.insert(user);
+  }
+  // A valid TargetDFG should not contain a distance-zero data cycle. Keep the
+  // function total for diagnostics by appending any unexpected remainder in
+  // the same deterministic priority order; the final verifier will reject it.
+  if (result.size() != dfg.nodes().size()) {
+    std::vector<NodeId> remainder;
+    for (const auto& [node, degree] : indegree)
+      if (degree != 0)
+        remainder.push_back(node);
+    std::ranges::sort(remainder, priority);
+    result.insert(result.end(), remainder.begin(), remainder.end());
+  }
   return result;
 }
 

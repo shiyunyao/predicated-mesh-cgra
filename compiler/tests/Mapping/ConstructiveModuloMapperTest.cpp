@@ -34,6 +34,24 @@ cgra::ir::DFG simpleAdd() {
   return builder.finish();
 }
 
+cgra::ir::DFG addChain() {
+  cgra::ir::DFGBuilder builder("constructive_add_chain");
+  const auto lhs = builder.addExternal("lhs", cgra::ir::ValueType::i32());
+  const auto rhs = builder.addExternal("rhs", cgra::ir::ValueType::i32());
+  const auto first = builder.addNode(cgra::ir::Opcode::Add,
+                                     {cgra::ir::ValueType::i32(), cgra::ir::ValueType::i32()},
+                                     cgra::ir::ValueType::i32());
+  const auto second = builder.addNode(cgra::ir::Opcode::Add,
+                                      {cgra::ir::ValueType::i32(), cgra::ir::ValueType::i32()},
+                                      cgra::ir::ValueType::i32());
+  builder.bindExternal(first, 0, lhs);
+  builder.bindExternal(first, 1, rhs);
+  builder.bindExternal(second, 1, rhs);
+  builder.addDataEdge(first, second, 0);
+  builder.addLiveOut("sum", cgra::ir::ValueType::i32(), second);
+  return builder.finish();
+}
+
 } // namespace
 
 int main() {
@@ -61,6 +79,12 @@ int main() {
     expect(result.safeII >= result.mii && result.safeII <= options.maxSafeII,
            "safe II must be within the declared constructive range");
     expect(result.stats.completedModuloMappings > 0, "a verified modulo candidate is required");
+
+    const auto chain = cgra::target::TargetLegalizer::legalize(addChain(), target);
+    expect(chain.ok(), "add chain must target-legalize");
+    const auto chainResult = cgra::mapping::mapConstructively(*chain.dfg, target, options);
+    expect(chainResult.ok(), "constructive mapper must honor distance-zero producer order");
+
     std::cout << "CONSTRUCTIVE_MODULO_MAPPER_PASS\n";
     return 0;
   } catch (const std::exception& error) {
