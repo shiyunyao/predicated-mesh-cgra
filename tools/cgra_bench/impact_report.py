@@ -308,6 +308,7 @@ def generate(historical: pathlib.Path, checkpoint: pathlib.Path, final: pathlib.
         f"- historical baseline: `{historical}`", f"- checkpoint baseline: `{checkpoint}`",
         f"- final audit: `{final}`",
         f"- final project SHA: `{final_environment.get('project_sha', 'n/a')}`",
+        "- audit source note: the final audit ran from the recorded project HEAD with the local compiler changes present in the working tree; those changes are now captured by the local commits listed in the final snapshot.",
         f"- final corpus SHA: `{final_environment.get('corpus_sha', 'n/a')}`",
         f"- final target SHA256: `{final_environment.get('target_sha256', 'n/a')}`",
         f"- final profile: `{json.dumps(final_environment.get('profile', {}), sort_keys=True)}`",
@@ -388,7 +389,7 @@ def generate(historical: pathlib.Path, checkpoint: pathlib.Path, final: pathlib.
     lines.extend(_case_table(final_results))
     lines.extend(["", "## Reproducibility and Test Evidence", "",
                   "- final audit environment records the compiler/corpus/target hashes and fixed mapping profile.",
-                  "- final audit worktree was dirty because required local artifacts are stored under `artifacts/`; source changes are committed at the recorded project SHA.",
+                  "- final audit source snapshot is recorded by its environment SHA; the audited local compiler changes were subsequently captured in the no-upstream local commits listed in the final snapshot.",
                   "- compiler CTest and Python audit tests passed at the recorded final local HEAD; exact logs are retained with the local artifacts.",
                   "- RTL regression: passed (`make regression`).",
                   "- LLVM frontend, recurrence, and memory E2E passed; predication E2E reached and passed its supported RTL cases before an existing ABI fixture-width mismatch.",
