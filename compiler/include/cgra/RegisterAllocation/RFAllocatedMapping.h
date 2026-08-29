@@ -36,6 +36,12 @@ struct PeriodicRegisterFamily {
   friend bool operator==(const PeriodicRegisterFamily&, const PeriodicRegisterFamily&) = default;
 };
 
+struct BoundaryWriteAllocation {
+  std::int64_t producerIteration = 0;
+  std::uint32_t writePort = 0;
+  friend bool operator==(const BoundaryWriteAllocation&, const BoundaryWriteAllocation&) = default;
+};
+
 struct StorageAllocation {
   StorageSegmentId segment = 0;
   PhysicalRegister reg;
@@ -48,6 +54,14 @@ struct StorageAllocation {
   // this is the exact port assigned for that finite boundary write.
   std::optional<std::uint32_t> boundaryWritePort;
   PeriodicRegisterFamily family;
+  std::vector<BoundaryWriteAllocation> boundaryWrites;
+
+  std::optional<std::uint32_t> boundaryWriteFor(std::int64_t producerIteration) const {
+    for (const auto& boundary : boundaryWrites)
+      if (boundary.producerIteration == producerIteration)
+        return boundary.writePort;
+    return boundaryWritePort;
+  }
 
   friend bool operator==(const StorageAllocation&, const StorageAllocation&) = default;
 };

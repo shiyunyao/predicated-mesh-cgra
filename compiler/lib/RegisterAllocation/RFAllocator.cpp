@@ -421,7 +421,8 @@ RFAllocationResult RFAllocator::allocate(const cgra::target::TargetDFG& dfg,
                            0,
                            std::nullopt,
                            {segment.id, 1,
-                            {{0, {segment.tile, banks[segment.id]->id, *colors[segment.id]}}}}});
+                            {{0, {segment.tile, banks[segment.id]->id, *colors[segment.id]}}}},
+                           {}});
 
   if (options.enableSoftwareRotation) {
     const auto colored = colorPhaseRegisters(requirements.segments(), rotationPlan, target,
@@ -552,9 +553,11 @@ RFAllocationResult RFAllocator::allocate(const cgra::target::TargetDFG& dfg,
           std::get<0>(key).bank);
       return result;
     }
-    for (const auto& assignment : matched.assignments)
-      allocations[static_cast<SegmentIndex>(assignment.eventId)].boundaryWritePort =
-          assignment.port;
+    for (const auto& assignment : matched.assignments) {
+      auto& allocation = allocations[static_cast<SegmentIndex>(assignment.eventId)];
+      allocation.boundaryWritePort = assignment.port;
+      allocation.boundaryWrites.push_back({-1, assignment.port});
+    }
   }
 
   struct RegisterEventCounts {

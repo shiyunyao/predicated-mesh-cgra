@@ -537,8 +537,11 @@ struct Lowerer {
       }
       const auto& allocation = mapping.allocationFor(segment.id);
       const auto isBoundaryInstance = boundaryConstantFor(edge, event.logicalIteration).has_value();
-      const auto port = isBoundaryInstance && allocation.boundaryWritePort
-                            ? *allocation.boundaryWritePort
+      const auto boundaryPort = isBoundaryInstance
+                                    ? allocation.boundaryWriteFor(event.logicalIteration)
+                                    : std::nullopt;
+      const auto port = boundaryPort
+                            ? *boundaryPort
                             : allocation.writePort;
       if (segment.domain == RegisterBankDomain::Data)
         builder.dataWrite(port, event.physicalRegister->index, source);

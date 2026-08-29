@@ -80,6 +80,10 @@ std::string RFAllocatedMappingSerialization::toJson(const RFAllocatedMapping& ma
       segmentJson["phases"].push_back({{"phase", phase.phase}, {"register", phase.reg.index}});
     if (allocation.boundaryWritePort)
       segmentJson["boundary_write_port"] = *allocation.boundaryWritePort;
+    segmentJson["boundary_writes"] = Json::array();
+    for (const auto& boundary : allocation.boundaryWrites)
+      segmentJson["boundary_writes"].push_back(
+          {{"producer_iteration", boundary.producerIteration}, {"write_port", boundary.writePort}});
     root["storage_segments"].push_back(std::move(segmentJson));
     for (const auto& origin : segment.origins) {
       Json originJson = {{"kind", origin.kind == StorageOriginKind::ExplicitVirtualHold
@@ -144,6 +148,14 @@ RFAllocatedMapping RFAllocatedMappingSerialization::parse(std::string_view jsonT
     }
     if (family.phases.empty())
       family.phases.push_back({0, {tile, bankName, registerIndex}});
+    std::vector<BoundaryWriteAllocation> boundaryWrites;
+    if (entry.contains("boundary_writes"))
+      for (const auto& boundary : entry.at("boundary_writes"))
+        boundaryWrites.push_back({required<std::int64_t>(boundary, "producer_iteration"),
+                                  required<std::uint32_t>(boundary, "write_port")});
+    if (boundaryWrites.empty() && entry.contains("boundary_write_port") &&
+        !entry.at("boundary_write_port").is_null())
+      boundaryWrites.push_back({-1, entry.at("boundary_write_port").get<std::uint32_t>()});
     allocations.push_back({id,
                             {tile, bankName, registerIndex},
                             entry.contains("read_port") ? entry.at("read_port").get<std::uint32_t>()
@@ -156,7 +168,8 @@ RFAllocatedMapping RFAllocatedMappingSerialization::parse(std::string_view jsonT
                                 ? std::optional<std::uint32_t>(
                                       entry.at("boundary_write_port").get<std::uint32_t>())
                                 : std::nullopt,
-                            std::move(family)});
+                            std::move(family),
+                            std::move(boundaryWrites)});
   }
   StorageRequirements requirements(staged.modulo().ii(), std::move(requirementsSegments));
   return RFAllocatedMapping(staged, std::move(requirements), std::move(allocations));
