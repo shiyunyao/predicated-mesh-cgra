@@ -304,7 +304,7 @@ def generate(historical: pathlib.Path, checkpoint: pathlib.Path, final: pathlib.
                   "| Package | Local status | Evidence |",
                   "|---|---|---|",
                   "| U000 | PARTIAL | B0/B1 full attempts and fixed six-case smoke artifacts retained; m32 probe failed |",
-                  "| U021 | IMPLEMENTED | recurrence ingress options, provenance, independent verifier, 25/25 CTest |",
+                  "| U021 | PARTIAL | recurrence ingress options, provenance, independent verifier, 25/25 CTest; real benchmark RF-to-strict-success gate not demonstrated |",
                   "| U022 | PARTIAL | deterministic extended-II search retained; no independent absolute-time constructive scheduler claimed |",
                   "| U025 | IMPLEMENTED | admissibility proof gating, per-case compile metrics, migration CSVs, automated report |",
                   "| U023 | PARTIAL | existing dynamic-address/memory coverage retained; no new general path-sensitive lowering in this session |",
