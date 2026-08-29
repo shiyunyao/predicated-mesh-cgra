@@ -24,6 +24,13 @@ struct FeasibilityFallbackOptions {
   std::uint64_t seed = 0;
 };
 
+struct RFPortAwareMappingOptions {
+  bool enabled = true;
+  bool reserveExplicitHoldEvents = true;
+  bool reserveMandatoryTerminalEvents = true;
+  std::uint32_t maxRouteAlternatives = 4;
+};
+
 struct ModuloMapperOptions {
   std::uint32_t maxII = 0;
   std::uint32_t minII = 0;
@@ -32,6 +39,7 @@ struct ModuloMapperOptions {
   CompleteMappingChecker completeMappingChecker;
   MappingObjective objective = MappingObjective::OptimizeII;
   FeasibilityFallbackOptions feasibilityFallback;
+  RFPortAwareMappingOptions rfPortAware;
 };
 
 class ModuloMapper {

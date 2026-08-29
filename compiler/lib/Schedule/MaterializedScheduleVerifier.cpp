@@ -438,7 +438,8 @@ MaterializedScheduleVerificationReport MaterializedScheduleVerifier::verify(
         add(report, MaterializedScheduleVerificationCode::MAT_WRONG_EVENT_PROVENANCE,
             "RF event tile or domain disagrees with its storage segment", std::nullopt,
             segment.edge, segment.id);
-      if (!event.physicalRegister || *event.physicalRegister != mapping.registerFor(segment.id))
+      if (!event.physicalRegister ||
+          *event.physicalRegister != mapping.registerFor(segment.id, event.logicalIteration))
         add(report, MaterializedScheduleVerificationCode::MAT_WRONG_EVENT_PROVENANCE,
             "RF event physical register disagrees with allocation", std::nullopt, segment.edge,
             segment.id);

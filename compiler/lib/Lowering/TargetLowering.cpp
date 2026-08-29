@@ -419,7 +419,7 @@ struct Lowerer {
           const auto* segment = segmentForEdgeAtTile(mapping, edge->id, *event.tile);
           if (segment) {
             const auto& allocation = mapping.allocationFor(segment->id);
-            const auto reg = allocation.reg;
+            const auto reg = mapping.registerFor(segment->id, event.logicalIteration);
             const auto* bank = target.registerBank(segment->domain, reg.tile.row, reg.tile.col);
             if (!bank || allocation.readPort >= bank->readPorts)
               throw LoweringError(TargetLoweringStatus::RFAccessPortViolation,

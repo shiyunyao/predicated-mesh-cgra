@@ -180,7 +180,26 @@ RFAllocationVerificationReport RFAllocationVerifier::verify(const cgra::target::
     if (!bank->allocates(allocation.reg.index))
       add(report, RFAllocationVerificationCode::RFA_INVALID_REGISTER_INDEX,
           "physical allocation index is not allocatable in target bank", segment.id);
-    if (fixedRegisterSelfOverlaps(segment, ii, bank->sameAddressReadWritePolicy))
+    if (allocation.family.segment != segment.id || allocation.family.phaseCount == 0)
+      add(report, RFAllocationVerificationCode::RFA_INVALID_REGISTER_INDEX,
+          "periodic register family does not identify its storage segment", segment.id);
+    if (allocation.family.phaseCount == 1 && allocation.family.phases.size() != 1)
+      add(report, RFAllocationVerificationCode::RFA_INVALID_REGISTER_INDEX,
+          "single-phase allocation must contain exactly one phase", segment.id);
+    if (allocation.family.phases.size() != allocation.family.phaseCount)
+      add(report, RFAllocationVerificationCode::RFA_INVALID_REGISTER_INDEX,
+          "periodic register family has an incomplete phase list", segment.id);
+    std::set<std::uint32_t> phaseRegisters;
+    for (const auto& phase : allocation.family.phases) {
+      if (phase.phase >= allocation.family.phaseCount ||
+          !phaseRegisters.insert(phase.reg.index).second || phase.reg.tile != segment.tile ||
+          phase.reg.bank != bank->id || !bank->allocates(phase.reg.index))
+        add(report, RFAllocationVerificationCode::RFA_INVALID_REGISTER_INDEX,
+            "periodic register family contains an invalid or duplicate phase register",
+            segment.id);
+    }
+    if (allocation.family.phaseCount == 1 &&
+        fixedRegisterSelfOverlaps(segment, ii, bank->sameAddressReadWritePolicy))
       add(report, RFAllocationVerificationCode::RFA_FIXED_REGISTER_SELF_OVERLAP,
           "storage lifetime overlaps its fixed-register next iteration", segment.id);
   }
@@ -312,6 +331,8 @@ RFAllocationVerificationReport RFAllocationVerifier::verify(const cgra::target::
   std::map<RegisterEventKey, RegisterEventCounts> registerEvents;
   for (const auto& segment : mapping.storageRequirements().segments()) {
     const auto& allocation = *allocations.at(segment.id);
+    if (allocation.family.phaseCount > 1)
+      continue;
     ++registerEvents[{allocation.reg.tile, allocation.reg.bank, allocation.reg.index,
                       static_cast<std::uint32_t>(segment.writeTime % ii)}]
           .writes;
@@ -341,6 +362,8 @@ RFAllocationVerificationReport RFAllocationVerifier::verify(const cgra::target::
          rhsIndex < mapping.storageRequirements().segments().size(); ++rhsIndex) {
       const auto& rhs = mapping.storageRequirements().segments()[rhsIndex];
       const auto& rhsAllocation = *allocations.at(rhs.id);
+      if (lhsAllocation.family.phaseCount > 1 || rhsAllocation.family.phaseCount > 1)
+        continue;
       if (!(lhsAllocation.reg == rhsAllocation.reg))
         continue;
       const auto* bank = target.registerBank(lhs.domain, lhs.tile.row, lhs.tile.col);

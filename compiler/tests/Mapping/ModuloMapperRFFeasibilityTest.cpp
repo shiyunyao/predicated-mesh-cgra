@@ -211,6 +211,7 @@ int main() {
     options.artifactDirectory =
         cgra::test::TestArtifacts::forCase("mapping_research_fixed_rf_overlap").root();
     options.mode = cgra::pipeline::CompileDFGMode::MappingResearch;
+    options.mapper.rfPortAware.enabled = false;
     options.mapper.minII = 1;
     options.mapper.maxII = 2;
     options.mapper.budget.maxNodeCandidateAttempts = 500;

@@ -337,6 +337,21 @@ void testVirtualHoldAndRecurrence(const cgra::TargetModel& model) {
                              }),
          "fixed-RF periodic rejection reports the exact self-overlap diagnostic");
 
+  RFAllocationOptions rotatingOptions;
+  rotatingOptions.enableSoftwareRotation = true;
+  const auto rotating = RFAllocator::allocate(dfg, model, staged, rotatingOptions);
+  if (!rotating.ok())
+    throw std::runtime_error("software-rotation recurrence allocation: " + rotating.format());
+  const auto& rotatingAllocation = rotating.mapping->allocationFor(0);
+  expect(rotatingAllocation.family.phaseCount == 2,
+         "duration equal to II uses two software-rotation phases");
+  expect(rotating.mapping->registerFor(0, 0) != rotating.mapping->registerFor(0, 1),
+         "successive logical iterations use distinct phase registers");
+  expect(rotating.mapping->registerFor(0, -1) == rotating.mapping->registerFor(0, 1),
+         "negative iterations use mathematical floor-mod phase selection");
+  expect(RFAllocationVerifier::verify(dfg, model, *rotating.mapping).ok(),
+         "phase-expanded allocation passes the independent verifier");
+
   std::ifstream input(Root / "target/cgra_v2.json");
   nlohmann::json json;
   input >> json;

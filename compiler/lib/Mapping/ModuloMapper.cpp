@@ -4,6 +4,8 @@
 #include "cgra/Analysis/MIIAnalyzer.h"
 #include "cgra/Mapping/ConstructiveModuloMapper.h"
 #include "cgra/Mapping/ModuloMappingVerifier.h"
+#include "cgra/Mapping/RFPortReservation.h"
+#include "cgra/RegisterAllocation/RFPortEvent.h"
 #include "cgra/Target/TargetDFGVerifier.h"
 
 #include <nlohmann/json.hpp>
@@ -27,6 +29,30 @@ namespace {
 using Json = nlohmann::json;
 using NodeId = cgra::target::TargetNodeId;
 using EdgeId = cgra::target::TargetEdgeId;
+
+std::string resultSource(cgra::TargetResultSource source) {
+  switch (source) {
+  case cgra::TargetResultSource::FuDataResult:
+    return "FU_DATA_RESULT";
+  case cgra::TargetResultSource::FuPredicateResult:
+    return "FU_PRED_RESULT";
+  case cgra::TargetResultSource::LsuLoadData:
+    return "LSU_LOAD_DATA";
+  case cgra::TargetResultSource::None:
+    return {};
+  }
+  return {};
+}
+
+std::string incomingSource(Direction direction, cgra::RegisterBankDomain domain) {
+  const auto incoming = opposite(direction);
+  const char* name = incoming == Direction::North   ? "NORTH"
+                     : incoming == Direction::South ? "SOUTH"
+                     : incoming == Direction::East  ? "EAST"
+                                                     : "WEST";
+  return std::string(name) +
+         (domain == cgra::RegisterBankDomain::Data ? "_DATA_IN" : "_PRED_IN");
+}
 
 void addDiagnostic(ModuloMapperResult& result, ModuloMapperDiagnosticCode code, std::string message,
                    std::optional<std::uint32_t> ii = std::nullopt,
@@ -73,6 +99,7 @@ struct CandidateDelta {
   ReservationDelta nodeReservation;
   std::vector<EdgeId> edges;
   std::vector<ReservationDelta> edgeReservations;
+  std::vector<RFPortReservationDelta> rfPortReservations;
 };
 
 class MappingSearchState {
@@ -81,7 +108,7 @@ public:
                      const ModuloMapperOptions& options, SearchLimits limits, std::uint32_t ii,
                      ModuloMapperResult& result)
       : dfg_(dfg), target_(target), options_(options), ii_(ii), resources_(target, ii),
-        reservations_(resources_), result_(result), limits_(limits) {}
+        reservations_(resources_), rfPortReservations_(target), result_(result), limits_(limits) {}
 
   SearchOutcome run() { return search(0); }
 
@@ -94,6 +121,7 @@ private:
   std::uint32_t ii_;
   ModuloResourceModel resources_;
   ResourceReservationTable reservations_;
+  RFPortReservationTable rfPortReservations_;
   ModuloMapperResult& result_;
   SearchLimits limits_;
   std::map<NodeId, NodePlacement> placements_;
@@ -297,6 +325,62 @@ private:
     }
     ++result_.stats.routeSuccesses;
     const auto routeIds = routeResources(*route.plan, producer);
+
+    if (options_.rfPortAware.enabled && options_.rfPortAware.reserveExplicitHoldEvents) {
+      std::vector<cgra::register_allocation::RFPortEvent> events;
+      const ModuloTimeDomain time(ii_);
+      for (std::size_t actionIndex = 0; actionIndex < route.plan->actions.size(); ++actionIndex) {
+        const auto* hold = std::get_if<VirtualHold>(&route.plan->actions[actionIndex]);
+        if (!hold)
+          continue;
+        const auto source = [&] {
+          if (actionIndex > 0) {
+            if (const auto* previous =
+                    std::get_if<LinkStep>(&route.plan->actions[actionIndex - 1]))
+              return incomingSource(previous->direction,
+                                     hold->domain == NetworkDomain::Data
+                                         ? cgra::RegisterBankDomain::Data
+                                         : cgra::RegisterBankDomain::Predicate);
+          }
+          return resultSource(target_.operation(dfg_.node(edge.src).operation).resultSource);
+        }();
+        const auto domain = hold->domain == NetworkDomain::Data
+                                ? cgra::RegisterBankDomain::Data
+                                : cgra::RegisterBankDomain::Predicate;
+        const auto baseId = (static_cast<std::uint64_t>(edge.id) << 32) |
+                            static_cast<std::uint64_t>(actionIndex << 1);
+        cgra::register_allocation::RFPortEvent write;
+        write.id = baseId;
+        write.kind = cgra::register_allocation::RFPortEventKind::PeriodicWrite;
+        write.tile = hold->tile;
+        write.domain = domain;
+        write.slot = time.advance(producer.issueSlot, hold->captureElapsed).value();
+        write.writeSource = source;
+        write.edge = edge.id;
+        write.transportActionIndex = static_cast<std::uint32_t>(actionIndex);
+        cgra::register_allocation::RFPortEvent read = write;
+        read.id = baseId | 1U;
+        read.kind = cgra::register_allocation::RFPortEventKind::PeriodicRead;
+        read.slot = time.advance(producer.issueSlot, hold->releaseElapsed).value();
+        read.writeSource.reset();
+        events.push_back(std::move(write));
+        events.push_back(std::move(read));
+      }
+      if (!events.empty()) {
+        ++result_.stats.rfPortMatchCalls;
+        const auto reservation = rfPortReservations_.tryReserve(events);
+        if (!reservation) {
+          ++result_.stats.rfPortMatchFailures;
+          ++result_.stats.rfWritePortEarlyRejects;
+          addDiagnostic(result_, ModuloMapperDiagnosticCode::MAP_NODE_RESOURCE_CONFLICT,
+                        "route candidate rejected by mapping-time RF port matching", ii_,
+                        std::nullopt, edge.id);
+          return SearchOutcome::Exhausted;
+        }
+        result_.stats.rfPortEventsCommitted += events.size();
+        delta.rfPortReservations.push_back(*reservation);
+      }
+    }
     const auto reservation = reservations_.tryReserve(std::span<const ResourceId>(routeIds),
                                                       {ReservationOwnerKind::Edge, edge.id});
     if (!reservation) {
@@ -349,6 +433,10 @@ private:
       dependences_.erase(edge);
     for (auto it = delta.edgeReservations.rbegin(); it != delta.edgeReservations.rend(); ++it)
       reservations_.undo(*it);
+    for (auto it = delta.rfPortReservations.rbegin(); it != delta.rfPortReservations.rend(); ++it) {
+      rfPortReservations_.undo(*it);
+      ++result_.stats.rfPortRollbackCount;
+    }
     if (!delta.nodeReservation.resources.empty())
       reservations_.undo(delta.nodeReservation);
     placements_.erase(delta.node);
@@ -594,6 +682,15 @@ std::string ModuloMapperResult::toJson() const {
                  {"post_mapping_rejected", stats.postMappingRejected},
                  {"stage_rejected", stats.stageRejected},
                  {"rf_rejected", stats.rfRejected},
+                 {"rf_port_match_calls", stats.rfPortMatchCalls},
+                 {"rf_port_match_failures", stats.rfPortMatchFailures},
+                 {"rf_read_port_early_rejects", stats.rfReadPortEarlyRejects},
+                 {"rf_write_port_early_rejects", stats.rfWritePortEarlyRejects},
+                 {"rf_write_source_early_rejects", stats.rfWriteSourceEarlyRejects},
+                 {"rf_port_events_committed", stats.rfPortEventsCommitted},
+                 {"rf_port_rollback_count", stats.rfPortRollbackCount},
+                 {"late_read_port_conflicts", stats.lateReadPortConflicts},
+                 {"late_write_port_conflicts", stats.lateWritePortConflicts},
                  {"rf_budget_exceeded", stats.rfBudgetExceeded},
                  {"rf_rejected_by_ii", Json::object()},
                  {"rf_rejected_by_reason", Json::object()},

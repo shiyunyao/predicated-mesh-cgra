@@ -554,6 +554,8 @@ RFAllocationResult RFAllocator::allocate(const cgra::target::TargetDFG& dfg,
   std::map<RegisterEventKey, RegisterEventCounts> registerEvents;
   for (const auto& segment : requirements.segments()) {
     const auto& allocation = allocations[segment.id];
+    if (allocation.family.phaseCount > 1)
+      continue;
     ++registerEvents[{allocation.reg.tile, allocation.reg.bank, allocation.reg.index,
                       static_cast<std::uint32_t>(segment.writeTime % ii)}]
           .writes;

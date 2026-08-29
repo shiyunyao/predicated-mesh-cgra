@@ -344,7 +344,7 @@ ScheduleMaterializer::materialize(const cgra::target::TargetDFG& dfg,
                            ? NetworkDomain::Predicate
                            : NetworkDomain::Data;
         event.tile = segment.tile;
-        event.physicalRegister = mapping.registerFor(segment.id);
+        event.physicalRegister = mapping.registerFor(segment.id, event.logicalIteration);
         streams.push_back({event, baseTime, request.tripCount, ii});
         account(baseTime, request.tripCount, ii);
       }

@@ -27,6 +27,15 @@ struct ModuloMapperStats {
   std::uint64_t rfRejected = 0;
   std::uint64_t rfBudgetExceeded = 0;
   std::uint64_t postMappingAbort = 0;
+  std::uint64_t rfPortMatchCalls = 0;
+  std::uint64_t rfPortMatchFailures = 0;
+  std::uint64_t rfReadPortEarlyRejects = 0;
+  std::uint64_t rfWritePortEarlyRejects = 0;
+  std::uint64_t rfWriteSourceEarlyRejects = 0;
+  std::uint64_t rfPortEventsCommitted = 0;
+  std::uint64_t rfPortRollbackCount = 0;
+  std::uint64_t lateReadPortConflicts = 0;
+  std::uint64_t lateWritePortConflicts = 0;
   std::map<std::uint32_t, std::uint64_t> rfRejectedByII;
   std::map<std::string, std::uint64_t> rfRejectedByReason;
 };
