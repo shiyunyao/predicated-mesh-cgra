@@ -62,6 +62,7 @@ struct ModuloMapperResult {
   std::uint64_t fallbackAttempts = 0;
   std::uint64_t fallbackLocalRepairs = 0;
   std::uint64_t fallbackScheduleGrowth = 0;
+  std::uint64_t suppressedDiagnostics = 0;
   std::string fallbackFailureReason;
   std::vector<ModuloMapperDiagnostic> diagnostics;
 

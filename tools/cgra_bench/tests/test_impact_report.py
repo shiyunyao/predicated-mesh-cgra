@@ -29,6 +29,9 @@ class ImpactReportTest(unittest.TestCase):
             self.assertTrue(output.is_file())
             self.assertTrue((output.parent / "impact_summary.json").is_file())
             self.assertTrue((output.parent / "terminal_status_migration.csv").is_file())
+            report = output.read_text(encoding="utf-8")
+            self.assertIn("independent absolute-time constructive scheduler", report)
+            self.assertNotIn("U022 remains an extended-II DFS search", report)
 
 
 if __name__ == "__main__":

@@ -2,11 +2,18 @@
 #include "cgra/IR/DFGBuilder.h"
 #include "cgra/ABI/CompileKernel.h"
 #include "cgra/Pipeline/CompileDFG.h"
+#include "cgra/Pipeline/BackendFeasibilityChecker.h"
+#include "cgra/Mapping/ModuloMapping.h"
 #include "cgra/Target/TargetModel.h"
+#include "cgra/Target/TargetLegalizer.h"
+#include "cgra/Transforms/RecurrenceIngressNormalization.h"
 #include "support/TestArtifacts.h"
+
+#include <nlohmann/json.hpp>
 
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <ranges>
 #include <stdexcept>
@@ -134,6 +141,47 @@ cgra::ir::DFG typedFloatCandidate() {
   return builder.finish();
 }
 
+cgra::ir::DFG delayedRecurrenceConsumer() {
+  using cgra::ir::Opcode;
+  using cgra::ir::ValueType;
+  cgra::ir::DFGBuilder builder("delayed_recurrence_consumer");
+  const auto seed = builder.addConstant(ValueType::i32(), 1);
+  const auto producer = builder.addNode(
+      Opcode::Add, {ValueType::i32(), ValueType::i32()}, ValueType::i32());
+  const auto delay = builder.addNode(
+      Opcode::Add, {ValueType::i32(), ValueType::i32()}, ValueType::i32());
+  const auto consumer = builder.addNode(
+      Opcode::Add, {ValueType::i32(), ValueType::i32()}, ValueType::i32());
+  builder.bindConstant(producer, 0, seed);
+  builder.bindConstant(producer, 1, seed);
+  builder.addDataEdge(producer, delay, 0);
+  builder.bindConstant(delay, 1, seed);
+  builder.addDataEdge(delay, consumer, 0);
+  builder.addDataEdge(producer, consumer, 1, 1, boundary(seed));
+  builder.addLiveOut("result", ValueType::i32(), consumer);
+  return builder.finish();
+}
+
+cgra::TargetModel constrainedRecurrenceTarget() {
+  const auto artifacts = cgra::test::TestArtifacts::forCase("recurrence_ingress_single_tile_target");
+  const auto path = artifacts.root() / "target.json";
+  nlohmann::json value;
+  {
+    std::ifstream input(Root / "target/cgra_v3.json");
+    input >> value;
+  }
+  value["name"] = "recurrence_ingress_single_tile";
+  value["tile_capabilities"]["default_fu_operations"] = nlohmann::json::array();
+  value["tile_capabilities"]["overrides"] =
+      nlohmann::json::array({{{"row", 0}, {"col", 0}, {"operations", {"ADD", "PASS"}}},
+                             {{"row", 0}, {"col", 1}, {"operations", {"ADD", "PASS"}}}});
+  {
+    std::ofstream output(path);
+    output << value.dump(2);
+  }
+  return cgra::TargetModel::loadFromFile(path);
+}
+
 } // namespace
 
 int main() {
@@ -184,6 +232,79 @@ int main() {
     expect(!research.manifest.has_value(), "mapping research must not emit a hardware manifest");
     expect(research.stats.mapperInvoked,
            "mapping research must record that the modulo mapper was invoked");
+    expect(research.physicalRealizability.status ==
+                   cgra::pipeline::PhysicalRealizabilityStatus::Error &&
+               research.physicalRealizability.reasonCode ==
+                   "only_rf_invalid_candidates_found",
+           "RF-rejected candidates without a lower-bound proof are mapper-incomplete, not "
+           "resource-infeasible");
+
+    cgra::pipeline::CompileDFGOptions ingressOptions;
+    const auto recurrenceTarget = constrainedRecurrenceTarget();
+    ingressOptions.tripCount = 4;
+    ingressOptions.mode = cgra::pipeline::CompileDFGMode::MappingResearch;
+    ingressOptions.mapper.minII = 5;
+    ingressOptions.mapper.maxII = 5;
+    ingressOptions.mapper.budget.maxNodeCandidateAttempts = 10'000;
+    ingressOptions.mapper.budget.maxBacktracks = 10'000;
+    ingressOptions.mapper.budget.maxRouteSearchCalls = 20'000;
+    ingressOptions.artifactDirectory =
+        cgra::test::TestArtifacts::forCase("mapping_research_recurrence_without_ingress").root();
+    const auto beforeIngress =
+        cgra::pipeline::compileGenericDFG(delayedRecurrenceConsumer(), recurrenceTarget,
+                                         ingressOptions);
+    expect(!beforeIngress.ok() && beforeIngress.stats.completedModuloMappings > 0 &&
+               beforeIngress.stats.rfRejected > 0,
+           "delayed recurrence fixture must expose a real finite-RF rejection before "
+           "normalization: " + beforeIngress.message);
+
+    ingressOptions.normalizeRecurrenceIngress = true;
+    ingressOptions.artifactDirectory =
+        cgra::test::TestArtifacts::forCase("mapping_research_recurrence_with_ingress").root();
+    const auto afterIngress =
+        cgra::pipeline::compileGenericDFG(delayedRecurrenceConsumer(), recurrenceTarget,
+                                         ingressOptions);
+    const auto normalizedGraph =
+        cgra::transforms::normalizeRecurrenceIngress(delayedRecurrenceConsumer());
+    const auto normalizedTarget =
+        cgra::target::TargetLegalizer::legalize(normalizedGraph.dfg, recurrenceTarget);
+    expect(normalizedTarget.ok(), "normalized recurrence fixture must target-legalize");
+    cgra::mapping::ModuloMappingBuilder knownBuilder(*normalizedTarget.dfg, 5);
+    knownBuilder.place(0, {0, 0}, cgra::mapping::ModuloSlot(1));
+    knownBuilder.place(1, {0, 1}, cgra::mapping::ModuloSlot(2));
+    knownBuilder.place(2, {0, 1}, cgra::mapping::ModuloSlot(3));
+    knownBuilder.place(3, {0, 0}, cgra::mapping::ModuloSlot(0));
+    for (const auto& edge : normalizedTarget.dfg->edges()) {
+      const auto domain = edge.kind() == cgra::ir::Edge::Kind::Predicate
+                              ? cgra::mapping::NetworkDomain::Predicate
+                              : cgra::mapping::NetworkDomain::Data;
+      if (edge.id == 0 || edge.id == 3) {
+        knownBuilder.setTransport(
+            edge.id,
+            {edge.id,
+             domain,
+             {cgra::mapping::LinkStep{domain, {0, 0}, cgra::mapping::Direction::East, 0}},
+             1});
+      } else {
+        const auto tile = edge.id == 1 ? cgra::mapping::TileCoord{0, 1}
+                                      : cgra::mapping::TileCoord{0, 0};
+        knownBuilder.setTransport(
+            edge.id,
+            {edge.id, domain, {cgra::mapping::VirtualHold{domain, tile, 0, 1}}, 1});
+      }
+    }
+    const auto knownMapping = knownBuilder.finish();
+    cgra::pipeline::BackendFeasibilityChecker realChecker;
+    const auto knownCheck =
+        realChecker.check(*normalizedTarget.dfg, recurrenceTarget, knownMapping);
+    expect(knownCheck.decision == cgra::mapping::CompleteMappingDecision::Accept,
+           "known ingress schedule must pass real Stage/RF checks: " + knownCheck.reasonCode +
+               ": " + knownCheck.message);
+    expect(afterIngress.ok() && afterIngress.moduloMapping.has_value(),
+           "recurrence ingress must make the delayed consumer pass real Stage/RF checks: " +
+               afterIngress.message);
+    expect(afterIngress.stats.safeII == 5 && afterIngress.stats.rfConstrainedMappings > 0,
+           "normalized mapping must report its verified finite-RF safe II");
 
     const auto research64 =
         cgra::TargetModel::loadFromFile(Root / "target/cgra_mapping64_v1.json");

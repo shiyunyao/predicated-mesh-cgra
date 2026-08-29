@@ -30,6 +30,14 @@ void diagnostic(ModuloMapperResult& result, ModuloMapperDiagnosticCode code, std
                 std::optional<std::uint32_t> ii = std::nullopt,
                 std::optional<NodeId> node = std::nullopt,
                 std::optional<EdgeId> edge = std::nullopt) {
+  constexpr std::size_t MaxDiagnosticsPerCode = 16;
+  if (static_cast<std::size_t>(
+          std::ranges::count_if(result.diagnostics, [code](const auto& diagnostic) {
+            return diagnostic.code == code;
+          })) >= MaxDiagnosticsPerCode) {
+    ++result.suppressedDiagnostics;
+    return;
+  }
   result.diagnostics.push_back({code, std::move(message), ii, node, edge});
 }
 
@@ -160,10 +168,25 @@ struct CandidateState {
     for (const auto& edge : dfg.edges()) {
       if (edge.dst != node || !absolutePlacements.contains(edge.src))
         continue;
-      const auto& source = dfg.node(edge.src);
-      const auto ready = source.producerOutputReadyOffset.value_or(0U);
-      result = std::max(result, absolutePlacements.at(edge.src).issueCycle + ready +
-                                  static_cast<std::uint64_t>(edge.distance) * ii);
+      std::uint64_t separation = 0;
+      if (edge.kind() == ir::Edge::Kind::Memory) {
+        separation = target.memoryDependenceSeparation(
+            std::get<ir::MemoryEdgeInfo>(edge.info).dependence);
+      } else {
+        separation = dfg.node(edge.src).producerOutputReadyOffset.value_or(0U);
+      }
+      const auto sourceTime = absolutePlacements.at(edge.src).issueCycle;
+      if (sourceTime > std::numeric_limits<std::uint64_t>::max() - separation)
+        return std::numeric_limits<std::uint64_t>::max();
+      const auto readyTime = sourceTime + separation;
+      const auto recurrenceOffset = static_cast<std::uint64_t>(edge.distance) * ii;
+      // src(i) -> dst(i + distance) means
+      // dst_time + distance * II >= src_time + separation.  Adding the
+      // recurrence offset here would delay the consumer by an extra iteration
+      // and manufacture the RF lifetime that this scheduler is intended to
+      // avoid.
+      const auto candidate = readyTime > recurrenceOffset ? readyTime - recurrenceOffset : 0;
+      result = std::max(result, candidate);
     }
     return result;
   }

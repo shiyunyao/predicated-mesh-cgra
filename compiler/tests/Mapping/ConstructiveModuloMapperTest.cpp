@@ -52,6 +52,25 @@ cgra::ir::DFG addChain() {
   return builder.finish();
 }
 
+cgra::ir::DFG recurrencePair() {
+  cgra::ir::DFGBuilder builder("constructive_recurrence_pair");
+  const auto seed = builder.addExternal("seed", cgra::ir::ValueType::i32());
+  const auto producer = builder.addNode(cgra::ir::Opcode::Add,
+                                        {cgra::ir::ValueType::i32(), cgra::ir::ValueType::i32()},
+                                        cgra::ir::ValueType::i32());
+  const auto consumer = builder.addNode(cgra::ir::Opcode::Add,
+                                        {cgra::ir::ValueType::i32(), cgra::ir::ValueType::i32()},
+                                        cgra::ir::ValueType::i32());
+  builder.bindExternal(producer, 0, seed);
+  builder.bindExternal(producer, 1, seed);
+  builder.bindExternal(consumer, 1, seed);
+  builder.addDataEdge(
+      producer, consumer, 0, 1,
+      cgra::ir::RecurrenceBoundary{{{0, cgra::ir::ExternalValueRef{seed}}}});
+  builder.addLiveOut("result", cgra::ir::ValueType::i32(), consumer);
+  return builder.finish();
+}
+
 } // namespace
 
 int main() {
@@ -84,6 +103,21 @@ int main() {
     expect(chain.ok(), "add chain must target-legalize");
     const auto chainResult = cgra::mapping::mapConstructively(*chain.dfg, target, options);
     expect(chainResult.ok(), "constructive mapper must honor distance-zero producer order");
+
+    const auto recurrence = cgra::target::TargetLegalizer::legalize(recurrencePair(), target);
+    expect(recurrence.ok(), "recurrence pair must target-legalize");
+    auto recurrenceOptions = options;
+    recurrenceOptions.minII = 2;
+    recurrenceOptions.maxSafeII = 2;
+    const auto recurrenceResult =
+        cgra::mapping::mapConstructively(*recurrence.dfg, target, recurrenceOptions);
+    expect(recurrenceResult.ok(), "positive-distance dependence must construct a legal schedule");
+    const auto& recurrenceEdge = recurrence.dfg->edges().front();
+    const auto sourceSlot = recurrenceResult.mapping->placement(recurrenceEdge.src).issueSlot.value();
+    const auto destinationSlot =
+        recurrenceResult.mapping->placement(recurrenceEdge.dst).issueSlot.value();
+    expect(sourceSlot == destinationSlot,
+           "distance-one dependence must not add a spurious full-II delay to its consumer");
 
     std::cout << "CONSTRUCTIVE_MODULO_MAPPER_PASS\n";
     return 0;

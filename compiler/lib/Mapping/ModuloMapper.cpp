@@ -32,6 +32,14 @@ void addDiagnostic(ModuloMapperResult& result, ModuloMapperDiagnosticCode code, 
                    std::optional<std::uint32_t> ii = std::nullopt,
                    std::optional<NodeId> node = std::nullopt,
                    std::optional<EdgeId> edge = std::nullopt) {
+  constexpr std::size_t MaxDiagnosticsPerCode = 16;
+  if (static_cast<std::size_t>(
+          std::ranges::count_if(result.diagnostics, [code](const auto& diagnostic) {
+            return diagnostic.code == code;
+          })) >= MaxDiagnosticsPerCode) {
+    ++result.suppressedDiagnostics;
+    return;
+  }
   result.diagnostics.push_back({code, std::move(message), ii, node, edge});
 }
 
@@ -548,7 +556,8 @@ std::string ModuloMapperResult::format() const {
          << "\nRF rejected: " << stats.rfRejected
          << "\nRF budget exceeded: " << stats.rfBudgetExceeded;
   output << "\nMII: " << mii << "\nsafe II: " << safeII
-         << "\nsolution kind: " << solutionKind;
+         << "\nsolution kind: " << solutionKind
+         << "\nsuppressed diagnostics: " << suppressedDiagnostics;
   for (const auto& diagnostic : diagnostics)
     output << '\n' << toString(diagnostic.code) << ": " << diagnostic.message;
   return output.str();
@@ -565,6 +574,7 @@ std::string ModuloMapperResult::toJson() const {
                {"fallback_attempts", fallbackAttempts},
                {"fallback_local_repairs", fallbackLocalRepairs},
                {"fallback_schedule_growth", fallbackScheduleGrowth},
+               {"suppressed_diagnostics", suppressedDiagnostics},
                {"fallback_failure_reason", fallbackFailureReason},
                {"stats",
                 {{"starting_mii", stats.startingMII},
@@ -713,7 +723,7 @@ ModuloMapperResult ModuloMapper::map(const cgra::target::TargetDFG& dfg,
     auto constructive = mapConstructively(dfg, target, constructiveOptions);
 
     result.fallbackAttempts += constructive.stats.iiAttempts;
-    result.fallbackLocalRepairs += constructive.stats.rejectedPlacements;
+    result.fallbackLocalRepairs += constructive.fallbackLocalRepairs;
     result.fallbackScheduleGrowth = constructive.fallbackScheduleGrowth;
     result.stats.iiAttempts += constructive.stats.iiAttempts;
     result.stats.nodeCandidateAttempts += constructive.stats.nodeCandidateAttempts;
@@ -735,6 +745,7 @@ ModuloMapperResult ModuloMapper::map(const cgra::target::TargetDFG& dfg,
     result.stats.finalII = constructive.stats.finalII;
     result.diagnostics.insert(result.diagnostics.end(), constructive.diagnostics.begin(),
                               constructive.diagnostics.end());
+    result.suppressedDiagnostics += constructive.suppressedDiagnostics;
     if (constructive.ok()) {
       result.status = ModuloMapperStatus::Success;
       result.mapping = std::move(constructive.mapping);

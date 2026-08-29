@@ -50,8 +50,9 @@ def terminal_status(result: dict[str, Any]) -> str:
     """Derive a conservative terminal status from structured case evidence.
 
     This function never upgrades a route-only candidate to a success. Resource
-    infeasibility is reported only when the backend supplied a concrete RF or
-    stage rejection witness; budget and timeout remain compiler/harness defects
+    infeasibility is reported only when the backend supplied one of the strong
+    lower-bound/exhaustive proofs in RESOURCE_PROOF_KINDS. Individual RF or
+    stage rejections, budget exhaustion, and timeout remain compiler defects
     for a strict coverage run.
     """
     if result.get("excluded") or result.get("status") == "EXCLUDED":

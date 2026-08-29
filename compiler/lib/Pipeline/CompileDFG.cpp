@@ -178,6 +178,7 @@ std::string CompileDFGResult::toJson() const {
                {"feasibility_fallback_attempts", stats.feasibilityFallbackAttempts},
                {"feasibility_fallback_schedule_growth",
                 stats.feasibilityFallbackScheduleGrowth},
+               {"suppressed_mapper_diagnostics", stats.suppressedMapperDiagnostics},
                {"node_candidate_attempts", stats.nodeCandidateAttempts},
                {"route_state_expansions", stats.routeStateExpansions},
                {"completed_modulo_mappings", stats.completedModuloMappings},
@@ -315,6 +316,7 @@ CompileDFGResult compileGenericDFG(const ir::DFG& dfg, const TargetModel& target
     result.stats.feasibilityFallbackInvoked = mapped.fallbackInvoked;
     result.stats.feasibilityFallbackAttempts = mapped.fallbackAttempts;
     result.stats.feasibilityFallbackScheduleGrowth = mapped.fallbackScheduleGrowth;
+    result.stats.suppressedMapperDiagnostics = mapped.suppressedDiagnostics;
     if (!mapped.ok()) {
       const auto status = options.mode == CompileDFGMode::MappingResearch &&
                                   mapped.stats.rfBudgetExceeded != 0
@@ -325,8 +327,8 @@ CompileDFGResult compileGenericDFG(const ir::DFG& dfg, const TargetModel& target
                               ? CompileDFGStatus::RFConstrainedMappingFailure
                               : CompileDFGStatus::MappingFailure;
       if (status == CompileDFGStatus::RFConstrainedMappingFailure) {
-        result.physicalRealizability.status = PhysicalRealizabilityStatus::Infeasible;
-        result.physicalRealizability.reasonCode = "rf_constrained_mapping_failed";
+        result.physicalRealizability.status = PhysicalRealizabilityStatus::Error;
+        result.physicalRealizability.reasonCode = "only_rf_invalid_candidates_found";
         result.physicalRealizability.message = mapped.format();
       } else if (status == CompileDFGStatus::RFConstrainedMappingBudgetFailure) {
         result.physicalRealizability.status = PhysicalRealizabilityStatus::Error;

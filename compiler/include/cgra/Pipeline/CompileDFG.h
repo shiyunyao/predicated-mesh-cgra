@@ -92,6 +92,7 @@ struct CompileDFGStats {
   bool feasibilityFallbackInvoked = false;
   std::uint64_t feasibilityFallbackAttempts = 0;
   std::uint64_t feasibilityFallbackScheduleGrowth = 0;
+  std::uint64_t suppressedMapperDiagnostics = 0;
   std::uint64_t nodeCandidateAttempts = 0;
   std::uint64_t routeStateExpansions = 0;
   std::uint64_t completedModuloMappings = 0;

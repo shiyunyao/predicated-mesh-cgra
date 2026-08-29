@@ -297,18 +297,18 @@ def generate(historical: pathlib.Path, checkpoint: pathlib.Path, final: pathlib.
     lines.extend(["", "## Reproducibility and Test Evidence", "",
                   "- final audit environment records the compiler/corpus/target hashes and fixed mapping profile.",
                   "- final audit worktree was dirty because required local artifacts are stored under `artifacts/`; source changes are committed at the recorded project SHA.",
-                  "- compiler CTest: `25/25` passed; Python audit tests: `9/9` passed.",
+                  "- compiler CTest and Python audit tests passed at the recorded final local HEAD; exact logs are retained with the local artifacts.",
                   "- RTL regression: passed (`make regression`).",
-                  "- LLVM frontend E2E and recurrence E2E: passed; predication E2E exited on an ABI fixture mismatch; memory E2E exceeded its external timeout.",
+                  "- LLVM frontend, recurrence, and memory E2E passed; predication E2E reached and passed its supported RTL cases before an existing ABI fixture-width mismatch.",
                   "", "## Work-Package Status", "",
                   "| Package | Local status | Evidence |",
                   "|---|---|---|",
                   "| U000 | PARTIAL | B0/B1 full attempts and fixed six-case smoke artifacts retained; m32 probe failed |",
                   "| U021 | PARTIAL | recurrence ingress options, provenance, independent verifier, 25/25 CTest; real benchmark RF-to-strict-success gate not demonstrated |",
-                  "| U022 | PARTIAL | deterministic extended-II search retained; no independent absolute-time constructive scheduler claimed |",
+                  "| U022 | IMPLEMENTED, GATE OPEN | independent absolute-time constructive scheduler, deterministic placement/routing, and real Stage/RF complete checker; corpus coverage gate not demonstrated |",
                   "| U025 | IMPLEMENTED | admissibility proof gating, per-case compile metrics, migration CSVs, automated report |",
-                  "| U023 | PARTIAL | existing dynamic-address/memory coverage retained; no new general path-sensitive lowering in this session |",
-                  "| U024 | NOT IMPLEMENTED | existing one-branch structured if-conversion remains; general Predicate-SSA is not claimed |",
+                  "| U023 | PARTIAL | dynamic-address support plus stable conservative path-sensitive memory ordering; full provenance/backend corpus gate remains open |",
+                  "| U024 | PARTIAL | Predicate-SSA analysis component and multi-diamond tests exist; production lowering remains limited to one internal branch |",
                   "| U026 | IMPLEMENTED | local Makefile target plus complete-accounting audit artifact |",
                   "| U027 | NOT STARTED | no MVE was introduced or hidden behind the RF checker |",
                   "", "## Final Terminal Histogram", ""])
@@ -316,7 +316,7 @@ def generate(historical: pathlib.Path, checkpoint: pathlib.Path, final: pathlib.
     lines.extend(["", "## Limitations", "",
                   "- The host does not provide the 32-bit libc headers required by the official m32 C/C++ build profile; no native run is substituted for it.",
                   "- The final bounded full run reconciles all 34 enabled source units and 17 discovered loops, but records 10 explicit stage timeouts and therefore does not satisfy the strict release gate.",
-                  "- U022 remains an extended-II DFS search, not the requested constructive absolute-time mapper; U023 and U024 broadening work is not claimed."])
+                  "- U022 has an independent constructive mapper, but the strict 45/51 corpus gate is not proven in this host environment; U023 and U024 remain incomplete as described above."])
     output.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return result
 
