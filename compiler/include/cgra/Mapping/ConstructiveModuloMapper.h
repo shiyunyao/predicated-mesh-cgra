@@ -66,6 +66,8 @@ struct ConstructiveModuloMapperStats {
   std::uint64_t rfWriteSourceEarlyRejects = 0;
   std::uint64_t rfPortEventsCommitted = 0;
   std::uint64_t rfPortRollbackCount = 0;
+  std::uint64_t lateReadPortConflicts = 0;
+  std::uint64_t lateWritePortConflicts = 0;
 };
 
 ModuloMapperResult mapConstructively(const target::TargetDFG& dfg, const TargetModel& target,

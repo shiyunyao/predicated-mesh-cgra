@@ -21,6 +21,7 @@ void usage(const char* name) {
                " [--enable-feasibility-fallback] [--low-ii-window N] [--max-safe-ii N]"
                " [--enable-recurrence-ingress]"
                " [--enable-software-rotation] [--max-rotation-factor N]"
+               " [--enable-rf-port-aware|--disable-rf-port-aware]"
                " [--max-control-period N]"
                " [--max-ii N] [--min-ii N] [--max-node-candidates N]"
                " [--max-backtracks N] [--max-route-calls N] [--max-route-states N]"
@@ -93,6 +94,10 @@ int main(int argc, char** argv) {
         options.backend.normalizeRecurrenceIngress = true;
       } else if (arg == "--enable-software-rotation") {
         options.backend.rfAllocation.enableSoftwareRotation = true;
+      } else if (arg == "--enable-rf-port-aware") {
+        options.backend.mapper.rfPortAware.enabled = true;
+      } else if (arg == "--disable-rf-port-aware") {
+        options.backend.mapper.rfPortAware.enabled = false;
       } else if (arg == "--max-rotation-factor") {
         options.backend.rfAllocation.maxRotationFactor = std::stoul(next());
       } else if (arg == "--max-control-period") {

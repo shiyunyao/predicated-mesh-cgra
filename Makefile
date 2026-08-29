@@ -110,6 +110,8 @@ CGRA_BENCH_COMPILE_BIN := $(CGRA_BENCH_FRONTEND_BUILD)/bin/cgrac-compile-kernel
 CGRA_BENCH_RESEARCH_TARGET ?= target/cgra_mapping64_v1.json
 CGRA_BENCH_RESEARCH_OUT ?= build/cgra-bench/run/research
 CGRA_BENCH_ENABLE_SOFTWARE_ROTATION ?= 1
+CGRA_BENCH_RF_PORT_AWARE ?= on
+CGRA_BENCH_MAPPING_OBJECTIVE ?= find-any-feasible
 
 .PHONY: help check-test lint build test regression shared-scratchpad-tests shared-scratchpad-negative-tests program program-prepare program-build program-run program-check compiler-e2e kernel-abi-e2e kernel-abi-scalar-e2e kernel-abi-base-load-e2e kernel-abi-recurrence-e2e kernel-abi-tripcount-e2e llvm-frontend-e2e llvm-frontend-c-smoke llvm-recurrence-e2e llvm-predication-e2e llvm-memory-e2e llvm-linear-loop-canonical-smoke llvm-linear-loop-reachability-e2e cgra-bench-inventory cgra-bench-smoke cgra-bench-audit cgra-bench-research-audit cgra-bench-coverage-audit-local cgra-bench-freeze-supported modulo-loop modulo-loop-prepare modulo-loop-check modulo-loop-tripcount-tests modulo-loop-zero-boundary-test modulo-loop-reuse-test modulo-loop-assert-tests synth-fetch-asap7 synth-memory-shape synth-area synth-timing synth-power synth-power-feasibility synth-fn-cacti clean
 
@@ -458,7 +460,7 @@ cgra-bench-coverage-audit-local:
 	cmake -S compiler -B "$(CGRA_BENCH_FRONTEND_BUILD)" -DCGRA_BUILD_TESTS=OFF -DCGRA_WARNINGS_AS_ERRORS=ON $(LLVM_CMAKE_ARG); \
 	cmake --build "$(CGRA_BENCH_FRONTEND_BUILD)" --target cgra-llvm-loop-lower cgrac-compile-kernel --parallel; \
 	rotation_args=""; if test "$(CGRA_BENCH_ENABLE_SOFTWARE_ROTATION)" = 1; then rotation_args="--enable-software-rotation"; fi; \
-	python3 tools/cgra_bench/run.py --corpus "$(CGRA_BENCH_CORPUS)" --cases "$(CGRA_BENCH_CASES)" --target "$(CGRA_BENCH_RESEARCH_TARGET)" --frontend-bin "$(CGRA_BENCH_FRONTEND_BIN)" --compile-kernel-bin "$(CGRA_BENCH_COMPILE_BIN)" --out "$(CGRA_BENCH_RESEARCH_OUT)" --all --profile research --lane mapping-research --source-abi m32 --mapping-objective find-any-feasible --enable-recurrence-ingress $$rotation_args
+	python3 tools/cgra_bench/run.py --corpus "$(CGRA_BENCH_CORPUS)" --cases "$(CGRA_BENCH_CASES)" --target "$(CGRA_BENCH_RESEARCH_TARGET)" --frontend-bin "$(CGRA_BENCH_FRONTEND_BIN)" --compile-kernel-bin "$(CGRA_BENCH_COMPILE_BIN)" --out "$(CGRA_BENCH_RESEARCH_OUT)" --all --profile research --lane mapping-research --source-abi m32 --mapping-objective "$(CGRA_BENCH_MAPPING_OBJECTIVE)" --enable-recurrence-ingress --rf-port-aware "$(CGRA_BENCH_RF_PORT_AWARE)" $$rotation_args
 
 cgra-bench-freeze-supported:
 	python3 tools/cgra_bench/freeze_supported.py --run "$(CGRA_BENCH_OUT)/full" --out benchmarks/cgra-bench/known_supported.v1.json

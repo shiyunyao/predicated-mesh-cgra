@@ -7,6 +7,10 @@
 #include "cgra/Target/TargetDFG.h"
 #include "cgra/Target/TargetModel.h"
 
+#include <cstdint>
+#include <optional>
+#include <vector>
+
 namespace cgra::mapping {
 
 struct RouteSearchRequest {
@@ -23,6 +27,14 @@ struct RouteSearchOptions {
   RouteSearchBudget budget;
   bool allowVirtualHold = true;
   RouteTieBreakPolicy tieBreak = RouteTieBreakPolicy::MinSeparationThenHoldsThenHops;
+  struct ActionBan {
+    NetworkDomain domain = NetworkDomain::Data;
+    TileCoord tile;
+    std::uint32_t elapsed = 0;
+    std::optional<Direction> direction;
+    friend bool operator==(const ActionBan&, const ActionBan&) = default;
+  };
+  std::vector<ActionBan> bannedActions;
 };
 
 struct RouteAlternativeRequest {

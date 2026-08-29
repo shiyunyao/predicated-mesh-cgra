@@ -186,6 +186,15 @@ std::string CompileDFGResult::toJson() const {
                {"post_mapping_rejected", stats.postMappingRejected},
                {"stage_rejected", stats.stageRejected},
                {"rf_rejected", stats.rfRejected},
+               {"rf_port_match_calls", stats.rfPortMatchCalls},
+               {"rf_port_match_failures", stats.rfPortMatchFailures},
+               {"rf_read_port_early_rejects", stats.rfReadPortEarlyRejects},
+               {"rf_write_port_early_rejects", stats.rfWritePortEarlyRejects},
+               {"rf_write_source_early_rejects", stats.rfWriteSourceEarlyRejects},
+               {"rf_port_events_committed", stats.rfPortEventsCommitted},
+               {"rf_port_rollback_count", stats.rfPortRollbackCount},
+               {"late_read_port_conflicts", stats.lateReadPortConflicts},
+               {"late_write_port_conflicts", stats.lateWritePortConflicts},
                {"rf_budget_exceeded", stats.rfBudgetExceeded},
                {"rf_rejected_by_ii", Json::object()},
                {"rf_rejected_by_reason", Json::object()},
@@ -311,6 +320,15 @@ CompileDFGResult compileGenericDFG(const ir::DFG& dfg, const TargetModel& target
     result.stats.postMappingRejected = mapped.stats.postMappingRejected;
     result.stats.stageRejected = mapped.stats.stageRejected;
     result.stats.rfRejected = mapped.stats.rfRejected;
+    result.stats.rfPortMatchCalls = mapped.stats.rfPortMatchCalls;
+    result.stats.rfPortMatchFailures = mapped.stats.rfPortMatchFailures;
+    result.stats.rfReadPortEarlyRejects = mapped.stats.rfReadPortEarlyRejects;
+    result.stats.rfWritePortEarlyRejects = mapped.stats.rfWritePortEarlyRejects;
+    result.stats.rfWriteSourceEarlyRejects = mapped.stats.rfWriteSourceEarlyRejects;
+    result.stats.rfPortEventsCommitted = mapped.stats.rfPortEventsCommitted;
+    result.stats.rfPortRollbackCount = mapped.stats.rfPortRollbackCount;
+    result.stats.lateReadPortConflicts = mapped.stats.lateReadPortConflicts;
+    result.stats.lateWritePortConflicts = mapped.stats.lateWritePortConflicts;
     result.stats.rfBudgetExceeded = mapped.stats.rfBudgetExceeded;
     result.stats.rfRejectedByII = mapped.stats.rfRejectedByII;
     result.stats.rfRejectedByReason = mapped.stats.rfRejectedByReason;

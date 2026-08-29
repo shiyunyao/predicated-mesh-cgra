@@ -240,6 +240,27 @@ void testTargetDrivenHopLatency() {
          "route hop latency comes from the target contract");
 }
 
+void testBoundedAlternatives(const cgra::TargetModel& target) {
+  const auto dfg = legalize(cgra::ir::fixtures::arithmeticChain(), target);
+  ModuloResourceModel resources(target, 1);
+  ResourceReservationTable reservations(resources);
+  const RouteSearchRequest request{0, {0, {0, 0}, ModuloSlot(0)},
+                                   {1, {0, 1}, ModuloSlot(0)}};
+  const auto canonical = ModuloRouteSearch::search(dfg, target, resources, reservations, request);
+  expect(canonical.ok(), "canonical route exists for alternatives test");
+  const auto one = ModuloRouteSearch::searchAlternatives(
+      dfg, target, resources, reservations, {request, 1});
+  expect(one.ok() && one.plans.size() == 1 && one.plans.front() == *canonical.plan,
+         "K=1 alternatives preserves the canonical route");
+  const auto many = ModuloRouteSearch::searchAlternatives(
+      dfg, target, resources, reservations, {request, 3});
+  expect(many.ok() && !many.plans.empty() && many.plans.size() <= 3,
+         "bounded alternatives returns at most K valid plans");
+  for (std::size_t index = 0; index < many.plans.size(); ++index)
+    for (std::size_t other = index + 1; other < many.plans.size(); ++other)
+      expect(many.plans[index] != many.plans[other], "route alternatives are deduplicated");
+}
+
 } // namespace
 
 int main() {
@@ -250,6 +271,7 @@ int main() {
     testBlockedLinkWaitAndAlternate(target);
     testFailureAndBoundedSearch(target);
     testTargetDrivenHopLatency();
+    testBoundedAlternatives(target);
     std::cout << "modulo route search tests passed\n";
     return 0;
   } catch (const std::exception& error) {

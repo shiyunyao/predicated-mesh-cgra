@@ -330,6 +330,11 @@ private:
 
   bool expandLink(std::size_t currentId, const Cost& current, Direction direction) {
     const auto state = stateFor(currentId);
+    if (std::ranges::any_of(options_.bannedActions, [&](const auto& ban) {
+          return ban.domain == domain_ && ban.tile == state.tile && ban.elapsed == current.elapsed &&
+                 ban.direction && *ban.direction == direction;
+        }))
+      return true;
     ++result_.stats.linkTransitionsConsidered;
     const auto nextTile = neighbor(state.tile, direction, target_);
     if (!nextTile) {
@@ -373,6 +378,11 @@ private:
       return false;
     }
     const auto state = stateFor(currentId);
+    if (std::ranges::any_of(options_.bannedActions, [&](const auto& ban) {
+          return ban.domain == domain_ && ban.tile == state.tile && ban.elapsed == current.elapsed &&
+                 !ban.direction;
+        }))
+      return true;
     const auto nextSlot = time_.advance(state.slot, 1);
     const auto nextId = stateId({state.tile, nextSlot});
     const Cost nextCost{current.elapsed + 1, current.holds + 1, current.hops};
@@ -626,9 +636,6 @@ RouteAlternativeResult ModuloRouteSearch::searchAlternatives(
     const RouteAlternativeRequest& request, const RouteSearchOptions& options) {
   RouteAlternativeResult result;
   const auto limit = std::max<std::uint32_t>(1, request.maxAlternatives);
-  // The current route state model exposes one canonical shortest plan. Keep
-  // this API transactional and deterministic; future k-shortest expansion can
-  // add plans without changing mapper call sites or K=1 behavior.
   const auto first = search(dfg, target, resources, reservations, request.base, options);
   result.status = first.status;
   result.stats = first.stats;
@@ -637,9 +644,43 @@ RouteAlternativeResult ModuloRouteSearch::searchAlternatives(
     result.plans.push_back(*first.plan);
   if (limit == 1 || !first.ok())
     return result;
-  // A second identical plan is never useful and would violate action-sequence
-  // deduplication. Return the unique canonical plan until spur-point routing
-  // is added; callers still honor the requested bound.
+
+  // Generate a bounded deterministic set of alternatives by banning each
+  // transition of the canonical path in turn. This is a conservative
+  // spur-point approximation: it never changes the K=1 result, and every
+  // returned plan is independently validated by the existing shortest-path
+  // search before the mapper sees it.
+  for (const auto& action : first.plan->actions) {
+    if (result.plans.size() >= limit)
+      break;
+    auto alternateOptions = options;
+    RouteSearchOptions::ActionBan ban;
+    if (const auto* link = std::get_if<LinkStep>(&action)) {
+      ban.domain = link->domain;
+      ban.tile = link->source;
+      ban.elapsed = link->elapsedFromProducerIssue;
+      ban.direction = link->direction;
+    } else {
+      const auto& hold = std::get<VirtualHold>(action);
+      ban.domain = hold.domain;
+      ban.tile = hold.tile;
+      ban.elapsed = hold.captureElapsed;
+    }
+    alternateOptions.bannedActions.push_back(ban);
+    const auto alternate = search(dfg, target, resources, reservations, request.base,
+                                  alternateOptions);
+    result.stats.stateExpansions += alternate.stats.stateExpansions;
+    result.stats.queuePushes += alternate.stats.queuePushes;
+    result.stats.linkTransitionsConsidered += alternate.stats.linkTransitionsConsidered;
+    result.stats.holdTransitionsConsidered += alternate.stats.holdTransitionsConsidered;
+    result.stats.blockedLinks += alternate.stats.blockedLinks;
+    result.stats.invalidBorderLinks += alternate.stats.invalidBorderLinks;
+    result.stats.maxQueueSize = std::max(result.stats.maxQueueSize, alternate.stats.maxQueueSize);
+    if (!alternate.plan)
+      continue;
+    if (std::ranges::find(result.plans, *alternate.plan) == result.plans.end())
+      result.plans.push_back(*alternate.plan);
+  }
   return result;
 }
 

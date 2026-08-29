@@ -128,50 +128,52 @@ struct CandidateState {
     }
     if (routes.plans.empty())
       return false;
-    ++stats.routeSuccesses;
-    const auto& selectedPlan = routes.plans.front();
-    const auto dependence = MappedDependence{edgeId, edge.kind(),
-          selectedPlan.requiredSeparationCycles, selectedPlan};
-    std::optional<RFPortReservationDelta> rfReservation;
-    if (options.rfPortAware.enabled &&
-        (options.rfPortAware.reserveExplicitHoldEvents ||
-         options.rfPortAware.reserveMandatoryTerminalEvents)) {
-      const auto chain = derivePartialStorageChain(
-          dfg, target, edge, producer, consumer, dependence, ii,
-          options.rfPortAware.reserveMandatoryTerminalEvents);
-      if (!chain.definiteEvents.empty()) {
-        ++stats.rfPortMatchCalls;
-        const auto portResult = rfPortReservations.tryReserve(chain.definiteEvents);
-        if (!portResult.ok()) {
-          ++stats.rfPortMatchFailures;
-          if (portResult.status == RFPortReservationStatus::ReadCapacityExceeded)
-            ++stats.rfReadPortEarlyRejects;
-          else if (portResult.status == RFPortReservationStatus::WriteCapacityExceeded)
-            ++stats.rfWritePortEarlyRejects;
-          else if (portResult.status == RFPortReservationStatus::WriteSourceCompatibilityFailure)
-            ++stats.rfWriteSourceEarlyRejects;
-          return false;
+    for (const auto& selectedPlan : routes.plans) {
+      ++stats.routeSuccesses;
+      const auto dependence = MappedDependence{edgeId, edge.kind(),
+            selectedPlan.requiredSeparationCycles, selectedPlan};
+      std::optional<RFPortReservationDelta> rfReservation;
+      if (options.rfPortAware.enabled &&
+          (options.rfPortAware.reserveExplicitHoldEvents ||
+           options.rfPortAware.reserveMandatoryTerminalEvents)) {
+        const auto chain = derivePartialStorageChain(
+            dfg, target, edge, producer, consumer, dependence, ii,
+            options.rfPortAware.reserveMandatoryTerminalEvents);
+        if (!chain.definiteEvents.empty()) {
+          ++stats.rfPortMatchCalls;
+          const auto portResult = rfPortReservations.tryReserve(chain.definiteEvents);
+          if (!portResult.ok()) {
+            ++stats.rfPortMatchFailures;
+            if (portResult.status == RFPortReservationStatus::ReadCapacityExceeded)
+              ++stats.rfReadPortEarlyRejects;
+            else if (portResult.status == RFPortReservationStatus::WriteCapacityExceeded)
+              ++stats.rfWritePortEarlyRejects;
+            else if (portResult.status == RFPortReservationStatus::WriteSourceCompatibilityFailure)
+              ++stats.rfWriteSourceEarlyRejects;
+            continue;
+          }
+          stats.rfPortEventsCommitted += chain.definiteEvents.size();
+          rfReservation = *portResult.delta;
         }
-        stats.rfPortEventsCommitted += chain.definiteEvents.size();
-        rfReservation = *portResult.delta;
       }
-    }
-    const auto ids = routeResources(selectedPlan, producer);
-    const auto reservation = reservations.tryReserve(ids, {ReservationOwnerKind::Edge, edgeId});
-    if (!reservation) {
-      if (rfReservation) {
-        rfPortReservations.undo(*rfReservation);
-        ++stats.rfPortRollbackCount;
+      const auto ids = routeResources(selectedPlan, producer);
+      const auto reservation = reservations.tryReserve(ids, {ReservationOwnerKind::Edge, edgeId});
+      if (!reservation) {
+        if (rfReservation) {
+          rfPortReservations.undo(*rfReservation);
+          ++stats.rfPortRollbackCount;
+        }
+        continue;
       }
-      return false;
+      edges.emplace(edgeId, EdgeReservation{edgeId, *reservation, dependence, rfReservation});
+      schedule.transports.emplace(edgeId,
+                                  AbsoluteTransport{edgeId,
+                                                    absolutePlacements.at(edge.src).issueCycle,
+                                                    absolutePlacements.at(edge.dst).issueCycle,
+                                                    selectedPlan});
+      return true;
     }
-    edges.emplace(edgeId, EdgeReservation{edgeId, *reservation, dependence, rfReservation});
-    schedule.transports.emplace(edgeId,
-                                AbsoluteTransport{edgeId,
-                                                  absolutePlacements.at(edge.src).issueCycle,
-                                                  absolutePlacements.at(edge.dst).issueCycle,
-                                                  selectedPlan});
-    return true;
+    return false;
   }
 
   void rollbackNode(NodeId node, const std::vector<EdgeId>& realized) {
@@ -489,6 +491,10 @@ ModuloMapperResult mapConstructively(const target::TargetDFG& dfg, const TargetM
           ++result.stats.rfRejected;
           ++result.stats.rfRejectedByII[ii];
           ++result.stats.rfRejectedByReason[check.reasonCode];
+          if (check.reasonCode == "rf_read_port_conflict")
+            ++result.stats.lateReadPortConflicts;
+          else if (check.reasonCode == "rf_write_port_conflict")
+            ++result.stats.lateWritePortConflicts;
           ++candidate.stats.rfRepairs;
         }
         diagnostic(result, ModuloMapperDiagnosticCode::MAP_POST_MAPPING_REJECTED,

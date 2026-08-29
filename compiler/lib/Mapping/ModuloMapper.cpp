@@ -305,54 +305,59 @@ private:
                     std::nullopt, edge.id);
       return SearchOutcome::InternalError;
     }
-    ++result_.stats.routeSuccesses;
-    const auto& selectedPlan = routes.plans.front();
-    const auto routeIds = routeResources(selectedPlan, producer);
-    const MappedDependence routeDependence{edge.id, edge.kind(),
-                                           selectedPlan.requiredSeparationCycles, selectedPlan};
-
-    if (options_.rfPortAware.enabled &&
-        (options_.rfPortAware.reserveExplicitHoldEvents ||
-         options_.rfPortAware.reserveMandatoryTerminalEvents)) {
-      const auto chain = derivePartialStorageChain(
-          dfg_, target_, edge, producer, consumer, routeDependence, ii_,
-          options_.rfPortAware.reserveMandatoryTerminalEvents);
-      if (chain.hasDeferredFinalHoldRead)
-        delta.deferredFinalHoldReads.push_back(edge.id);
-      if (!chain.definiteEvents.empty()) {
-        ++result_.stats.rfPortMatchCalls;
-        const auto reservation = rfPortReservations_.tryReserve(chain.definiteEvents);
-        if (!reservation.ok()) {
-          ++result_.stats.rfPortMatchFailures;
-          if (reservation.status == RFPortReservationStatus::ReadCapacityExceeded)
-            ++result_.stats.rfReadPortEarlyRejects;
-          else if (reservation.status == RFPortReservationStatus::WriteCapacityExceeded)
-            ++result_.stats.rfWritePortEarlyRejects;
-          else if (reservation.status == RFPortReservationStatus::WriteSourceCompatibilityFailure)
-            ++result_.stats.rfWriteSourceEarlyRejects;
-          addDiagnostic(result_, ModuloMapperDiagnosticCode::MAP_NODE_RESOURCE_CONFLICT,
-                        "route candidate rejected by mapping-time RF port matching", ii_,
-                        std::nullopt, edge.id);
-          return SearchOutcome::Exhausted;
+    for (const auto& selectedPlan : routes.plans) {
+      ++result_.stats.routeSuccesses;
+      const auto routeIds = routeResources(selectedPlan, producer);
+      const MappedDependence routeDependence{edge.id, edge.kind(),
+                                             selectedPlan.requiredSeparationCycles, selectedPlan};
+      std::optional<RFPortReservationDelta> rfReservation;
+      bool deferredFinalHoldRead = false;
+      if (options_.rfPortAware.enabled &&
+          (options_.rfPortAware.reserveExplicitHoldEvents ||
+           options_.rfPortAware.reserveMandatoryTerminalEvents)) {
+        const auto chain = derivePartialStorageChain(
+            dfg_, target_, edge, producer, consumer, routeDependence, ii_,
+            options_.rfPortAware.reserveMandatoryTerminalEvents);
+        deferredFinalHoldRead = chain.hasDeferredFinalHoldRead;
+        if (!chain.definiteEvents.empty()) {
+          ++result_.stats.rfPortMatchCalls;
+          const auto reservation = rfPortReservations_.tryReserve(chain.definiteEvents);
+          if (!reservation.ok()) {
+            ++result_.stats.rfPortMatchFailures;
+            if (reservation.status == RFPortReservationStatus::ReadCapacityExceeded)
+              ++result_.stats.rfReadPortEarlyRejects;
+            else if (reservation.status == RFPortReservationStatus::WriteCapacityExceeded)
+              ++result_.stats.rfWritePortEarlyRejects;
+            else if (reservation.status == RFPortReservationStatus::WriteSourceCompatibilityFailure)
+              ++result_.stats.rfWriteSourceEarlyRejects;
+            continue;
+          }
+          result_.stats.rfPortEventsCommitted += chain.definiteEvents.size();
+          rfReservation = *reservation.delta;
         }
-        result_.stats.rfPortEventsCommitted += chain.definiteEvents.size();
-        delta.rfPortReservations.push_back(*reservation.delta);
       }
+      const auto reservation = reservations_.tryReserve(std::span<const ResourceId>(routeIds),
+                                                        {ReservationOwnerKind::Edge, edge.id});
+      if (!reservation) {
+        if (rfReservation)
+          rfPortReservations_.undo(*rfReservation);
+        continue;
+      }
+      delta.edgeReservations.push_back(*reservation);
+      if (rfReservation)
+        delta.rfPortReservations.push_back(*rfReservation);
+      if (deferredFinalHoldRead)
+        delta.deferredFinalHoldReads.push_back(edge.id);
+      delta.edges.push_back(edge.id);
+      dependences_.emplace(
+          edge.id,
+          MappedDependence{edge.id, edge.kind(), selectedPlan.requiredSeparationCycles, selectedPlan});
+      return SearchOutcome::Success;
     }
-    const auto reservation = reservations_.tryReserve(std::span<const ResourceId>(routeIds),
-                                                      {ReservationOwnerKind::Edge, edge.id});
-    if (!reservation) {
-      addDiagnostic(result_, ModuloMapperDiagnosticCode::MAP_INTERNAL_ERROR,
-                    "route search returned a route that could not be reserved", ii_, std::nullopt,
-                    edge.id);
-      return SearchOutcome::InternalError;
-    }
-    delta.edgeReservations.push_back(*reservation);
-    delta.edges.push_back(edge.id);
-    dependences_.emplace(
-        edge.id,
-        MappedDependence{edge.id, edge.kind(), selectedPlan.requiredSeparationCycles, selectedPlan});
-    return SearchOutcome::Success;
+    addDiagnostic(result_, ModuloMapperDiagnosticCode::MAP_NODE_RESOURCE_CONFLICT,
+                  "all route alternatives rejected by RF or link reservations", ii_,
+                  std::nullopt, edge.id);
+    return SearchOutcome::Exhausted;
   }
 
   SearchOutcome tryCandidate(NodeId node, const Candidate& candidate, CandidateDelta& delta) {
@@ -445,6 +450,10 @@ private:
           ++result_.stats.rfRejectedByII[ii_];
         if (check.reasonCode.starts_with("rf"))
           ++result_.stats.rfRejectedByReason[check.reasonCode];
+        if (check.reasonCode == "rf_read_port_conflict")
+          ++result_.stats.lateReadPortConflicts;
+        else if (check.reasonCode == "rf_write_port_conflict")
+          ++result_.stats.lateWritePortConflicts;
         addDiagnostic(result_, ModuloMapperDiagnosticCode::MAP_POST_MAPPING_REJECTED,
                       check.reasonCode + (check.message.empty() ? "" : ": " + check.message), ii_);
         mapping_.reset();
@@ -811,6 +820,8 @@ ModuloMapperResult ModuloMapper::map(const cgra::target::TargetDFG& dfg,
     result.stats.rfWriteSourceEarlyRejects += constructive.stats.rfWriteSourceEarlyRejects;
     result.stats.rfPortEventsCommitted += constructive.stats.rfPortEventsCommitted;
     result.stats.rfPortRollbackCount += constructive.stats.rfPortRollbackCount;
+    result.stats.lateReadPortConflicts += constructive.stats.lateReadPortConflicts;
+    result.stats.lateWritePortConflicts += constructive.stats.lateWritePortConflicts;
     result.stats.completedModuloMappings += constructive.stats.completedModuloMappings;
     result.stats.postMappingRejected += constructive.stats.postMappingRejected;
     result.stats.stageRejected += constructive.stats.stageRejected;
