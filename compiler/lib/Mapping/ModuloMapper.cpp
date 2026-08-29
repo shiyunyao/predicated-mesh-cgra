@@ -2,6 +2,7 @@
 #include "cgra/Mapping/ModuloMapper.h"
 
 #include "cgra/Analysis/MIIAnalyzer.h"
+#include "cgra/Mapping/ConstructiveModuloMapper.h"
 #include "cgra/Mapping/ModuloMappingVerifier.h"
 #include "cgra/Target/TargetDFGVerifier.h"
 
@@ -651,15 +652,7 @@ ModuloMapperResult ModuloMapper::map(const cgra::target::TargetDFG& dfg,
   bool perIIBudgetExceeded = false;
   const auto lowIIEnd = std::min<std::uint64_t>(
       maxII, static_cast<std::uint64_t>(startII) + options.feasibilityFallback.lowIIWindow);
-  for (std::uint64_t ii = startII; ii <= maxII; ++ii) {
-    const bool inFallback = options.objective == MappingObjective::FindAnyFeasible &&
-                            options.feasibilityFallback.enabled && ii > lowIIEnd;
-    if (inFallback && !result.fallbackInvoked) {
-      result.fallbackInvoked = true;
-      result.fallbackAttempts = 1;
-    } else if (inFallback) {
-      ++result.fallbackAttempts;
-    }
+  for (std::uint64_t ii = startII; ii <= lowIIEnd; ++ii) {
     ++result.stats.iiAttempts;
     const auto currentII = static_cast<std::uint32_t>(ii);
     const auto attemptsRemaining = static_cast<std::uint64_t>(maxII) - ii + 1;
@@ -677,11 +670,7 @@ ModuloMapperResult ModuloMapper::map(const cgra::target::TargetDFG& dfg,
       result.mapping = state.mapping();
       result.bestKnownII = currentII;
       result.safeII = currentII;
-      // This lane currently reuses the deterministic modulo DFS at later II
-      // values. It is intentionally named extended_ii_search until a separate
-      // absolute-time constructive scheduler exists; an II delta is not
-      // schedule growth and no local repair has been performed here.
-      result.solutionKind = inFallback ? "extended_ii_search" : "low_ii_search";
+      result.solutionKind = "low_ii_search";
       result.fallbackScheduleGrowth = 0;
       result.fallbackLocalRepairs = 0;
       return result;
@@ -709,9 +698,59 @@ ModuloMapperResult ModuloMapper::map(const cgra::target::TargetDFG& dfg,
       return result;
     }
   }
+
+  if (options.objective == MappingObjective::FindAnyFeasible &&
+      options.feasibilityFallback.enabled && lowIIEnd < maxII) {
+    result.fallbackInvoked = true;
+    ConstructiveModuloMapperOptions constructiveOptions;
+    constructiveOptions.minII = static_cast<std::uint32_t>(lowIIEnd + 1);
+    constructiveOptions.maxSafeII = maxII;
+    constructiveOptions.maxLocalRepairs = options.feasibilityFallback.maxLocalRepairs;
+    constructiveOptions.seed = options.feasibilityFallback.seed;
+    constructiveOptions.completeMappingChecker = options.completeMappingChecker;
+    constructiveOptions.budget = options.budget;
+    constructiveOptions.routeOptions = options.routeOptions;
+    auto constructive = mapConstructively(dfg, target, constructiveOptions);
+
+    result.fallbackAttempts += constructive.stats.iiAttempts;
+    result.fallbackLocalRepairs += constructive.stats.rejectedPlacements;
+    result.fallbackScheduleGrowth = constructive.fallbackScheduleGrowth;
+    result.stats.iiAttempts += constructive.stats.iiAttempts;
+    result.stats.nodeCandidateAttempts += constructive.stats.nodeCandidateAttempts;
+    result.stats.successfulPlacements += constructive.stats.successfulPlacements;
+    result.stats.rejectedPlacements += constructive.stats.rejectedPlacements;
+    result.stats.routeSearchCalls += constructive.stats.routeSearchCalls;
+    result.stats.routeSuccesses += constructive.stats.routeSuccesses;
+    result.stats.routeNoPaths += constructive.stats.routeNoPaths;
+    result.stats.routeBudgetExceeded += constructive.stats.routeBudgetExceeded;
+    result.stats.totalRouteStateExpansions += constructive.stats.totalRouteStateExpansions;
+    result.stats.completedModuloMappings += constructive.stats.completedModuloMappings;
+    result.stats.postMappingRejected += constructive.stats.postMappingRejected;
+    result.stats.stageRejected += constructive.stats.stageRejected;
+    result.stats.rfRejected += constructive.stats.rfRejected;
+    for (const auto& [ii, count] : constructive.stats.rfRejectedByII)
+      result.stats.rfRejectedByII[ii] += count;
+    for (const auto& [reason, count] : constructive.stats.rfRejectedByReason)
+      result.stats.rfRejectedByReason[reason] += count;
+    result.stats.finalII = constructive.stats.finalII;
+    result.diagnostics.insert(result.diagnostics.end(), constructive.diagnostics.begin(),
+                              constructive.diagnostics.end());
+    if (constructive.ok()) {
+      result.status = ModuloMapperStatus::Success;
+      result.mapping = std::move(constructive.mapping);
+      result.safeII = constructive.safeII;
+      result.bestKnownII = constructive.bestKnownII;
+      result.solutionKind = "constructive_fallback";
+      return result;
+    }
+    result.fallbackFailureReason = constructive.fallbackFailureReason;
+    result.status = constructive.status;
+    if (result.status == ModuloMapperStatus::Success)
+      result.status = ModuloMapperStatus::NoMappingWithinIILimit;
+    return result;
+  }
+
   if (perIIBudgetExceeded) {
-    if (result.fallbackInvoked)
-      result.fallbackFailureReason = "mapping search budget exhausted during fallback";
     result.status = ModuloMapperStatus::BudgetExceeded;
     return result;
   }

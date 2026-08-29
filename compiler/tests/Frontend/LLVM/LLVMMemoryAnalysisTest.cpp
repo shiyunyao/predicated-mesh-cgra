@@ -839,6 +839,8 @@ void runSemanticCases() {
   const auto loadOnly = lower(kLoadOnly, "load_only", context);
   expect(loadOnly.ok(), "single affine Load must lower: " + loadOnly.message);
   expect(countOpcode(*loadOnly.dfg, cgra::ir::Opcode::Load) == 1, "one Generic Load");
+  expect(loadOnly.provenance.memoryAccesses.front().pointerDomain == "scratchpad_offset",
+         "indexed memory must retain scratchpad offset provenance");
   expect(countMemoryEdge(*loadOnly.dfg, cgra::ir::MemoryDepKind::RAW, 0) == 0 &&
              countMemoryEdge(*loadOnly.dfg, cgra::ir::MemoryDepKind::WAR, 0) == 0 &&
              countMemoryEdge(*loadOnly.dfg, cgra::ir::MemoryDepKind::WAW, 0) == 0,
@@ -1025,7 +1027,11 @@ void runNegativeCases() {
                                        node.memoryInfo && node.memoryInfo->accessWidthBits == 64;
                               }) &&
           std::ranges::any_of(loadedPointer.provenance.memoryAccesses,
-                              [](const auto& access) { return access.addressMode == "dynamic"; }),
+                              [](const auto& access) {
+                                return access.addressMode == "dynamic" &&
+                                       access.pointerDomain ==
+                                           "loaded_logical_scratchpad_address";
+                              }),
       "pointer-valued Load must feed a verified dynamic Generic address graph");
 
   const auto unaligned = lower(kUnalignedLoad, "unaligned", context);
@@ -1073,8 +1079,8 @@ void runNegativeCases() {
   const auto pathSensitive = lower(kPathSensitiveMemoryOrder, "path_sensitive", context);
   expect(!pathSensitive.ok() && pathSensitive.status ==
                                     cgra::frontend::llvm_frontend::LLVMFrontendStatus::
-                                        UnsupportedPathSensitiveMemoryOrder,
-         "mutually exclusive MayAlias Stores require path-sensitive memory ordering; status=" +
+                                        UnsupportedIfSideEffect,
+         "reducible MayAlias Stores receive conservative order before side-effect lowering; status=" +
              std::string(cgra::frontend::llvm_frontend::toString(pathSensitive.status)) +
              " message=" + pathSensitive.message);
 

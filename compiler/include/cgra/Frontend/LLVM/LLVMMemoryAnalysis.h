@@ -40,6 +40,16 @@ std::string_view toString(LLVMMemoryAccessKind kind) noexcept;
 enum class LLVMAddressMode { ExactAffine, SymbolicAffine, Dynamic };
 std::string_view toString(LLVMAddressMode mode) noexcept;
 
+// Pointer provenance is a semantic frontend fact. It prevents a host virtual
+// pointer from being silently confused with a logical scratchpad address.
+enum class LLVMLogicalPointerDomain {
+  Unknown,
+  ScratchpadBase,
+  ScratchpadOffset,
+  LoadedLogicalAddress,
+};
+std::string_view toString(LLVMLogicalPointerDomain domain) noexcept;
+
 enum class LLVMMemoryDependenceMode { ExactAffine, Conservative, DynamicConservative };
 std::string_view toString(LLVMMemoryDependenceMode mode) noexcept;
 
@@ -64,6 +74,7 @@ struct LLVMMemoryAccessDescriptor {
   const llvm::Value* dynamicIndex = nullptr;
   std::vector<LLVMAddressTerm> dynamicTerms;
   LLVMAddressMode addressMode = LLVMAddressMode::ExactAffine;
+  LLVMLogicalPointerDomain pointerDomain = LLVMLogicalPointerDomain::Unknown;
   std::string invariantExpression;
   std::int64_t dynamicScaleBytes = 0;
   std::int64_t gepConstantOffsetBytes = 0;

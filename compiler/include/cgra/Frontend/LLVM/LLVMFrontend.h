@@ -262,6 +262,7 @@ struct LLVMMemoryAccessProvenance {
   ir::NodeId addressProvider = 0;
   const llvm::Instruction* instruction = nullptr;
   const llvm::Value* baseValue = nullptr;
+  std::string pointerDomain;
 };
 
 struct LLVMMemoryDependenceProvenance {

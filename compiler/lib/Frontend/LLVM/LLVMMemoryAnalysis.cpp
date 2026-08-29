@@ -22,7 +22,9 @@
 #include <algorithm>
 #include <limits>
 #include <optional>
+#include <queue>
 #include <set>
+#include <unordered_map>
 #include <tuple>
 #include <unordered_set>
 
@@ -398,6 +400,13 @@ analyzeAccess(const llvm::Instruction& instruction, const llvm::Loop& loop,
   descriptor.pointerStepBytes = pointerRoot->stepBytes;
   descriptor.accessWidthBits = accessWidthBits;
   descriptor.alignmentBytes = static_cast<std::uint32_t>(alignment);
+  if (pointerRoot->dynamic && llvm::isa<llvm::LoadInst>(pointerRoot->base))
+    descriptor.pointerDomain = LLVMLogicalPointerDomain::LoadedLogicalAddress;
+  else if (pointerRoot->phi || collected->base != pointerRoot->base ||
+           collected->constantBytes != 0 || !collected->terms.empty())
+    descriptor.pointerDomain = LLVMLogicalPointerDomain::ScratchpadOffset;
+  else
+    descriptor.pointerDomain = LLVMLogicalPointerDomain::ScratchpadBase;
   descriptor.exactAffine = true;
   if (addressUnitBytes == 0 || pointerRoot->stepBytes % addressUnitBytes != 0) {
     error = fail(LLVMMemoryAnalysisStatus::UnsupportedNonAffineAddress,
@@ -545,6 +554,51 @@ bool instructionBefore(const llvm::Instruction& lhs, const llvm::Instruction& rh
          reachesWithinIteration(*lhs.getParent(), *rhs.getParent(), loop);
 }
 
+// A reducible loop body is a DAG once backedges to the header are removed.  A
+// stable topological order gives conservative MayAlias accesses in mutually
+// exclusive arms a deterministic total order without pretending either arm is
+// guaranteed to execute.
+std::optional<std::unordered_map<const llvm::BasicBlock*, std::size_t>>
+conservativeBlockOrder(const llvm::Loop& loop) {
+  std::unordered_map<const llvm::BasicBlock*, std::size_t> layout;
+  std::size_t ordinal = 0;
+  for (const auto& block : *loop.getHeader()->getParent())
+    if (loop.contains(&block))
+      layout.emplace(&block, ordinal++);
+
+  std::unordered_map<const llvm::BasicBlock*, std::size_t> indegree;
+  for (const auto* block : loop.blocks())
+    indegree.emplace(block, 0);
+  for (const auto* block : loop.blocks()) {
+    for (const auto* successor : llvm::successors(block)) {
+      if (!loop.contains(successor) || successor == loop.getHeader())
+        continue;
+      ++indegree[successor];
+    }
+  }
+  std::set<std::pair<std::size_t, const llvm::BasicBlock*>> ready;
+  for (const auto& [block, degree] : indegree)
+    if (degree == 0)
+      ready.emplace(layout.at(block), block);
+
+  std::unordered_map<const llvm::BasicBlock*, std::size_t> order;
+  while (!ready.empty()) {
+    const auto [_, block] = *ready.begin();
+    ready.erase(ready.begin());
+    order.emplace(block, order.size());
+    for (const auto* successor : llvm::successors(block)) {
+      if (!loop.contains(successor) || successor == loop.getHeader())
+        continue;
+      auto& degree = indegree.at(successor);
+      if (--degree == 0)
+        ready.emplace(layout.at(successor), successor);
+    }
+  }
+  if (order.size() != indegree.size())
+    return std::nullopt;
+  return order;
+}
+
 void addDependence(LLVMMemoryAnalysisResult& result, std::set<DependenceKey>& seen,
                    std::uint32_t source, std::uint32_t destination, ir::MemoryDepKind kind,
                    std::uint32_t distance, LLVMMemoryDependenceMode mode, std::string reason) {
@@ -605,6 +659,20 @@ std::string_view toString(LLVMAddressMode mode) noexcept {
   return "dynamic";
 }
 
+std::string_view toString(LLVMLogicalPointerDomain domain) noexcept {
+  switch (domain) {
+  case LLVMLogicalPointerDomain::Unknown:
+    return "unknown";
+  case LLVMLogicalPointerDomain::ScratchpadBase:
+    return "scratchpad_base";
+  case LLVMLogicalPointerDomain::ScratchpadOffset:
+    return "scratchpad_offset";
+  case LLVMLogicalPointerDomain::LoadedLogicalAddress:
+    return "loaded_logical_scratchpad_address";
+  }
+  return "unknown";
+}
+
 std::string_view toString(LLVMMemoryDependenceMode mode) noexcept {
   switch (mode) {
   case LLVMMemoryDependenceMode::ExactAffine:
@@ -640,6 +708,7 @@ LLVMMemoryAnalysisResult analyzeMemoryDependences(const llvm::Loop& loop,
   LLVMMemoryAnalysisResult result;
   result.status = LLVMMemoryAnalysisStatus::Success;
   const auto ignoredControlLoads = controlOnlyLoads(loop);
+  const auto blockOrder = conservativeBlockOrder(loop);
   for (auto& block : *function) {
     if (!loop.contains(&block))
       continue;
@@ -686,12 +755,17 @@ LLVMMemoryAnalysisResult analyzeMemoryDependences(const llvm::Loop& loop,
                         llvm::AliasResult::NoAlias)
         continue;
 
+      bool usedConservativeOrder = false;
       if (!instructionBefore(*lhs->instruction, *rhs->instruction, dominatorTree, loop)) {
         if (instructionBefore(*rhs->instruction, *lhs->instruction, dominatorTree, loop))
           std::swap(lhs, rhs);
+        else if (blockOrder &&
+                 blockOrder->at(lhs->instruction->getParent()) <
+                     blockOrder->at(rhs->instruction->getParent()))
+          usedConservativeOrder = true;
         else
           return fail(LLVMMemoryAnalysisStatus::UnsupportedPathSensitiveOrder,
-                      "MayAlias accesses have no path-independent program order");
+                      "MayAlias accesses have no reducible CFG order for conservative ordering");
       }
 
       if (exact) {
@@ -720,14 +794,17 @@ LLVMMemoryAnalysisResult analyzeMemoryDependences(const llvm::Loop& loop,
         continue;
       }
 
-      const auto conservativeMode = lhs->addressMode == LLVMAddressMode::Dynamic ||
-                                            rhs->addressMode == LLVMAddressMode::Dynamic
-                                        ? LLVMMemoryDependenceMode::DynamicConservative
-                                        : LLVMMemoryDependenceMode::Conservative;
+      const auto conservativeMode = usedConservativeOrder ||
+                                             lhs->addressMode == LLVMAddressMode::Dynamic ||
+                                             rhs->addressMode == LLVMAddressMode::Dynamic
+                                         ? LLVMMemoryDependenceMode::DynamicConservative
+                                         : LLVMMemoryDependenceMode::Conservative;
       addDependence(result, seen, lhs->id, rhs->id, dependenceKind(*lhs, *rhs), 0, conservativeMode,
-                    "MayAlias program order within one iteration");
+                    usedConservativeOrder ? "conservative_total_order within one iteration"
+                                          : "MayAlias program order within one iteration");
       addDependence(result, seen, rhs->id, lhs->id, dependenceKind(*rhs, *lhs), 1, conservativeMode,
-                    "MayAlias reverse order across iterations");
+                    usedConservativeOrder ? "conservative_total_order across iterations"
+                                          : "MayAlias reverse order across iterations");
     }
   }
   return result;

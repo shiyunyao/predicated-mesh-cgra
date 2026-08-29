@@ -1275,6 +1275,7 @@ struct VerifiedMemoryAccess {
   const llvm::Value* dynamicIndex = nullptr;
   std::vector<AddressTerm> dynamicTerms;
   LLVMAddressMode addressMode = LLVMAddressMode::ExactAffine;
+  std::string pointerDomain;
   std::string invariantExpression;
   std::int64_t constantOffsetBytes = 0;
   std::int64_t iterationStrideBytes = 0;
@@ -1627,6 +1628,45 @@ bool verifiedInstructionBefore(const llvm::Instruction& lhs, const llvm::Instruc
          verifiedReachesWithinIteration(*lhs.getParent(), *rhs.getParent(), loop);
 }
 
+std::optional<std::unordered_map<const llvm::BasicBlock*, std::size_t>>
+verifiedConservativeBlockOrder(const llvm::Loop& loop) {
+  std::unordered_map<const llvm::BasicBlock*, std::size_t> layout;
+  std::size_t ordinal = 0;
+  for (const auto& block : *loop.getHeader()->getParent())
+    if (loop.contains(&block))
+      layout.emplace(&block, ordinal++);
+  std::unordered_map<const llvm::BasicBlock*, std::size_t> indegree;
+  for (const auto* block : loop.blocks())
+    indegree.emplace(block, 0);
+  for (const auto* block : loop.blocks()) {
+    for (const auto* successor : llvm::successors(block)) {
+      if (!loop.contains(successor) || successor == loop.getHeader())
+        continue;
+      ++indegree[successor];
+    }
+  }
+  std::set<std::pair<std::size_t, const llvm::BasicBlock*>> ready;
+  for (const auto& [block, degree] : indegree)
+    if (degree == 0)
+      ready.emplace(layout.at(block), block);
+  std::unordered_map<const llvm::BasicBlock*, std::size_t> order;
+  while (!ready.empty()) {
+    const auto [_, block] = *ready.begin();
+    ready.erase(ready.begin());
+    order.emplace(block, order.size());
+    for (const auto* successor : llvm::successors(block)) {
+      if (!loop.contains(successor) || successor == loop.getHeader())
+        continue;
+      auto& degree = indegree.at(successor);
+      if (--degree == 0)
+        ready.emplace(layout.at(successor), successor);
+    }
+  }
+  if (order.size() != indegree.size())
+    return std::nullopt;
+  return order;
+}
+
 bool verifiedIsStore(const VerifiedMemoryAccess& access) {
   return access.kind == VerifiedMemoryAccessKind::Store;
 }
@@ -1678,6 +1718,7 @@ VerifiedMemoryExpectations recomputeMemoryExpectations(const Selection& selectio
   aliasAnalysis.addAAResult(basicAA);
 
   const auto ignoredControlLoads = verifiedControlOnlyLoads(*selection.loop);
+  const auto blockOrder = verifiedConservativeBlockOrder(*selection.loop);
   for (auto& block : *function) {
     if (!selection.loop->contains(&block))
       continue;
@@ -1732,6 +1773,13 @@ VerifiedMemoryExpectations recomputeMemoryExpectations(const Selection& selectio
       access.pointerStepBytes = root->stepBytes;
       access.accessWidthBits = accessWidthBits;
       access.alignmentBytes = static_cast<std::uint32_t>(alignment);
+      if (root->dynamic && llvm::isa<llvm::LoadInst>(root->base))
+        access.pointerDomain = "loaded_logical_scratchpad_address";
+      else if (root->phi || collected->base != root->base || collected->constantBytes != 0 ||
+               !collected->terms.empty())
+        access.pointerDomain = "scratchpad_offset";
+      else
+        access.pointerDomain = "scratchpad_base";
 
       {
         if (collected->constantBytes % addressUnitBytes != 0 ||
@@ -1828,13 +1876,18 @@ VerifiedMemoryExpectations recomputeMemoryExpectations(const Selection& selectio
                                         llvm::MemoryLocation::get(rhs->instruction)) ==
                         llvm::AliasResult::NoAlias)
         continue;
+      bool usedConservativeOrder = false;
       if (!verifiedInstructionBefore(*lhs->instruction, *rhs->instruction, *selection.dominatorTree,
                                      *selection.loop)) {
         if (verifiedInstructionBefore(*rhs->instruction, *lhs->instruction,
                                       *selection.dominatorTree, *selection.loop))
           std::swap(lhs, rhs);
+        else if (blockOrder &&
+                 blockOrder->at(lhs->instruction->getParent()) <
+                     blockOrder->at(rhs->instruction->getParent()))
+          usedConservativeOrder = true;
         else {
-          result.error = "MayAlias accesses have no verified path-independent order";
+          result.error = "MayAlias accesses have no verified reducible CFG order";
           return result;
         }
       }
@@ -1862,10 +1915,11 @@ VerifiedMemoryExpectations recomputeMemoryExpectations(const Selection& selectio
         continue;
       }
 
-      const auto conservativeMode = lhs->addressMode == LLVMAddressMode::Dynamic ||
-                                            rhs->addressMode == LLVMAddressMode::Dynamic
-                                        ? VerifiedMemoryDependenceMode::DynamicConservative
-                                        : VerifiedMemoryDependenceMode::Conservative;
+      const auto conservativeMode = usedConservativeOrder ||
+                                             lhs->addressMode == LLVMAddressMode::Dynamic ||
+                                             rhs->addressMode == LLVMAddressMode::Dynamic
+                                         ? VerifiedMemoryDependenceMode::DynamicConservative
+                                         : VerifiedMemoryDependenceMode::Conservative;
       addVerifiedDependence(result, seen, lhs->id, rhs->id, verifiedDependenceKind(*lhs, *rhs), 0,
                             conservativeMode);
       addVerifiedDependence(result, seen, rhs->id, lhs->id, verifiedDependenceKind(*rhs, *lhs), 1,
@@ -1989,6 +2043,7 @@ void verifyMemoryDataflow(const Selection& selection, const LLVMFrontendOptions&
     accesses.emplace(descriptor.id, actual);
     if (actual->id != descriptor.id || actual->baseValue != descriptor.base ||
         actual->addressMode != toString(descriptor.addressMode) ||
+        actual->pointerDomain != descriptor.pointerDomain ||
         actual->invariantExpression != descriptor.invariantExpression ||
         actual->offsetBytes != descriptor.constantOffsetBytes ||
         actual->strideBytes != descriptor.iterationStrideBytes ||

@@ -2013,7 +2013,7 @@ LLVMFrontendResult lowerStructuredLoop(llvm::Module& module, const LLVMFrontendO
          access.constantOffsetBytes, access.iterationStrideBytes, access.constantOffsetWords,
          access.iterationStrideWords, access.accessWidthBits, access.alignmentBytes, memoryNode,
          addressNode == state.nodes.end() ? memoryNode : addressNode->second, access.instruction,
-         access.base});
+         access.base, std::string(toString(access.pointerDomain))});
   }
   for (const auto& dependence : memoryAnalysis.dependences) {
     const auto source =
@@ -2768,6 +2768,7 @@ std::string LLVMFrontendResult::toJson() const {
          {"stride_words", access.strideWords},
          {"access_width_bits", access.accessWidthBits},
          {"alignment_bytes", access.alignmentBytes},
+         {"pointer_domain", access.pointerDomain},
          {"memory_node", access.memoryNode},
          {"address_provider", access.addressProvider}});
   for (const auto& dependence : provenance.memoryDependences)

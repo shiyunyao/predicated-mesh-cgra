@@ -88,6 +88,7 @@ add_library(cgra_mapping
   lib/Mapping/ModuloMappingVerifier.cpp
   lib/Mapping/ModuloRouteSearch.cpp
   lib/Mapping/ModuloMapper.cpp
+  lib/Mapping/ConstructiveModuloMapper.cpp
   lib/Mapping/ExactModuloOracle.cpp
 )
 target_include_directories(cgra_mapping PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
@@ -187,6 +188,7 @@ add_library(cgra_llvm_frontend
   lib/Frontend/LLVM/LLVMFrontendVerifier.cpp
   lib/Frontend/LLVM/LLVMLinearLoop.cpp
   lib/Frontend/LLVM/LLVMMemoryAnalysis.cpp
+  lib/Frontend/LLVM/PredicateSSA.cpp
 )
 target_include_directories(cgra_llvm_frontend PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_include_directories(cgra_llvm_frontend SYSTEM PUBLIC ${LLVM_INCLUDE_DIRS})
@@ -393,6 +395,14 @@ if(CGRA_BUILD_TESTS)
   )
 
   cgra_add_test(
+    NAME cgra-constructive-modulo-mapper-tests
+    TYPE semantic
+    SOURCES tests/Mapping/ConstructiveModuloMapperTest.cpp
+    LIBRARIES cgra_pipeline
+    DEFINITIONS CGRA_REPOSITORY_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/.."
+  )
+
+  cgra_add_test(
     NAME cgra-modulo-mapper-rf-feasibility-test
     TYPE semantic
     SOURCES tests/Mapping/ModuloMapperRFFeasibilityTest.cpp tests/support/TestArtifacts.cpp
@@ -514,6 +524,14 @@ if(CGRA_BUILD_TESTS)
     TYPE semantic
     SOURCES tests/Frontend/LLVM/LLVMMemoryAnalysisTest.cpp
     LIBRARIES cgra_frontend_composition ${CGRA_LLVM_LIBS}
+    DEFINITIONS CGRA_REPOSITORY_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/.."
+  )
+
+  cgra_add_test(
+    NAME cgra-predicate-ssa-tests
+    TYPE semantic
+    SOURCES tests/Frontend/LLVM/PredicateSSATest.cpp
+    LIBRARIES cgra_llvm_frontend ${CGRA_LLVM_LIBS}
     DEFINITIONS CGRA_REPOSITORY_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/.."
   )
 
