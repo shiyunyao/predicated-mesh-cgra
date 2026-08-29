@@ -114,22 +114,24 @@ struct CandidateState {
     auto routeOptions = options.routeOptions;
     routeOptions.budget = options.budget.perRouteBudget;
     ++stats.routeSearchCalls;
-    const auto route = ModuloRouteSearch::search(dfg, target, resources, reservations,
-                                                 {edgeId, producer, consumer}, routeOptions);
-    stats.routeStateExpansions += route.stats.stateExpansions;
-    if (route.status == RouteSearchStatus::NoPath) {
+    const auto routes = ModuloRouteSearch::searchAlternatives(
+        dfg, target, resources, reservations,
+        {{edgeId, producer, consumer}, options.rfPortAware.maxRouteAlternatives}, routeOptions);
+    stats.routeStateExpansions += routes.stats.stateExpansions;
+    if (routes.status == RouteSearchStatus::NoPath) {
       ++stats.routeNoPaths;
       return false;
     }
-    if (route.status == RouteSearchStatus::BudgetExceeded) {
+    if (routes.status == RouteSearchStatus::BudgetExceeded) {
       ++stats.routeBudgetExceeded;
       return false;
     }
-    if (!route.ok())
+    if (routes.plans.empty())
       return false;
     ++stats.routeSuccesses;
+    const auto& selectedPlan = routes.plans.front();
     const auto dependence = MappedDependence{edgeId, edge.kind(),
-                                             route.plan->requiredSeparationCycles, route.plan};
+          selectedPlan.requiredSeparationCycles, selectedPlan};
     std::optional<RFPortReservationDelta> rfReservation;
     if (options.rfPortAware.enabled &&
         (options.rfPortAware.reserveExplicitHoldEvents ||
@@ -154,7 +156,7 @@ struct CandidateState {
         rfReservation = *portResult.delta;
       }
     }
-    const auto ids = routeResources(*route.plan, producer);
+    const auto ids = routeResources(selectedPlan, producer);
     const auto reservation = reservations.tryReserve(ids, {ReservationOwnerKind::Edge, edgeId});
     if (!reservation) {
       if (rfReservation) {
@@ -168,7 +170,7 @@ struct CandidateState {
                                 AbsoluteTransport{edgeId,
                                                   absolutePlacements.at(edge.src).issueCycle,
                                                   absolutePlacements.at(edge.dst).issueCycle,
-                                                  *route.plan});
+                                                  selectedPlan});
     return true;
   }
 
