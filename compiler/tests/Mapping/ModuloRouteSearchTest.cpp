@@ -250,11 +250,13 @@ void testBoundedAlternatives(const cgra::TargetModel& target) {
   expect(canonical.ok(), "canonical route exists for alternatives test");
   const auto one = ModuloRouteSearch::searchAlternatives(
       dfg, target, resources, reservations, {request, 1});
-  expect(one.ok() && one.plans.size() == 1 && one.plans.front() == *canonical.plan,
+  expect(one.status == RouteSearchStatus::Success && one.plans.size() == 1 &&
+             one.plans.front() == *canonical.plan,
          "K=1 alternatives preserves the canonical route");
   const auto many = ModuloRouteSearch::searchAlternatives(
       dfg, target, resources, reservations, {request, 3});
-  expect(many.ok() && !many.plans.empty() && many.plans.size() <= 3,
+  expect(many.status == RouteSearchStatus::Success && !many.plans.empty() &&
+             many.plans.size() <= 3,
          "bounded alternatives returns at most K valid plans");
   for (std::size_t index = 0; index < many.plans.size(); ++index)
     for (std::size_t other = index + 1; other < many.plans.size(); ++other)
