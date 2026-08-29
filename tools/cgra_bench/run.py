@@ -178,6 +178,11 @@ def backend_observation(artifact_dir: pathlib.Path) -> dict[str, Any]:
                 "rf_rejected", "rf_rejected_by_ii", "rf_rejected_by_reason", "ii_attempts", "backtracks",
                 "route_search_calls", "route_no_paths", "route_budget_exceeded",
                 "successful_placements", "rejected_placements",
+                "rf_port_match_calls", "rf_port_match_failures",
+                "rf_read_port_early_rejects", "rf_write_port_early_rejects",
+                "rf_write_source_early_rejects", "rf_port_events_committed",
+                "rf_port_rollback_count", "late_read_port_conflicts",
+                "late_write_port_conflicts",
             ):
                 if key in report_stats:
                     stats[key] = report_stats[key]
