@@ -44,6 +44,26 @@ class AdmissibilityTests(unittest.TestCase):
             "ARCH_UNSUPPORTED_MEMORY",
         )
 
+    def test_profile_limit_is_not_rf_budget(self):
+        from tools.cgra_bench.classify import classify
+
+        result = classify(
+            "S10_MODULO_MAPPING",
+            "RF_BUDGET: no_mapping_within_ii_limit modulo mapper "
+            "MAP_NO_MAPPING_WITHIN_II_LIMIT: maxII is below the analyzer lower bound",
+        )
+        self.assertEqual(result["category"], "MAPPING_BUDGET")
+        self.assertEqual(result["diagnostic_code"], "MAPPING_PROFILE_LIMIT")
+
+    def test_rf_counter_name_does_not_trigger_rf_budget(self):
+        from tools.cgra_bench.classify import classify
+
+        result = classify(
+            "S10_MODULO_MAPPING",
+            '{"rf_budget_exceeded": 0, "completed_modulo_mappings": 0}',
+        )
+        self.assertNotEqual(result["diagnostic_code"], "RF_BUDGET")
+
 
 if __name__ == "__main__":
     unittest.main()

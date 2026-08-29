@@ -33,11 +33,22 @@ def classify(stage: str, message: str, returncode: int = 1) -> dict[str, str]:
     text = f"{stage} {message}".lower()
     if returncode == 124 or "timed out" in text or "timeout" in text:
         return {"category": "TIMEOUT", "owner": "HARNESS", "diagnostic_code": "STAGE_TIMEOUT"}
+    # A mapper can reject an II before searching when the configured profile
+    # is below the analyzer lower bound. This is a profile limit, not an RF
+    # budget failure; backend stats also contain ``rf_budget_exceeded``.
+    if "map_no_mapping_within_ii_limit" in text or "maxii is below the analyzer lower bound" in text:
+        return {
+            "category": "MAPPING_BUDGET",
+            "owner": "MAPPER",
+            "diagnostic_code": "MAPPING_PROFILE_LIMIT",
+        }
     if "mapping" in text and "verif" in text:
         return {"category": "MAPPING_VERIFY", "owner": "MAPPER", "diagnostic_code": "MAPPING_VERIFICATION_FAILED"}
     if "rf_constrained_mapping_failure" in text or "rf constrained mapping" in text:
         return {"category": "RF", "owner": "RF", "diagnostic_code": "RF_CONSTRAINED_MAPPING_FAILED"}
-    if "rf_budget" in text or "rf budget" in text:
+    # Match explicit diagnostics, not the serialized counter name
+    # ``rf_budget_exceeded``.
+    if "rf_budget:" in text or "rf budget exhausted" in text or "rfa_coloring_budget_exceeded" in text:
         return {"category": "RF", "owner": "RF", "diagnostic_code": "RF_BUDGET"}
     if "mapping" in text and "budget" in text:
         return {"category": "MAPPING_BUDGET", "owner": "MAPPER", "diagnostic_code": "MAPPING_BUDGET_EXCEEDED"}

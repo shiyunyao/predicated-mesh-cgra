@@ -17,8 +17,8 @@
     {
       "compile_flags": [],
       "defines": [],
-      "enabled": true,
-      "exclusion": null,
+      "enabled": false,
+      "exclusion": "Upstream audio test driver includes missing ../bareBench.h; it has no acceleration-region kernel",
       "function": null,
       "id": "kernels/adpcm_coder/rawcaudio.c::auto",
       "include_dirs": [],
@@ -43,8 +43,8 @@
     {
       "compile_flags": [],
       "defines": [],
-      "enabled": true,
-      "exclusion": null,
+      "enabled": false,
+      "exclusion": "Upstream audio test driver includes missing ../bareBench.h; it has no acceleration-region kernel",
       "function": null,
       "id": "kernels/adpcm_decoder/rawcaudio.c::auto",
       "include_dirs": [],
@@ -82,8 +82,8 @@
     {
       "compile_flags": [],
       "defines": [],
-      "enabled": true,
-      "exclusion": null,
+      "enabled": false,
+      "exclusion": "Upstream platform assembly stub contains conditional prose rather than a compilable LLVM translation unit",
       "function": null,
       "id": "kernels/blowfish/asm/bx86unix.cpp::auto",
       "include_dirs": [],

@@ -64,7 +64,7 @@ def extract(run: pathlib.Path) -> dict[str, Any]:
         "fixed_self_overlap": sorted(buckets.get("fixed_self_overlap", []), key=lambda x: str(x["id"])),
         "read_port": sorted(buckets.get("read_port", []), key=lambda x: str(x["id"])),
         "write_port": sorted(buckets.get("write_port", []), key=lambda x: str(x["id"])),
-        "same_address": [],
+        "same_address": sorted(buckets.get("same_address", []), key=lambda x: str(x["id"])),
         "depth": sorted(buckets.get("depth", []), key=lambda x: str(x["id"])),
         "mixed": sorted(buckets.get("mixed", []), key=lambda x: str(x["id"])),
     }

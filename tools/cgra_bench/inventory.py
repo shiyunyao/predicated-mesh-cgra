@@ -23,6 +23,8 @@ ALLOWED_OVERRIDE_KEYS = {
     "compile_flags",
     "defines",
     "include_dirs",
+    "enabled",
+    "exclusion",
     "language",
     "function",
     "loop_header",
@@ -67,6 +69,14 @@ def _load_case_overrides(path: pathlib.Path, commit: str, source_paths: set[str]
                 raise ValueError(f"case override {source}.{key} must be a string array")
         if "language" in entry and entry["language"] not in {"c", "c++"}:
             raise ValueError(f"case override {source}.language is invalid")
+        if "enabled" in entry and not isinstance(entry["enabled"], bool):
+            raise ValueError(f"case override {source}.enabled must be boolean")
+        if "exclusion" in entry and entry["exclusion"] is not None and not isinstance(entry["exclusion"], str):
+            raise ValueError(f"case override {source}.exclusion must be a string or null")
+        if entry.get("enabled", True) and entry.get("exclusion"):
+            raise ValueError(f"enabled case override {source} cannot carry an exclusion reason")
+        if entry.get("enabled", True) is False and not entry.get("exclusion"):
+            raise ValueError(f"disabled case override {source} needs an exclusion reason")
         for key in ("function", "loop_header"):
             if key in entry and entry[key] is not None and not isinstance(entry[key], str):
                 raise ValueError(f"case override {source}.{key} must be a string or null")

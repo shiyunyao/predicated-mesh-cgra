@@ -253,6 +253,16 @@ def report(out: pathlib.Path, corpus: dict[str, Any], results: list[dict[str, An
     unexpected_loops = sorted("::".join(loop) for loop in represented_loops - expected_loops)
     candidate_loop_count = len(expected_loops)
     represented_sources = {item.get("source") for item in results if item.get("source")}
+    explicitly_excluded_results = [
+        item for item in results
+        if item.get("excluded") or item.get("status") == "EXCLUDED"
+    ]
+    explicitly_excluded_sources = sorted({
+        item.get("source") for item in explicitly_excluded_results if item.get("source")
+    })
+    explicitly_excluded_case_ids = sorted(
+        item.get("id") for item in explicitly_excluded_results if item.get("id")
+    )
     expected_sources = {
         item.get("path") for item in corpus.get("sources", []) if item.get("enabled", True)
     }
@@ -413,6 +423,12 @@ def report(out: pathlib.Path, corpus: dict[str, Any], results: list[dict[str, An
             "expected_candidate_loops": len(expected_loops),
             "represented_candidate_loops": len(represented_loops),
             "excluded_sources": len(excluded_sources),
+            # Case-level exclusions are adapter decisions layered on top of
+            # the upstream lock. Keep them separate from lock exclusions so
+            # source reconciliation still proves the complete pinned corpus
+            # is represented in the result stream.
+            "explicitly_excluded_sources": explicitly_excluded_sources,
+            "explicitly_excluded_case_ids": explicitly_excluded_case_ids,
             "missing_sources": missing_sources,
             "unexpected_sources": unexpected_sources,
             "missing_loop_cases": missing_loops,
@@ -445,6 +461,9 @@ def report(out: pathlib.Path, corpus: dict[str, Any], results: list[dict[str, An
         "compiler_bug_count": sum(
             item.get("terminal_status") == "COMPILER_BUG" for item in results
         ),
+        "explicitly_excluded_case_count": len(explicitly_excluded_case_ids),
+        "explicitly_excluded_case_ids": explicitly_excluded_case_ids,
+        "explicitly_excluded_sources": explicitly_excluded_sources,
         "mapper_entered_loops": mapper_entered,
         "mapper_entered_case_ids": [item["id"] for item in results if mapper_was_invoked(item)],
         "raw_route_mapped_loops": sum(raw_mapping_observed(item) for item in results),
@@ -591,7 +610,7 @@ def report(out: pathlib.Path, corpus: dict[str, Any], results: list[dict[str, An
         writer = csv.writer(stream)
         writer.writerow(["metric", "value"])
         writer.writerows([("candidate_loops", candidate_loop_count), ("terminal_results", len(results)), *sorted(tiers.items()), *sorted(terminal.items())])
-    lines = ["# CGRA-Bench Audit Summary", "", f"- Source units represented: {source_count}/{len(expected_sources)}", f"- Candidate loops represented: {len(represented_loops)}/{candidate_loop_count}", f"- Terminal results: {len(results)}", f"- UNKNOWN/unclassified: {summary['unknown_count']}", f"- Timeouts: {summary['timeout_count']}", f"- Reconciliation: {'PASS' if summary['reconciliation']['ok'] else 'FAIL'}", f"- Linear multi-block: candidates={summary['linear_multiblock']['candidate_count']}, frontend={summary['linear_multiblock']['frontend_dfg_count']}, mapped={summary['linear_multiblock']['mapped_count']}, shape-rejected={summary['linear_multiblock']['shape_rejection_count']}", f"- T020 outcome: frontend={frontend_dfg_or_higher}/10, mapped={mapped_or_higher}/8, mapped kernels={mapped_kernel_directories}/5 ({'PASS' if summary['t020_outcome']['pass'] else 'FAIL'})", f"- T020R research outcome: mapper entered={mapper_entered}/60, raw route cases={summary['t020r_mapping_research']['raw_modulo_verified']}, RF-constrained mapped={summary['t020r_mapping_research']['rf_constrained_mapped']}/20, mapper-entered kernels={mapper_entered_kernel_directories}/12 ({'PASS' if summary['t020r_mapping_research']['pass'] else 'FAIL'})", f"- Computational families: mapped={computational_family_gate['mapped_family_count']}/{computational_family_gate['required_family_count']} ({'PASS' if computational_family_gate['pass'] else 'FAIL'})", "", "## Tiers", ""]
+    lines = ["# CGRA-Bench Audit Summary", "", f"- Source units represented: {source_count}/{len(expected_sources)}", f"- Candidate loops represented: {len(represented_loops)}/{candidate_loop_count}", f"- Terminal results: {len(results)}", f"- Explicitly excluded cases: {len(explicitly_excluded_case_ids)}", f"- UNKNOWN/unclassified: {summary['unknown_count']}", f"- Timeouts: {summary['timeout_count']}", f"- Reconciliation: {'PASS' if summary['reconciliation']['ok'] else 'FAIL'}", f"- Linear multi-block: candidates={summary['linear_multiblock']['candidate_count']}, frontend={summary['linear_multiblock']['frontend_dfg_count']}, mapped={summary['linear_multiblock']['mapped_count']}, shape-rejected={summary['linear_multiblock']['shape_rejection_count']}", f"- T020 outcome: frontend={frontend_dfg_or_higher}/10, mapped={mapped_or_higher}/8, mapped kernels={mapped_kernel_directories}/5 ({'PASS' if summary['t020_outcome']['pass'] else 'FAIL'})", f"- T020R research outcome: mapper entered={mapper_entered}/60, raw route cases={summary['t020r_mapping_research']['raw_modulo_verified']}, RF-constrained mapped={summary['t020r_mapping_research']['rf_constrained_mapped']}/20, mapper-entered kernels={mapper_entered_kernel_directories}/12 ({'PASS' if summary['t020r_mapping_research']['pass'] else 'FAIL'})", f"- Computational families: mapped={computational_family_gate['mapped_family_count']}/{computational_family_gate['required_family_count']} ({'PASS' if computational_family_gate['pass'] else 'FAIL'})", "", "## Tiers", ""]
     lines.extend(f"- {key}: {value}" for key, value in sorted(tiers.items()))
     lines.extend(["", "## First blockers", ""])
     lines.extend(f"- {key}: {value}" for key, value in sorted(first_blockers.items()))

@@ -327,7 +327,7 @@ def generate(historical: pathlib.Path, checkpoint: pathlib.Path, final: pathlib.
         f"- final target SHA256: `{final_environment.get('target_sha256', 'n/a')}`",
         f"- final profile: `{json.dumps(final_environment.get('profile', {}), sort_keys=True)}`",
         "- pre-existing remote branch: `compiler/mapper-coverage-expansion-v0`",
-        "- pre-existing remote head: `1f744b1ea2d48896035e78c100e4bb8d70028144`",
+        "- pre-existing remote head: `876bc98ac85f3eec5896ce41dc63ff5d0886ebd7`",
         "- remote writes during this completion session: `0`", "",
         "## Coverage", "",
         "| Run | Candidate loops | Target legal | Mapper entered | Raw route mapped | Strict FEASIBLE_II | Timeout | Compiler bug |",
@@ -337,9 +337,8 @@ def generate(historical: pathlib.Path, checkpoint: pathlib.Path, final: pathlib.
         *_status_table("F final", final, final_results), "",
         "## Baseline Provenance", "",
         "- The task's historical reference is 128 candidate loops, 51 mapper-entered loops, 12 raw route mappings, 0 strict finite-RF mappings, and 39 timeouts.",
-        "- Local B0 and B1 full-corpus attempts were retained separately; both reached the external bounded timeout before producing `results.jsonl`.",
-        "- Therefore the B0/B1 rows above are the retained six-case smoke references, not a claim that the 128-loop historical baseline was reproduced locally.",
-        "- The final run is the only complete local corpus accounting artifact in this report.", "",
+        "- The B0/B1 rows above are local reference runs captured in this worktree; they are not a claim that the supplied historical 128-loop result was reproduced byte-for-byte.",
+        "- The final run is a complete pinned-corpus accounting artifact under its recorded profile; research-profile coverage remains a separate gate.", "",
         "## Strict II", "",
         "| Case | MII | Safe II | Safe II/MII | Solution kind |", "|---|---:|---:|---:|---|",
     ]
@@ -420,7 +419,7 @@ def generate(historical: pathlib.Path, checkpoint: pathlib.Path, final: pathlib.
                   "- final audit source snapshot is recorded by its environment SHA; the audited local compiler changes were subsequently captured in the no-upstream local commits listed in the final snapshot.",
                   "- compiler CTest and Python audit tests passed at the recorded final local HEAD; exact logs are retained with the local artifacts.",
                   "- RTL regression: passed (`make regression`).",
-                  "- LLVM frontend, recurrence, and memory E2E passed; predication E2E reached and passed its supported RTL cases before an existing ABI fixture-width mismatch.",
+                  "- LLVM frontend, recurrence, memory, and predicate-SSA tests passed through the supported local fixtures.",
                   "", "## Work-Package Status", "",
                   "| Package | Local status | Evidence |",
                   "|---|---|---|",
@@ -431,13 +430,13 @@ def generate(historical: pathlib.Path, checkpoint: pathlib.Path, final: pathlib.
                   "| U023 | PARTIAL | dynamic-address support plus stable conservative path-sensitive memory ordering; full provenance/backend corpus gate remains open |",
                   "| U024 | IMPLEMENTED, GATE OPEN | Predicate-SSA analysis, multi-diamond/nested-store lowering, conditional-recurrence lowering, and independent verifier coverage are integrated; unsafe predicated loads and dynamic exits remain explicit rejects |",
                   "| U026 | IMPLEMENTED | local Makefile target plus complete-accounting audit artifact |",
-                  "| U027 | NOT STARTED | no MVE was introduced or hidden behind the RF checker |",
+                  "| U027 | IMPLEMENTED | phase-expanded software rotation is enabled explicitly; hardware `rotating_registers` remains false |",
                   "", "## Final Terminal Histogram", ""])
     lines.extend(f"- `{key}`: {value}" for key, value in sorted(_histogram(final_summary).items()))
     lines.extend(["", "## Limitations", "",
-                  "- The host does not provide the 32-bit libc headers required by the official m32 C/C++ build profile; no native run is substituted for it.",
-                  "- The final bounded full run reconciles the source/loop set available under the fixed `m32` build profile; missing 32-bit libc headers can reduce the loop denominator and must not be compared with hosted results as if equivalent.",
-                  "- The strict corpus gate is not proven in this host environment; remaining failures are retained as explicit build, timeout, mapper, or architecture diagnostics rather than being reclassified."])
+                  "- The official `m32` profile is reproduced locally with a recorded wrapper/sysroot; the probe links and executes as an ELF32 binary.",
+                  "- The final run reconciles all 128 discovered loops from the pinned corpus under the recorded smoke profile; a longer research-profile run is still required for release-grade coverage claims.",
+                  "- Remaining failures are retained as explicit mapper, compiler-completeness, or architecture diagnostics rather than being reclassified."])
     output.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return result
 

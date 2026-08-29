@@ -1305,10 +1305,19 @@ void verifyIfDataflow(const llvm::Module& module, const Selection& selection,
           std::ranges::any_of(destination->instruction->operands(), [&](const auto& operand) {
             return operand.get() == recurrence.phiValue;
           });
+      // Address lowering materializes a GEP as a small arithmetic DAG.  A
+      // recurrence index therefore reaches a synthetic GEP_TERM_* node whose
+      // provenance points at the GEP, but is not LLVM operand zero (the GEP's
+      // pointer root).  Validate the recurrence edge by its synthetic role as
+      // well as by the direct LLVM operand mapping.
+      const bool syntheticGepNode = destination &&
+                                    destination->opcode.starts_with("GEP_") &&
+                                    destination->instruction &&
+                                    llvm::isa<llvm::GetElementPtrInst>(destination->instruction);
       if (edge.kind() != ir::Edge::Kind::Data || edge.distance != 1 ||
           edge.dst != use.destination || !source || !destination || !destination->instruction ||
           source->instruction != recurrence.backedge || !info || info->dstOperand != use.operand ||
-          (!gepUsesPhi && llvmValue != recurrence.phiValue) ||
+          (!gepUsesPhi && !syntheticGepNode && llvmValue != recurrence.phiValue) ||
           !info->boundary || !boundaryMatches(result, *result.dfg, recurrence, *info->boundary))
         report.add("LLVM_FRONTEND_RECURRENCE_EDGE_VERIFY_FAILED",
                    "recurrence descriptor edge " + std::to_string(use.edge) +
@@ -1322,10 +1331,52 @@ void verifyIfDataflow(const llvm::Module& module, const Selection& selection,
           ignored(*instruction))
         continue;
       if (llvm::isa<llvm::GetElementPtrInst>(instruction)) {
+        // Intermediate GEPs that only feed a final memory address are not
+        // semantic Generic nodes. Their recurrence use is represented by the
+        // final address arithmetic DAG, so there is no edge to validate for
+        // this LLVM instruction itself.
+        if (!std::ranges::any_of(result.provenance.nodes, [&](const auto& node) {
+              return node.instruction == instruction && result.dfg->containsNode(node.node);
+            }))
+          continue;
         bool matched = false;
+        // Prefer the recorded recurrence-use relation when available.  This
+        // covers GEPs whose address lowering uses one or more synthetic
+        // arithmetic nodes: the descriptor already identifies the exact
+        // destination edge and its LLVM instruction provenance.
+        for (const auto& use : recurrence.uses) {
+          if (!result.dfg->containsEdge(use.edge))
+            continue;
+          const auto& edge = result.dfg->edge(use.edge);
+          const auto* destination = nodeProvenance(result, edge.dst);
+          const auto* source = nodeProvenance(result, edge.src);
+          const auto* info = std::get_if<ir::DataEdgeInfo>(&edge.info);
+          if (destination && destination->instruction == instruction && source &&
+              source->instruction == recurrence.backedge && edge.distance == 1 && info &&
+              info->boundary && boundaryMatches(result, *result.dfg, recurrence, *info->boundary))
+            matched = true;
+        }
         for (const auto& destination : result.provenance.nodes) {
           if (destination.instruction != instruction || !result.dfg->containsNode(destination.node))
             continue;
+          // A recurrence index may be attached to a synthetic GEP term rather
+          // than the address node itself.  In that case the edge operand index
+          // is local to the synthetic arithmetic node, so only the provenance
+          // and recurrence boundary are meaningful here.
+          if (destination.opcode.starts_with("GEP_")) {
+            for (const auto& edge : result.dfg->edges()) {
+              if (edge.dst != destination.node || edge.distance != 1 ||
+                  edge.kind() != ir::Edge::Kind::Data)
+                continue;
+              const auto* source = nodeProvenance(result, edge.src);
+              const auto* info = std::get_if<ir::DataEdgeInfo>(&edge.info);
+              if (source && source->instruction == recurrence.backedge && info && info->boundary &&
+                  boundaryMatches(result, *result.dfg, recurrence, *info->boundary))
+                matched = true;
+            }
+            if (matched)
+              break;
+          }
           for (std::uint32_t operand = 0;
                operand < result.dfg->node(destination.node).operandTypes.size(); ++operand) {
             const auto* edge =

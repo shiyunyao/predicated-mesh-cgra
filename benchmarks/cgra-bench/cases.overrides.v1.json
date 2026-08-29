@@ -5,6 +5,21 @@
     {
       "source": "kernels/susan/susan.c",
       "include_dirs": ["../../benchmarks/cgra-bench/shims/susan"]
+    },
+    {
+      "source": "kernels/adpcm_coder/rawcaudio.c",
+      "enabled": false,
+      "exclusion": "Upstream audio test driver includes missing ../bareBench.h; it has no acceleration-region kernel"
+    },
+    {
+      "source": "kernels/adpcm_decoder/rawcaudio.c",
+      "enabled": false,
+      "exclusion": "Upstream audio test driver includes missing ../bareBench.h; it has no acceleration-region kernel"
+    },
+    {
+      "source": "kernels/blowfish/asm/bx86unix.cpp",
+      "enabled": false,
+      "exclusion": "Upstream platform assembly stub contains conditional prose rather than a compilable LLVM translation unit"
     }
   ]
 }

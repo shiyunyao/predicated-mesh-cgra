@@ -47,6 +47,19 @@ void lcmIsDeterministic() {
   expect(plan.controlPeriodCycles == 24, "control period must include the LCM");
 }
 
+void durationEqualToTwoPeriodsNeedsThreePhases() {
+  const std::vector segments = {segment(9, 0, 8)};
+  const auto plan = cgra::register_allocation::analyzeRotationFactors(
+      segments, 4, cgra::SameAddressReadWritePolicy::Forbidden);
+  expect(plan.ok(), "three-phase rotation analysis should succeed");
+  expect(plan.segments.front().minimumPhaseCount == 3,
+         "duration equal to two II periods needs three phases under forbidden reuse");
+  expect(plan.rotationPeriodIterations == 3,
+         "single three-phase family has a three-iteration control period");
+  expect(plan.controlPeriodCycles == 12,
+         "three-phase control period is II times three");
+}
+
 void controlMemoryCapIsEnforced() {
   const std::vector segments = {segment(1, 0, 4), segment(2, 0, 8)};
   const auto plan = cgra::register_allocation::analyzeRotationFactors(
@@ -62,6 +75,7 @@ int main() {
   forbiddenBoundaryNeedsTwoPhases();
   readOldThenWriteCanReuseAtBoundary();
   lcmIsDeterministic();
+  durationEqualToTwoPeriodsNeedsThreePhases();
   controlMemoryCapIsEnforced();
   return 0;
 }
