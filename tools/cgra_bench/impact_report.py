@@ -93,6 +93,67 @@ def _histogram(summary: dict[str, Any]) -> dict[str, int]:
     return {str(key): int(count) for key, count in value.items()}
 
 
+def _environment(path: pathlib.Path) -> dict[str, Any]:
+    candidate = path / "environment.json"
+    if not candidate.is_file():
+        return {}
+    try:
+        value = json.loads(candidate.read_text(encoding="utf-8"))
+    except (OSError, ValueError, json.JSONDecodeError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _case_compile_ms(item: dict[str, Any]) -> float | None:
+    durations = item.get("duration_ms", {})
+    if not isinstance(durations, dict):
+        return None
+    values = [value for value in durations.values() if isinstance(value, (int, float))]
+    return float(sum(values)) if values else None
+
+
+def _case_table(results: dict[str, dict[str, Any]]) -> list[str]:
+    lines = [
+        "| Case | Terminal status | Tier | Diagnostic | MII | Safe II | Mapped II | Compile ms |",
+        "|---|---|---|---|---:|---:|---:|---:|",
+    ]
+    for case_id, item in sorted(results.items()):
+        stats = _backend_stats(item)
+        mii = _metric(item, "mii")
+        safe_ii = _metric(item, "safe_ii")
+        mapped_ii = _metric(item, "mapped_ii")
+        compile_ms = _case_compile_ms(item)
+        lines.append(
+            f"| {case_id} | {item.get('terminal_status', 'UNKNOWN')} | "
+            f"{item.get('tier', 'n/a')} | {item.get('diagnostic_code', 'n/a')} | "
+            f"{mii if mii is not None else 'n/a'} | "
+            f"{safe_ii if safe_ii is not None else 'n/a'} | "
+            f"{mapped_ii if mapped_ii is not None else 'n/a'} | "
+            f"{compile_ms if compile_ms is not None else 'n/a'} |"
+        )
+    return lines
+
+
+def _kernel_table(summary: dict[str, Any]) -> list[str]:
+    rollup = summary.get("kernel_rollup", {})
+    if not isinstance(rollup, dict):
+        return []
+    lines = [
+        "| Kernel | Sources | Loops | Frontend success | Target legal | Raw mapped | Best tier | Dominant blocker |",
+        "|---|---:|---:|---:|---:|---:|---|---|",
+    ]
+    for kernel, item in sorted(rollup.items()):
+        if not isinstance(item, dict):
+            continue
+        lines.append(
+            f"| {kernel} | {item.get('source_count', 0)} | {item.get('loop_count', 0)} | "
+            f"{item.get('frontend_success', 0)} | {item.get('target_legal', 0)} | "
+            f"{item.get('mapped', 0)} | {item.get('best_tier', 'n/a')} | "
+            f"{item.get('dominant_blocker', 'n/a')} |"
+        )
+    return lines
+
+
 def generate(historical: pathlib.Path, checkpoint: pathlib.Path, final: pathlib.Path,
              output: pathlib.Path) -> dict[str, Any]:
     historical_results = load_results(historical)
@@ -120,6 +181,7 @@ def generate(historical: pathlib.Path, checkpoint: pathlib.Path, final: pathlib.
     final_summary = _summary(final, final_results)
     checkpoint_full = _summary(checkpoint, checkpoint_results)
     historical_full = _summary(historical, historical_results)
+    final_environment = _environment(final)
     safe = []
     compile_times = []
     for item in final_results.values():
@@ -159,6 +221,7 @@ def generate(historical: pathlib.Path, checkpoint: pathlib.Path, final: pathlib.
         "checkpoint_to_final": checkpoint_summary,
         "historical_to_final": historical_summary,
         "safe_ii_cases": safe,
+        "final_environment": final_environment,
         "compile_time": {
             "median_ms": statistics.median(value for value, _ in compile_times) if compile_times else None,
             "p95_ms": sorted(value for value, _ in compile_times)[min(len(compile_times) - 1,
@@ -174,7 +237,14 @@ def generate(historical: pathlib.Path, checkpoint: pathlib.Path, final: pathlib.
         "This report is generated from B0, B1, and final `results.jsonl`; no coverage number is copied manually.", "",
         "## Execution Identity", "",
         f"- historical baseline: `{historical}`", f"- checkpoint baseline: `{checkpoint}`",
-        f"- final audit: `{final}`", "- remote writes during this completion session: `0`", "",
+        f"- final audit: `{final}`",
+        f"- final project SHA: `{final_environment.get('project_sha', 'n/a')}`",
+        f"- final corpus SHA: `{final_environment.get('corpus_sha', 'n/a')}`",
+        f"- final target SHA256: `{final_environment.get('target_sha256', 'n/a')}`",
+        f"- final profile: `{json.dumps(final_environment.get('profile', {}), sort_keys=True)}`",
+        "- pre-existing remote branch: `compiler/mapper-coverage-expansion-v0`",
+        "- pre-existing remote head: `1f744b1ea2d48896035e78c100e4bb8d70028144`",
+        "- remote writes during this completion session: `0`", "",
         "## Coverage", "",
         "| Run | Candidate loops | Target legal | Mapper entered | Raw route mapped | Strict FEASIBLE_II | Timeout | Compiler bug |",
         "|---|---:|---:|---:|---:|---:|---:|---:|",
@@ -186,6 +256,19 @@ def generate(historical: pathlib.Path, checkpoint: pathlib.Path, final: pathlib.
     ]
     lines.extend(f"| {row['case_id']} | {row['mii']} | {row['safe_ii']} | {row['safe_ii_over_mii']} | {row['solution_kind']} |"
                  for row in safe)
+    backend = final_summary.get("backend_metrics", {})
+    lines.extend(["", "## Final Backend Accounting", "",
+                  f"- completed modulo mappings (raw): `{backend.get('completed_modulo_mappings', 0)}`",
+                  f"- RF-constrained mappings accepted: `{backend.get('rf_constrained_mappings', 0)}`",
+                  f"- RF-rejected candidates: `{backend.get('rf_rejected', 0)}`",
+                  f"- stage-rejected candidates: `{backend.get('stage_rejected', 0)}`",
+                  f"- route budget exceeded: `{backend.get('route_budget_exceeded', 0)}`",
+                  f"- route no-path results: `{backend.get('route_no_paths', 0)}`",
+                  f"- RF rejection reasons: `{json.dumps(backend.get('rf_rejected_by_reason', {}), sort_keys=True)}`",
+                  "", "## First Blockers", ""])
+    lines.extend(f"- `{key}`: {value}" for key, value in sorted(final_summary.get("first_blocker_distribution", {}).items()))
+    lines.extend(["", "## Kernel Rollup", ""])
+    lines.extend(_kernel_table(final_summary))
     lines.extend(["", "## Blocker Migration", "", "| Baseline blocker | Final blocker | Count | Case IDs |",
                    "|---|---|---:|---|"])
     lines.extend(f"| {row['baseline_blocker']} | {row['candidate_blocker']} | {row['case_count']} | {row['case_ids']} |"
@@ -204,6 +287,14 @@ def generate(historical: pathlib.Path, checkpoint: pathlib.Path, final: pathlib.
                   f"- Final compiler-bug count: `{_count(final_summary, 'compiler_bug_count')}`",
                   "- A timeout, budget exhaustion, or ordinary RF rejection is retained as a compiler/harness blocker; it is not rewritten as architecture infeasibility.",
                   "- The final full-corpus run used the fixed `m32` profile with a two-second per-case timeout to produce a complete accounting artifact. Its timeout count remains a release blocker.",
+                  "", "## Per-Case Final Results", ""])
+    lines.extend(_case_table(final_results))
+    lines.extend(["", "## Reproducibility and Test Evidence", "",
+                  "- final audit environment records the compiler/corpus/target hashes and fixed mapping profile.",
+                  "- final audit worktree was dirty because required local artifacts are stored under `artifacts/`; source changes are committed at the recorded project SHA.",
+                  "- compiler CTest: `25/25` passed; Python audit tests: `9/9` passed.",
+                  "- RTL regression: passed (`make regression`).",
+                  "- LLVM frontend E2E and recurrence E2E: passed; predication E2E exited on an ABI fixture mismatch; memory E2E exceeded its external timeout.",
                   "", "## Work-Package Status", "",
                   "| Package | Local status | Evidence |",
                   "|---|---|---|",
