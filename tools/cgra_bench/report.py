@@ -374,12 +374,16 @@ def report(out: pathlib.Path, corpus: dict[str, Any], results: list[dict[str, An
         return ordered[index]
 
     mii_values = metric_values("mii")
-    safe_ii_values = metric_values("safe_ii")
+    safe_ii_values = [
+        value for item in results
+        if item.get("terminal_status") == "FEASIBLE_II"
+        for value in [_metric(item, "safe_ii")]
+        if isinstance(value, (int, float)) and value > 0
+    ]
     compile_values = [
-        float(value)
+        float(sum(value for value in item.get("duration_ms", {}).values()
+                  if isinstance(value, (int, float))))
         for item in results
-        for value in item.get("duration_ms", {}).values()
-        if isinstance(value, int)
     ]
     ratio_values = []
     for item in results:
@@ -412,18 +416,37 @@ def report(out: pathlib.Path, corpus: dict[str, Any], results: list[dict[str, An
         "terminal_categories": dict(sorted(terminal.items())),
         "terminal_status_histogram": dict(sorted(strict_terminal.items())),
         "architecture_admissible_loops": sum(
-            item.get("terminal_status") in {"FEASIBLE_II", "RESOURCE_INFEASIBLE"}
-            for item in results
+            item.get("admissibility_status") == "ADMISSIBLE" for item in results
         ),
+        "architecture_admissible_case_ids": [
+            item["id"] for item in results
+            if item.get("admissibility_status") == "ADMISSIBLE"
+        ],
+        "unknown_due_to_compiler_loops": sum(
+            item.get("admissibility_status") == "UNKNOWN_DUE_TO_COMPILER" for item in results
+        ),
+        "unknown_due_to_compiler_case_ids": [
+            item["id"] for item in results
+            if item.get("admissibility_status") == "UNKNOWN_DUE_TO_COMPILER"
+        ],
         "strict_feasible_ii_loops": sum(
             item.get("terminal_status") == "FEASIBLE_II" for item in results
         ),
+        "strict_feasible_ii_case_ids": [
+            item["id"] for item in results if item.get("terminal_status") == "FEASIBLE_II"
+        ],
         "compiler_bug_count": sum(
             item.get("terminal_status") == "COMPILER_BUG" for item in results
         ),
         "mapper_entered_loops": mapper_entered,
+        "mapper_entered_case_ids": [item["id"] for item in results if mapper_was_invoked(item)],
         "raw_route_mapped_loops": sum(raw_mapping_observed(item) for item in results),
+        "raw_route_mapped_case_ids": [item["id"] for item in results if raw_mapping_observed(item)],
         "target_legal_loops": sum(TIERS.get(item.get("tier", "DISCOVERED"), 0) >= TIERS["TARGET_LEGAL"] for item in results),
+        "target_legal_case_ids": [
+            item["id"] for item in results
+            if TIERS.get(item.get("tier", "DISCOVERED"), 0) >= TIERS["TARGET_LEGAL"]
+        ],
         "hardware_executable_loops": sum(
             bool(item.get("backend", {}).get("hardware_executable"))
             for item in results if isinstance(item.get("backend"), dict)

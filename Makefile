@@ -110,7 +110,7 @@ CGRA_BENCH_COMPILE_BIN := $(CGRA_BENCH_FRONTEND_BUILD)/bin/cgrac-compile-kernel
 CGRA_BENCH_RESEARCH_TARGET ?= target/cgra_mapping64_v1.json
 CGRA_BENCH_RESEARCH_OUT ?= build/cgra-bench/run/research
 
-.PHONY: help check-test lint build test regression shared-scratchpad-tests shared-scratchpad-negative-tests program program-prepare program-build program-run program-check compiler-e2e kernel-abi-e2e kernel-abi-scalar-e2e kernel-abi-base-load-e2e kernel-abi-recurrence-e2e kernel-abi-tripcount-e2e llvm-frontend-e2e llvm-frontend-c-smoke llvm-recurrence-e2e llvm-predication-e2e llvm-memory-e2e llvm-linear-loop-canonical-smoke llvm-linear-loop-reachability-e2e cgra-bench-inventory cgra-bench-smoke cgra-bench-audit cgra-bench-research-audit cgra-bench-freeze-supported modulo-loop modulo-loop-prepare modulo-loop-check modulo-loop-tripcount-tests modulo-loop-zero-boundary-test modulo-loop-reuse-test modulo-loop-assert-tests synth-fetch-asap7 synth-memory-shape synth-area synth-timing synth-power synth-power-feasibility synth-fn-cacti clean
+.PHONY: help check-test lint build test regression shared-scratchpad-tests shared-scratchpad-negative-tests program program-prepare program-build program-run program-check compiler-e2e kernel-abi-e2e kernel-abi-scalar-e2e kernel-abi-base-load-e2e kernel-abi-recurrence-e2e kernel-abi-tripcount-e2e llvm-frontend-e2e llvm-frontend-c-smoke llvm-recurrence-e2e llvm-predication-e2e llvm-memory-e2e llvm-linear-loop-canonical-smoke llvm-linear-loop-reachability-e2e cgra-bench-inventory cgra-bench-smoke cgra-bench-audit cgra-bench-research-audit cgra-bench-coverage-audit-local cgra-bench-freeze-supported modulo-loop modulo-loop-prepare modulo-loop-check modulo-loop-tripcount-tests modulo-loop-zero-boundary-test modulo-loop-reuse-test modulo-loop-assert-tests synth-fetch-asap7 synth-memory-shape synth-area synth-timing synth-power synth-power-feasibility synth-fn-cacti clean
 
 help:
 	@echo "make test TEST=<name>  Build and run one testbench"
@@ -128,6 +128,7 @@ help:
 	@echo "make cgra-bench-smoke  Run the fixed T019 smoke corpus audit"
 	@echo "make cgra-bench-audit  Run the complete pinned CGRA-Bench kernels audit"
 	@echo "make cgra-bench-research-audit  Run the typed abstract mapping-lane audit"
+	@echo "make cgra-bench-coverage-audit-local  Run the local enabled coverage lane without rewriting case metadata"
 	@echo "make cgra-bench-freeze-supported  Freeze L4 mapped cases from one completed full audit"
 	@echo "make modulo-loop        Replay the external modulo-loop manifest and run loop coverage"
 	@echo "make synth-area         Map 2x2/4x4 logic and report ASAP7 cell area"
@@ -448,6 +449,14 @@ cgra-bench-research-audit: cgra-bench-inventory
 	cmake -S compiler -B "$(CGRA_BENCH_FRONTEND_BUILD)" -DCGRA_BUILD_TESTS=OFF -DCGRA_WARNINGS_AS_ERRORS=ON $(LLVM_CMAKE_ARG); \
 	cmake --build "$(CGRA_BENCH_FRONTEND_BUILD)" --target cgra-llvm-loop-lower cgrac-compile-kernel --parallel; \
 	python3 tools/cgra_bench/run.py --corpus "$(CGRA_BENCH_CORPUS)" --cases "$(CGRA_BENCH_CASES)" --target "$(CGRA_BENCH_RESEARCH_TARGET)" --frontend-bin "$(CGRA_BENCH_FRONTEND_BIN)" --compile-kernel-bin "$(CGRA_BENCH_COMPILE_BIN)" --out "$(CGRA_BENCH_RESEARCH_OUT)" --all --profile research --lane mapping-research --source-abi m32
+
+# This lane deliberately does not depend on inventory: inventory owns the
+# upstream-derived manifests and must not erase checked-in adapter overrides.
+cgra-bench-coverage-audit-local:
+	@set -eu; \
+	cmake -S compiler -B "$(CGRA_BENCH_FRONTEND_BUILD)" -DCGRA_BUILD_TESTS=OFF -DCGRA_WARNINGS_AS_ERRORS=ON $(LLVM_CMAKE_ARG); \
+	cmake --build "$(CGRA_BENCH_FRONTEND_BUILD)" --target cgra-llvm-loop-lower cgrac-compile-kernel --parallel; \
+	python3 tools/cgra_bench/run.py --corpus "$(CGRA_BENCH_CORPUS)" --cases "$(CGRA_BENCH_CASES)" --target "$(CGRA_BENCH_RESEARCH_TARGET)" --frontend-bin "$(CGRA_BENCH_FRONTEND_BIN)" --compile-kernel-bin "$(CGRA_BENCH_COMPILE_BIN)" --out "$(CGRA_BENCH_RESEARCH_OUT)" --all --profile research --lane mapping-research --source-abi m32 --mapping-objective find-any-feasible --enable-recurrence-ingress
 
 cgra-bench-freeze-supported:
 	python3 tools/cgra_bench/freeze_supported.py --run "$(CGRA_BENCH_OUT)/full" --out benchmarks/cgra-bench/known_supported.v1.json

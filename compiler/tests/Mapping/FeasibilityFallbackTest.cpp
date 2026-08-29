@@ -57,8 +57,10 @@ int main() {
     expect(mapped.ok(), "fallback must continue after a rejected completed mapping");
     expect(mapped.mii == 1 && mapped.safeII == 2 && mapped.bestKnownII == 2,
            "fallback must report the accepted II separately from MII");
-    expect(mapped.solutionKind == "constructive_fallback" && mapped.fallbackInvoked,
-           "fallback result must be explicitly labelled");
+    expect(mapped.solutionKind == "extended_ii_search" && mapped.fallbackInvoked,
+           "extended-II result must not be mislabelled as a constructive scheduler");
+    expect(mapped.fallbackScheduleGrowth == 0 && mapped.fallbackLocalRepairs == 0,
+           "extended-II search must not report nonexistent repairs or schedule growth");
     expect(mapped.stats.completedModuloMappings >= 2 && mapped.stats.rfRejected >= 1,
            "raw candidates and finite-RF rejection telemetry must both be retained");
     return 0;

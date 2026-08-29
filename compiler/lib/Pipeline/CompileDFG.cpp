@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 #include "cgra/Pipeline/CompileDFG.h"
 #include "cgra/Transforms/RecurrenceIngressNormalization.h"
+#include "cgra/Transforms/RecurrenceIngressVerifier.h"
 
 #include "cgra/Analysis/MIIAnalyzer.h"
 #include "cgra/IR/DFGSerialization.h"
@@ -233,14 +234,28 @@ CompileDFGResult compileGenericDFG(const ir::DFG& dfg, const TargetModel& target
       for (const auto& record : normalized.records) {
         ingress["records"].push_back({
             {"original_edge", record.originalEdge},
+            {"original_source", record.originalSource},
+            {"original_destination", record.originalDestination},
+            {"original_destination_operand", record.originalDestinationOperand},
             {"ingress_node", record.ingressNode},
             {"recurrence_edge", record.recurrenceEdge},
             {"local_edge", record.localEdge},
             {"kind", record.kind == transforms::RecurrenceIngressKind::Predicate ? "predicate"
                                                                                      : "data"},
-            {"distance", record.distance}});
+            {"value_type", record.valueType.toString()},
+            {"distance", record.distance},
+            {"boundary_hash", record.boundaryHash},
+            {"source_recurrence_provenance", record.sourceRecurrenceProvenance},
+            {"consumer_count", record.consumerCount},
+            {"shared_ingress", record.sharedIngress}});
       }
       artifacts.write("01_recurrence_ingress_normalization.json", ingress.dump(2));
+      const auto ingressReport = transforms::verifyRecurrenceIngress(dfg, normalized);
+      artifacts.write("01_recurrence_ingress_normalization_verification.json",
+                      Json{{"ok", ingressReport.ok}, {"detail", ingressReport.format()}}.dump(2));
+      if (!ingressReport.ok)
+        return failure(result, CompileDFGStatus::GenericDFGVerificationFailure,
+                       ingressReport.format(), artifacts);
       const auto normalizedReport = ir::DFGVerifier::verify(normalized.dfg);
       artifacts.write("01_recurrence_ingress_verification.json", normalizedReport.toJson());
       if (!normalizedReport.ok())

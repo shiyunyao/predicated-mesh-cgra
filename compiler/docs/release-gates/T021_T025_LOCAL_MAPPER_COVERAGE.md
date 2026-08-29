@@ -22,10 +22,13 @@ audit comparison work in this worktree.
 
 ## Local Evidence
 
-All commands were run in the local worktree. No pull, fetch, push, remote
-branch, pull request, tag, release, or GitHub write operation was performed.
+The remote checkpoint branch pre-existed this completion session:
+`compiler/mapper-coverage-expansion-v0` at
+`1f744b1ea2d48896035e78c100e4bb8d70028144`. All completion commands were run
+in a local worktree. No pull, fetch, push, remote branch, pull request, tag,
+release, or GitHub write operation was performed during this session.
 The authoritative measurements are in
-`artifacts/local-mapper-coverage/final/LOCAL_MAPPER_COVERAGE_IMPACT_REPORT.md`.
+`artifacts/local-mapper-coverage-completion/final/LOCAL_MAPPER_COVERAGE_COMPLETION_REPORT.md`.
 
 The full corpus attempt is retained separately from the reproducible six-case
 smoke audit. The local host lacks the 32-bit libc development headers required

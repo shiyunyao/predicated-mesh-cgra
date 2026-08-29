@@ -160,6 +160,7 @@ add_library(cgra_pipeline
   lib/Pipeline/CompileDFG.cpp
   lib/Pipeline/BackendFeasibilityChecker.cpp
   lib/Transforms/RecurrenceIngressNormalization.cpp
+  lib/Transforms/RecurrenceIngressVerifier.cpp
 )
 target_include_directories(cgra_pipeline PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(cgra_pipeline PUBLIC cgra_lowering cgra_schedule_materialization

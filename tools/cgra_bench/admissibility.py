@@ -16,10 +16,34 @@ TERMINAL_STATUSES = {
     "COMPILER_BUG",
 }
 
+ADMISSIBILITY_STATUSES = {
+    "ADMISSIBLE",
+    "ARCH_UNSUPPORTED",
+    "NOT_ACCELERATION_REGION",
+    "UNKNOWN_DUE_TO_COMPILER",
+}
+
+RESOURCE_PROOF_KINDS = {
+    "ZERO_COMPATIBLE_TILES",
+    "UNSUPPORTED_TARGET_TYPE",
+    "SCRATCHPAD_CAPACITY_LOWER_BOUND",
+    "CONTROL_MEMORY_LOWER_BOUND",
+    "PROVEN_RF_PRESSURE_LOWER_BOUND",
+    "EXACT_SEARCH_EXHAUSTED_WITHOUT_BUDGET",
+}
+
 
 def _backend(result: dict[str, Any]) -> dict[str, Any]:
     value = result.get("backend")
     return value if isinstance(value, dict) else {}
+
+
+def _has_resource_proof(result: dict[str, Any]) -> bool:
+    backend = _backend(result)
+    for witness in (result.get("witness"), backend.get("resource_proof"), backend.get("witness")):
+        if isinstance(witness, dict) and witness.get("proof_kind") in RESOURCE_PROOF_KINDS:
+            return True
+    return False
 
 
 def terminal_status(result: dict[str, Any]) -> str:
@@ -42,8 +66,7 @@ def terminal_status(result: dict[str, Any]) -> str:
         }:
             return "FEASIBLE_II"
         if result.get("tier") == "ROUTE_MAPPED":
-            stats = backend.get("stats", {})
-            if isinstance(stats, dict) and stats.get("rf_rejected_by_reason"):
+            if _has_resource_proof(result):
                 return "RESOURCE_INFEASIBLE"
             return "COMPILER_BUG"
     category = str(result.get("category", ""))
@@ -54,9 +77,7 @@ def terminal_status(result: dict[str, Any]) -> str:
     if category == "MAPPING_BUDGET" or "budget" in code or "timed out" in message:
         return "COMPILER_BUG"
     if category in {"RF", "STAGE_SCHEDULE", "MAPPING_INFEASIBLE", "MAPPING_VERIFY"}:
-        stats = backend.get("stats", {})
-        reason = stats.get("rf_rejected_by_reason", {}) if isinstance(stats, dict) else {}
-        if reason:
+        if _has_resource_proof(result):
             return "RESOURCE_INFEASIBLE"
         return "COMPILER_BUG"
     if "PREDICATED_LOAD" in code or "MEMORY" in code or "ADDRESS" in code or "POINTER" in code:
@@ -79,19 +100,32 @@ def terminal_status(result: dict[str, Any]) -> str:
     return "COMPILER_BUG"
 
 
+def admissibility_status(result: dict[str, Any]) -> str:
+    """Classify architecture admissibility independently of terminal outcome."""
+    if result.get("excluded") or result.get("status") == "EXCLUDED":
+        return "NOT_ACCELERATION_REGION"
+    status = result.get("terminal_status") or terminal_status(result)
+    if status in {"FEASIBLE_II", "RESOURCE_INFEASIBLE"}:
+        return "ADMISSIBLE"
+    if status in {"ARCH_UNSUPPORTED_OPERATION", "ARCH_UNSUPPORTED_CONTROL",
+                  "ARCH_UNSUPPORTED_MEMORY"}:
+        return "ARCH_UNSUPPORTED"
+    return "UNKNOWN_DUE_TO_COMPILER"
+
+
 def attach_terminal_status(result: dict[str, Any]) -> dict[str, Any]:
     status = terminal_status(result)
     result["terminal_status"] = status
+    result["admissibility_status"] = admissibility_status(result)
     backend = _backend(result)
     stats = backend.get("stats", {}) if isinstance(backend, dict) else {}
     if status == "FEASIBLE_II":
         result["feasible_ii"] = backend.get("stats", {}).get("safe_ii", backend.get("stats", {}).get("mapped_ii"))
     elif status == "RESOURCE_INFEASIBLE":
         result.setdefault("witness", {})
-        if stats.get("rf_rejected_by_reason"):
-            result["witness"]["rf_rejected_by_reason"] = stats["rf_rejected_by_reason"]
         if result.get("message"):
             result["witness"].setdefault("diagnostic", result["message"][-2000:])
-        if not result["witness"]:
+        if not _has_resource_proof(result):
             result["terminal_status"] = "COMPILER_BUG"
+            result["admissibility_status"] = "UNKNOWN_DUE_TO_COMPILER"
     return result

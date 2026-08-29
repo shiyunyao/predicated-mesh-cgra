@@ -677,8 +677,13 @@ ModuloMapperResult ModuloMapper::map(const cgra::target::TargetDFG& dfg,
       result.mapping = state.mapping();
       result.bestKnownII = currentII;
       result.safeII = currentII;
-      result.solutionKind = inFallback ? "constructive_fallback" : "low_ii_search";
-      result.fallbackScheduleGrowth = currentII > lowIIEnd ? currentII - lowIIEnd : 0;
+      // This lane currently reuses the deterministic modulo DFS at later II
+      // values. It is intentionally named extended_ii_search until a separate
+      // absolute-time constructive scheduler exists; an II delta is not
+      // schedule growth and no local repair has been performed here.
+      result.solutionKind = inFallback ? "extended_ii_search" : "low_ii_search";
+      result.fallbackScheduleGrowth = 0;
+      result.fallbackLocalRepairs = 0;
       return result;
     }
     if (outcome == SearchOutcome::PerIIBudgetExceeded) {

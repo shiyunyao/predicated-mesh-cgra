@@ -54,6 +54,7 @@ def compare(baseline: pathlib.Path, candidate: pathlib.Path) -> tuple[dict[str, 
     ids = sorted(set(before) | set(after))
     rows: list[dict[str, Any]] = []
     migrations: Counter[tuple[str, str]] = Counter()
+    blocker_migrations: dict[tuple[str, str], list[str]] = {}
     for case_id in ids:
         lhs = before.get(case_id)
         rhs = after.get(case_id)
@@ -72,6 +73,8 @@ def compare(baseline: pathlib.Path, candidate: pathlib.Path) -> tuple[dict[str, 
         rows.append(row)
         if lhs and rhs:
             migrations[(str(row["baseline_status"]), str(row["candidate_status"]))] += 1
+            blocker = (str(row["baseline_first_blocker"]), str(row["candidate_first_blocker"]))
+            blocker_migrations.setdefault(blocker, []).append(case_id)
     summary = {
         "schema": "cgra.cgra_bench.impact_summary.v1",
         "baseline_cases": len(before),
@@ -81,6 +84,13 @@ def compare(baseline: pathlib.Path, candidate: pathlib.Path) -> tuple[dict[str, 
         "unmatched_case_count": len(set(before) ^ set(after)),
         "status_migrations": {
             f"{lhs}->{rhs}": count for (lhs, rhs), count in sorted(migrations.items())
+        },
+        "terminal_status_migrations": {
+            f"{lhs}->{rhs}": count for (lhs, rhs), count in sorted(migrations.items())
+        },
+        "blocker_migrations": {
+            f"{lhs}->{rhs}": {"count": len(case_ids), "case_ids": sorted(case_ids)}
+            for (lhs, rhs), case_ids in sorted(blocker_migrations.items())
         },
         "baseline_status_histogram": dict(Counter(row["baseline_status"] for row in rows)),
         "candidate_status_histogram": dict(Counter(row["candidate_status"] for row in rows)),
@@ -95,6 +105,7 @@ def main() -> int:
     parser.add_argument("--json", type=pathlib.Path, required=True)
     parser.add_argument("--csv", type=pathlib.Path, required=True)
     parser.add_argument("--blocker-csv", type=pathlib.Path, required=True)
+    parser.add_argument("--terminal-status-csv", type=pathlib.Path)
     args = parser.parse_args()
     summary, rows = compare(args.baseline, args.candidate)
     args.json.parent.mkdir(parents=True, exist_ok=True)
@@ -105,10 +116,18 @@ def main() -> int:
         writer.writerows(rows)
     with args.blocker_csv.open("w", newline="", encoding="utf-8") as stream:
         writer = csv.writer(stream)
-        writer.writerow(["baseline_status", "candidate_status", "case_count"])
-        for key, count in sorted(summary["status_migrations"].items()):
+        writer.writerow(["baseline_blocker", "candidate_blocker", "case_count", "case_ids"])
+        for key, value in sorted(summary["blocker_migrations"].items()):
             lhs, _, rhs = key.partition("->")
-            writer.writerow([lhs, rhs, count])
+            writer.writerow([lhs, rhs, value["count"], ";".join(value["case_ids"])])
+    if args.terminal_status_csv:
+        args.terminal_status_csv.parent.mkdir(parents=True, exist_ok=True)
+        with args.terminal_status_csv.open("w", newline="", encoding="utf-8") as stream:
+            writer = csv.writer(stream)
+            writer.writerow(["baseline_status", "candidate_status", "case_count"])
+            for key, count in sorted(summary["terminal_status_migrations"].items()):
+                lhs, _, rhs = key.partition("->")
+                writer.writerow([lhs, rhs, count])
     print(json.dumps(summary, indent=2, sort_keys=True))
     return 0
 
