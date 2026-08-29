@@ -276,35 +276,40 @@ private:
     ++result_.stats.routeSearchCalls;
     auto routeOptions = options_.routeOptions;
     routeOptions.budget = options_.budget.perRouteBudget;
-    const auto route = ModuloRouteSearch::search(dfg_, target_, resources_, reservations_,
-                                                 {edge.id, producer, consumer}, routeOptions);
-    result_.stats.totalRouteStateExpansions += route.stats.stateExpansions;
-    if (route.status == RouteSearchStatus::NoPath) {
+    const auto routes = ModuloRouteSearch::searchAlternatives(
+        dfg_, target_, resources_, reservations_,
+        {{edge.id, producer, consumer}, options_.rfPortAware.maxRouteAlternatives}, routeOptions);
+    result_.stats.totalRouteStateExpansions += routes.stats.stateExpansions;
+    if (routes.status == RouteSearchStatus::NoPath) {
       ++result_.stats.routeNoPaths;
-      addDiagnostic(result_, ModuloMapperDiagnosticCode::MAP_ROUTE_NO_PATH, route.format(), ii_,
+      addDiagnostic(result_, ModuloMapperDiagnosticCode::MAP_ROUTE_NO_PATH,
+                    "no route alternative exists", ii_,
                     std::nullopt, edge.id);
       return SearchOutcome::Exhausted;
     }
-    if (route.status == RouteSearchStatus::BudgetExceeded) {
+    if (routes.status == RouteSearchStatus::BudgetExceeded) {
       ++result_.stats.routeBudgetExceeded;
-      addDiagnostic(result_, ModuloMapperDiagnosticCode::MAP_ROUTE_BUDGET_EXCEEDED, route.format(),
+      addDiagnostic(result_, ModuloMapperDiagnosticCode::MAP_ROUTE_BUDGET_EXCEEDED,
+                    "route alternative search budget exceeded",
                     ii_, std::nullopt, edge.id);
       return SearchOutcome::RouteBudgetExceeded;
     }
-    if (!route.ok()) {
-      if (route.status == RouteSearchStatus::TargetContractError) {
+    if (routes.plans.empty()) {
+      if (routes.status == RouteSearchStatus::TargetContractError) {
         addDiagnostic(result_, ModuloMapperDiagnosticCode::MAP_TARGET_CONTRACT_ERROR,
-                      route.format(), ii_, std::nullopt, edge.id);
+                      "route alternative search target contract error", ii_, std::nullopt, edge.id);
         return SearchOutcome::InternalError;
       }
-      addDiagnostic(result_, ModuloMapperDiagnosticCode::MAP_INTERNAL_ERROR, route.format(), ii_,
+      addDiagnostic(result_, ModuloMapperDiagnosticCode::MAP_INTERNAL_ERROR,
+                    "route alternative search returned no usable plan", ii_,
                     std::nullopt, edge.id);
       return SearchOutcome::InternalError;
     }
     ++result_.stats.routeSuccesses;
-    const auto routeIds = routeResources(*route.plan, producer);
+    const auto& selectedPlan = routes.plans.front();
+    const auto routeIds = routeResources(selectedPlan, producer);
     const MappedDependence routeDependence{edge.id, edge.kind(),
-                                           route.plan->requiredSeparationCycles, route.plan};
+                                           selectedPlan.requiredSeparationCycles, selectedPlan};
 
     if (options_.rfPortAware.enabled &&
         (options_.rfPortAware.reserveExplicitHoldEvents ||
@@ -346,7 +351,7 @@ private:
     delta.edges.push_back(edge.id);
     dependences_.emplace(
         edge.id,
-        MappedDependence{edge.id, edge.kind(), route.plan->requiredSeparationCycles, route.plan});
+        MappedDependence{edge.id, edge.kind(), selectedPlan.requiredSeparationCycles, selectedPlan});
     return SearchOutcome::Success;
   }
 

@@ -620,4 +620,27 @@ RouteSearchResult ModuloRouteSearch::search(const cgra::target::TargetDFG& dfg,
   return RouteSearchImpl(dfg, target, resources, reservations, request, options).run();
 }
 
+RouteAlternativeResult ModuloRouteSearch::searchAlternatives(
+    const cgra::target::TargetDFG& dfg, const cgra::TargetModel& target,
+    const ModuloResourceModel& resources, const ResourceReservationTable& reservations,
+    const RouteAlternativeRequest& request, const RouteSearchOptions& options) {
+  RouteAlternativeResult result;
+  const auto limit = std::max<std::uint32_t>(1, request.maxAlternatives);
+  // The current route state model exposes one canonical shortest plan. Keep
+  // this API transactional and deterministic; future k-shortest expansion can
+  // add plans without changing mapper call sites or K=1 behavior.
+  const auto first = search(dfg, target, resources, reservations, request.base, options);
+  result.status = first.status;
+  result.stats = first.stats;
+  result.diagnostics = first.diagnostics;
+  if (first.plan)
+    result.plans.push_back(*first.plan);
+  if (limit == 1 || !first.ok())
+    return result;
+  // A second identical plan is never useful and would violate action-sequence
+  // deduplication. Return the unique canonical plan until spur-point routing
+  // is added; callers still honor the requested bound.
+  return result;
+}
+
 } // namespace cgra::mapping
