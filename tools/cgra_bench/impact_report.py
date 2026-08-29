@@ -268,6 +268,11 @@ def generate(historical: pathlib.Path, checkpoint: pathlib.Path, final: pathlib.
         for value, case_id in sorted(compile_times, reverse=True)[:10]
     ])
 
+    safe_ratios = [row["safe_ii_over_mii"] for row in safe
+                   if isinstance(row.get("safe_ii_over_mii"), (int, float))]
+    safe_ii_values = [row["safe_ii"] for row in safe
+                      if isinstance(row.get("safe_ii"), (int, float))]
+
     result = {
         "schema": "cgra.cgra_bench.coverage_completion.v1",
         "historical": historical_full,
@@ -282,6 +287,15 @@ def generate(historical: pathlib.Path, checkpoint: pathlib.Path, final: pathlib.
             "p95_ms": sorted(value for value, _ in compile_times)[min(len(compile_times) - 1,
                          max(0, int(round((len(compile_times) - 1) * 0.95))))] if compile_times else None,
             "max_ms": max((value for value, _ in compile_times), default=None),
+        },
+        "strict_quality": {
+            "strict_cases": len(safe),
+            "median_safe_ii": statistics.median(safe_ii_values) if safe_ii_values else None,
+            "median_safe_ii_over_mii": statistics.median(safe_ratios) if safe_ratios else None,
+            "p95_safe_ii_over_mii": sorted(safe_ratios)[min(
+                len(safe_ratios) - 1,
+                max(0, int(round((len(safe_ratios) - 1) * 0.95))),
+            )] if safe_ratios else None,
         },
         "task_impact": {
             "u021_recurrence_ingress_records": ingress_records,
@@ -340,6 +354,20 @@ def generate(historical: pathlib.Path, checkpoint: pathlib.Path, final: pathlib.
                   f"- route budget exceeded: `{backend.get('route_budget_exceeded', 0)}`",
                   f"- route no-path results: `{backend.get('route_no_paths', 0)}`",
                   f"- RF rejection reasons: `{json.dumps(backend.get('rf_rejected_by_reason', {}), sort_keys=True)}`",
+                  "", "## Strict Coverage Detail", "",
+                  f"- target-legal loops: `{_count(final_summary, 'target_legal_loops')}`",
+                  f"- mapper-entered loops: `{_count(final_summary, 'mapper_entered_loops')}`",
+                  f"- raw route-mapped loops: `{_count(final_summary, 'raw_route_mapped_loops')}`",
+                  f"- strict finite-RF FEASIBLE_II loops: `{len(safe)}`",
+                  f"- strict coverage over all candidate loops: `{(len(safe) / _count(final_summary.get('denominator', {}), 'candidate_loops')) if _count(final_summary.get('denominator', {}), 'candidate_loops') else 0:.3f}`",
+                  f"- strict coverage over mapper-entered loops: `{(len(safe) / _count(final_summary, 'mapper_entered_loops')) if _count(final_summary, 'mapper_entered_loops') else 0:.3f}`",
+                  f"- median safe II: `{statistics.median(safe_ii_values) if safe_ii_values else 'n/a'}`",
+                  f"- median safe II / MII: `{statistics.median(safe_ratios) if safe_ratios else 'n/a'}`",
+                  f"- p95 safe II / MII: `{sorted(safe_ratios)[min(len(safe_ratios) - 1, max(0, int(round((len(safe_ratios) - 1) * 0.95))))] if safe_ratios else 'n/a'}`",
+                  "", "## Compile-Time Detail", "",
+                  f"- median per-case compile time: `{result['compile_time']['median_ms']}` ms",
+                  f"- p95 per-case compile time: `{result['compile_time']['p95_ms']}` ms",
+                  f"- maximum per-case compile time: `{result['compile_time']['max_ms']}` ms",
                   "", "## First Blockers", ""])
     lines.extend(f"- `{key}`: {value}" for key, value in sorted(final_summary.get("first_blocker_distribution", {}).items()))
     lines.extend(["", "## Kernel Rollup", ""])
