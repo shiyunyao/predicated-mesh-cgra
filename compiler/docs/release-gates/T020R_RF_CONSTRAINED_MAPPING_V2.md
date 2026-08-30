@@ -4,6 +4,10 @@ This record defines the finite-register mapping contract for the
 `benchmark-to-mapper-v1` lane. It supersedes the earlier route-only research
 interpretation of L4.
 
+This is the canonical T020R release-gate document. The earlier V1 checkpoint
+has been retired; its contract and closure requirements are consolidated here.
+Earlier T020 and T014-T019 documents remain as historical release evidence.
+
 ## Frozen Semantics
 
 - L4 (`ROUTE_MAPPED`) means that `ModuloMappingVerifier` accepted a completed
